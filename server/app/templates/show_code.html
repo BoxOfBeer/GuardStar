@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block body %}
+  <div class="card">
+    <h2>Пилот создан</h2>
+    <p>Имя: <b>{{ display_name }}</b></p>
+    <p><b>Код доступа (сохрани его):</b></p>
+    <pre><code>{{ access_code }}</code></pre>
+    <p class="muted">Мы не собираем почту. Этот код — единственный способ восстановить доступ.</p>
+    <div class="row">
+      <a href="{{ url_for('web.me') }}">Перейти в «Моя империя»</a>
+      <a href="{{ url_for('web.index') }}">На главную</a>
+    </div>
+  </div>
+{% endblock %}

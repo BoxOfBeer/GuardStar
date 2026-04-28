@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block body %}
+  <div class="card">
+    <h2>Вход по коду</h2>
+    <form method="post">
+      <label>Код доступа (32 символа):</label>
+      <input name="access_code" placeholder="вставь код сюда" />
+      <button type="submit">Войти</button>
+    </form>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <p><a href="{{ url_for('web.index') }}">На главную</a></p>
+  </div>
+{% endblock %}

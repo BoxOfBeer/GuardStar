@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+.Python
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# dotenv (never commit secrets)
+.env
+**/.env
+
+# Local secrets / scratch
+pass
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDEs
+.idea/
+.vscode/
+
+# Cursor
+.cursor/
+
+# OS
+Thumbs.db
+Desktop.ini
+

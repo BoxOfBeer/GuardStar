@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block body %}
+  <div class="card">
+    <div class="row" style="justify-content: space-between;">
+      <h2>Моя империя</h2>
+      <form method="post" action="{{ url_for('web.logout') }}">
+        <button type="submit">Выйти</button>
+      </form>
+    </div>
+
+    {% if data.planets and data.planets|length > 0 %}
+      {% set p = data.planets[0] %}
+      <p><b>Стартовая планета:</b> {{ p.name }} ({{ p.pos.x }}, {{ p.pos.y }})</p>
+      <p><b>Ресурсы:</b> металл {{ p.resources.metal }}, кристалл {{ p.resources.crystal }}, энергия {{ p.resources.energy }}</p>
+      <p><b>Юниты:</b></p>
+      <ul>
+        {% for u in p.units %}
+          <li>{{ u.unit_type }}: {{ u.qty }}</li>
+        {% endfor %}
+      </ul>
+      <hr />
+      <div class="row" style="justify-content: space-between;">
+        <p style="margin: 0;"><b>Карта (9×9)</b> вокруг планеты. Кликни клетку, чтобы посмотреть сектор.</p>
+        <div class="row">
+          <span class="muted">Z-слой:</span>
+          <a href="{{ url_for('web.me', z=-1) }}" style="font-weight: {{ '700' if z==-1 else '400' }};">-1</a>
+          <a href="{{ url_for('web.me', z=0) }}" style="font-weight: {{ '700' if z==0 else '400' }};">0</a>
+          <a href="{{ url_for('web.me', z=1) }}" style="font-weight: {{ '700' if z==1 else '400' }};">+1</a>
+        </div>
+      </div>
+
+      {% if window and window.center %}
+        <table style="border-collapse: collapse; margin: 8px 0;">
+          {% for r in window.cells %}
+            <tr>
+              {% for c in r.row %}
+                {% set is_center = c.flags.is_center %}
+                {% set has_objects = c.flags.has_objects %}
+                {% set has_fleet = c.objects and (c.objects | selectattr('type', 'equalto', 'fleet') | list | length) > 0 %}
+                <td style="border: 1px solid #ddd; padding: 6px 8px; text-align: center; min-width: 34px;
+                           background: {{ '#eef6ff' if is_center else ('#f3fff3' if has_objects else '#fff') }};">
+                  <a href="{{ url_for('web.me', x=c.x, y=c.y, z=z) }}" title="Сектор ({{ c.x }}, {{ c.y }}, z={{ z }})">
+                    {% if is_center %}P{% elif has_fleet %}F{% elif has_objects %}*{% else %}{{ c.glyph }}{% endif %}
+                  </a>
+                </td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </table>
+        <div class="muted">
+          Легенда:
+          <b>P</b> — планета (только z=0),
+          <b>F</b> — флот (после отправки scout),
+          <b>*</b> — объект,
+          <b>.</b> — пусто,
+          <b>A</b> — астероиды,
+          <b>N</b> — туманность,
+          <b>R</b> — руины,
+          <b>?</b> — аномалия
+        </div>
+      {% endif %}
+
+      {% if sector %}
+        <hr />
+        <p><b>Сектор ({{ sector.x }}, {{ sector.y }}, z={{ sector.z }})</b></p>
+        {% if sector.cell %}
+          <div class="muted">Среда: <b>{{ sector.cell.terrain }}</b> ({{ sector.cell.glyph }})</div>
+        {% endif %}
+        {% if sector.objects and sector.objects|length > 0 %}
+          <ul>
+            {% for o in sector.objects %}
+              {% if o.type == 'planet' %}
+                <li>planet: {{ o.name }} (owner {{ o.owner }})</li>
+              {% elif o.type == 'fleet' %}
+                <li>fleet: {{ o.unit_type }} × {{ o.qty }} (owner {{ o.owner }})</li>
+              {% else %}
+                <li>{{ o.type }}</li>
+              {% endif %}
+            {% endfor %}
+          </ul>
+        {% else %}
+          <div class="muted">Пусто.</div>
+        {% endif %}
+
+        <form method="post" action="/actions/move_scout" style="margin-top: 10px;">
+          <input type="hidden" name="x" value="{{ sector.x }}" />
+          <input type="hidden" name="y" value="{{ sector.y }}" />
+          <input type="hidden" name="z" value="{{ sector.z }}" />
+          <button type="submit">Отправить 1 scout сюда</button>
+          <span class="muted">(пока только в соседнюю клетку на z=0)</span>
+        </form>
+      {% endif %}
+
+      <p class="muted">API: <code>GET /api/me</code>, <code>GET /api/world/window?z=&radius=</code>, <code>GET /api/world/sector?x=&y=&z=</code></p>
+    {% else %}
+      <p>Планет пока нет.</p>
+    {% endif %}
+
+    <p><a href="{{ url_for('web.index') }}">На главную</a></p>
+  </div>
+{% endblock %}

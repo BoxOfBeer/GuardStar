@@ -1,0 +1,38 @@
+import os
+
+import pytest
+from sqlalchemy import create_engine
+
+from app.db.models import Base
+
+
+@pytest.fixture(scope="session")
+def database_url() -> str:
+    url = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    if not url:
+        pytest.skip("Set TEST_DATABASE_URL or DATABASE_URL to run DB tests (PostgreSQL).")
+    return url
+
+
+@pytest.fixture()
+def db_schema(database_url: str):
+    engine = create_engine(database_url, future=True)
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    yield
+    Base.metadata.drop_all(engine)
+
+
+@pytest.fixture()
+def client(monkeypatch, database_url: str, db_schema):
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("SERVER_SALT", "test-salt")
+
+    from app import create_app
+
+    app = create_app()
+    app.config.update(TESTING=True)
+
+    return app.test_client()
+
