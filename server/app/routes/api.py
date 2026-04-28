@@ -1,6 +1,7 @@
-from flask import Blueprint, jsonify, request, session, current_app
+from flask import Blueprint, current_app, jsonify, request, session
+from sqlalchemy import text
 
-from app.db.engine import db_session
+from app.db.engine import db_session, get_engine
 from app.services.auth_service import AuthService
 from app.services.world_service import WorldService
 
@@ -10,6 +11,21 @@ api_bp = Blueprint("api", __name__)
 def _current_player_id() -> str | None:
     pid = session.get("player_id")
     return str(pid) if pid else None
+
+
+@api_bp.get("/health")
+def api_health():
+    return jsonify({"status": "ok", "app": "GuardStar"})
+
+
+@api_bp.get("/ready")
+def api_ready():
+    try:
+        with get_engine().connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return jsonify({"status": "ready"})
+    except Exception:
+        return jsonify({"status": "not_ready", "error": "db_unavailable"}), 503
 
 
 @api_bp.get("/version")
@@ -85,8 +101,6 @@ def api_me():
 
 @api_bp.get("/world/sector")
 def api_world_sector():
-    # Заглушка под будущую «шахматку». Пока возвращаем только то, что принадлежит игроку
-    # или пустой сектор.
     x = request.args.get("x", type=int)
     y = request.args.get("y", type=int)
     z = request.args.get("z", default=0, type=int)
@@ -135,5 +149,4 @@ def api_move_scout():
         if not result.get("ok"):
             return jsonify(result), 400
         s.commit()
-        return jsonify({"ok": True})
-
+        return jsonify({"ok": True, "status": "moved", "target": {"x": x, "y": y, "z": z}})

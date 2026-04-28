@@ -61,8 +61,55 @@ def test_world_window_z_changes_and_is_deterministic(client):
     assert w1["z"] == 1
     assert w1["center"] == w0a["center"]
 
-    # Для z!=0 планет нет, но terrain/glyph должен быть.
     any_cell = w1["cells"][0]["row"][0]
     assert "terrain" in any_cell
     assert "glyph" in any_cell
 
+
+def test_health_and_ready_endpoints(client):
+    health = client.get("/api/health")
+    assert health.status_code == 200
+    assert health.get_json() == {"status": "ok", "app": "GuardStar"}
+
+    ready = client.get("/api/ready")
+    assert ready.status_code == 200
+    assert ready.get_json() == {"status": "ready"}
+
+
+def test_move_scout_success_and_window_refresh(client):
+    client.post("/api/register", json={"display_name": "Mover"})
+    window = client.get("/api/world/window?radius=4&z=0").get_json()
+    cx, cy = window["center"]["x"], window["center"]["y"]
+
+    move = client.post("/api/units/move_scout", json={"x": cx + 1, "y": cy, "z": 0})
+    assert move.status_code == 200
+    body = move.get_json()
+    assert body["ok"] is True
+    assert body["status"] == "moved"
+    assert body["target"] == {"x": cx + 1, "y": cy, "z": 0}
+
+    refreshed = client.get("/api/world/window?radius=4&z=0").get_json()
+    target_cell = None
+    for row in refreshed["cells"]:
+        for cell in row["row"]:
+            if cell["x"] == cx + 1 and cell["y"] == cy:
+                target_cell = cell
+                break
+    assert target_cell is not None
+    assert any(o["type"] == "fleet" and o["unit_type"] == "scout" for o in target_cell["objects"])
+
+
+def test_move_scout_invalid_target_fails(client):
+    client.post("/api/register", json={"display_name": "BadMove"})
+    window = client.get("/api/world/window?radius=4&z=0").get_json()
+    cx, cy = window["center"]["x"], window["center"]["y"]
+
+    move = client.post("/api/units/move_scout", json={"x": cx + 2, "y": cy + 2, "z": 0})
+    assert move.status_code == 400
+    assert move.get_json()["error"] == "target_not_adjacent"
+
+
+def test_move_scout_unauthorized(client):
+    r = client.post("/api/units/move_scout", json={"x": 0, "y": 0, "z": 0})
+    assert r.status_code == 401
+    assert r.get_json()["error"] == "not_authenticated"
