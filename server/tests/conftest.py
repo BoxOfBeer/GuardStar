@@ -4,6 +4,14 @@ import pytest
 from sqlalchemy import create_engine
 
 from app.db.models import Base
+from app.db.models.fleet import Fleet  # noqa: F401
+from app.db.models.game_clock import GameClock  # noqa: F401
+from app.db.models.planet import Planet  # noqa: F401
+from app.db.models.player import Player  # noqa: F401
+from app.db.models.resource import Resource  # noqa: F401
+from app.db.models.resource_tick import ResourceTick  # noqa: F401
+from app.db.models.unit import Unit  # noqa: F401
+from app.db.models.unit_order import UnitOrder  # noqa: F401
 
 
 @pytest.fixture(scope="session")

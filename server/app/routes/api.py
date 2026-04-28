@@ -38,6 +38,7 @@ def api_version():
                 "procgen": True,
                 "move_scout": True,
                 "resource_tick": True,
+                "manual_world_tick": True,
             },
         }
     )
@@ -128,6 +129,31 @@ def api_world_window():
         return jsonify(world.get_player_map_window(s, player_id=player_id, radius=radius, z=z))
 
 
+
+
+@api_bp.post("/world/tick")
+def api_world_tick():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    with db_session() as s:
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"])
+        result = world.process_next_tick(s)
+        s.commit()
+        return jsonify({"ok": True, **result})
+
+
+@api_bp.get("/units/status")
+def api_units_status():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    with db_session() as s:
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"])
+        return jsonify(world.get_units_status(s, player_id=player_id))
+
 @api_bp.post("/units/move_scout")
 def api_move_scout():
     player_id = _current_player_id()
@@ -149,4 +175,4 @@ def api_move_scout():
         if not result.get("ok"):
             return jsonify(result), 400
         s.commit()
-        return jsonify({"ok": True, "status": "moved", "target": {"x": x, "y": y, "z": z}})
+        return jsonify({"ok": True, "status": "queued", "target": {"x": x, "y": y, "z": z}, **result})
