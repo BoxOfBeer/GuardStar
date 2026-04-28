@@ -9,7 +9,7 @@
   let lastTarget = null;
 
   const mapEl = document.getElementById("map-grid");
-  const statusEl = document.getElementById("action-status");
+  const statusEl = document.getElementById("status");
   const unitPosEl = document.getElementById("hud-unit-pos");
   const zEl = document.getElementById("hud-z");
 
@@ -55,11 +55,13 @@
 
         if (hasObjects) btn.classList.add("cell-object");
         if (isCenter) btn.classList.add("cell-center");
-        if (hasScoutFleet) btn.classList.add("cell-unit");
+        if (hasScoutFleet) btn.classList.add("cell-unit", "cell-current");
         if (c.terrain === "anomaly") btn.classList.add("cell-unknown");
-        if (lastTarget && c.x === lastTarget.x && c.y === lastTarget.y && c.z === lastTarget.z) btn.classList.add("cell-target");
+        if (lastTarget && c.x === lastTarget.x && c.y === lastTarget.y && c.z === lastTarget.z) {
+          btn.classList.add("cell-target", "move-target");
+        }
 
-        const marker = hasScoutFleet ? "U" : (isCenter ? "P" : c.glyph || ".");
+        const marker = hasScoutFleet ? "<span class='unit-icon' aria-label='Юнит scout'>🛰</span>" : (isCenter ? "P" : c.glyph || ".");
         btn.innerHTML = `<div><div>${marker}</div><div class='coord'>${c.x},${c.y}</div></div>`;
         btn.title = `Сектор (${c.x}, ${c.y}, z=${c.z})`;
         btn.addEventListener("click", () => moveScout(c.x, c.y, c.z));
@@ -80,7 +82,7 @@
   };
 
   const moveScout = async (x, y, z) => {
-    setStatus(`Отправка юнита в ${x},${y},${z}...`);
+    setStatus("Отправка...");
     try {
       const r = await fetch("/api/units/move_scout", {
         method: "POST",
@@ -88,16 +90,24 @@
         body: JSON.stringify({ x, y, z }),
       });
       const body = await r.json();
-      if (!r.ok || !body.ok) {
-        const msg = body.error || "move_failed";
-        setStatus(`Ошибка движения: ${msg}`, "err");
+
+      if (r.status === 400) {
+        const msg = body.error || body.message || "bad_request";
+        setStatus(`Ошибка: ${msg}`, "err");
         return;
       }
-      lastTarget = { x, y, z };
-      setStatus(`Юнит перемещён: ${x},${y},${z}`, "ok");
-      await refreshWindow();
+
+      if (r.status === 200 && body.ok) {
+        lastTarget = { x, y, z };
+        await refreshWindow();
+        setStatus(`Успешно: (${x},${y},${z})`, "ok");
+        return;
+      }
+
+      const msg = body.error || body.message || `http_${r.status}`;
+      setStatus(`Ошибка: ${msg}`, "err");
     } catch (_e) {
-      setStatus("Сетевая ошибка при движении", "err");
+      setStatus("Ошибка: network_error", "err");
     }
   };
 
