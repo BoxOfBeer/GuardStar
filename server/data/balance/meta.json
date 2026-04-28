@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "name": "GuardStar Balance",
+  "description": "Data-driven balance pack. Edit JSON to tune costs, stats, races, tech.",
+  "created_at": "2026-04-28"
+}
+

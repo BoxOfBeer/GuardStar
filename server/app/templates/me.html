@@ -3,12 +3,28 @@
   <div class="topbar card">
     <div>
       <h2 style="margin: 0;">GuardStar</h2>
-      <div class="muted">Пилот: <b id="pilot-name">{{ data.player_id }}</b></div>
+      <div class="muted">Пилот: <b id="pilot-name">{{ data.display_name }}</b></div>
     </div>
     <div id="api-version-chip" class="status-chip">
       <span class="status-dot"></span>
       <span>API: проверка…</span>
     </div>
+    <div class="status-chip" id="autotick-chip">
+      <span class="status-dot"></span>
+      <label style="display:flex;gap:8px;align-items:center;cursor:pointer;">
+        <input id="autotick-toggle" type="checkbox" style="width:auto;margin:0;" />
+        <span id="autotick-text">Автотик: —</span>
+      </label>
+    </div>
+    <div class="status-chip" id="resources-chip">
+      <span class="muted">⛏</span><span id="top-metal">—</span>
+      <span class="muted">💎</span><span id="top-crystal">—</span>
+      <span class="muted">⚡</span><span id="top-energy">—</span>
+      <span class="muted">⛽</span><span id="top-fuel">—</span>
+      <span class="muted" id="top-delta">(+—/10t)</span>
+    </div>
+    <button type="button" id="manual-tick-btn">Тик</button>
+    <a href="{{ url_for('web.account') }}" class="status-chip" style="text-decoration:none;">Аккаунт</a>
     <form method="post" action="{{ url_for('web.logout') }}">
       <button type="submit">Выйти</button>
     </form>
@@ -19,39 +35,57 @@
       <section class="card">
         <h3 style="margin-top: 0;">Карта сектора</h3>
         <div class="muted">Клик по клетке отправляет 1 scout в выбранный сектор (соседний от домашней планеты, z=0).</div>
-        <div id="map-grid" class="map-grid"></div>
+        <div class="map-wrap">
+          <div id="map-grid" class="map-grid"></div>
+          <svg id="flight-overlay" class="flight-overlay" aria-hidden="true"></svg>
+        </div>
         <div class="legend">
           <span class="legend-item"><span class="legend-mark" style="background:#0a1324"></span>Пустой сектор</span>
           <span class="legend-item"><span class="legend-mark" style="background:#12223e"></span>Сектор игрока/объект</span>
           <span class="legend-item"><span class="legend-mark" style="box-shadow:inset 0 0 0 1px #61eaa3"></span>Юнит (scout fleet)</span>
           <span class="legend-item"><span class="legend-mark" style="opacity:.7;background:#0a1324"></span>Неизведанное/аномалии</span>
           <span class="legend-item"><span class="legend-mark" style="box-shadow:inset 0 0 0 2px #ffc857"></span>Последняя цель</span>
+          <button type="button" id="home-btn" style="margin-left:auto;">Домой</button>
         </div>
       </section>
 
       <aside class="card hud">
         <h3>HUD пилота</h3>
-        <div class="hud-block muted">Имя пилота: <b>{{ data.player_id }}</b></div>
-        <div class="hud-block">Выбранный юнит: <b id="hud-unit">scout</b></div>
+        <div class="hud-block muted">Имя пилота: <b>{{ data.display_name }}</b></div>
+        <div class="hud-block">Активный флот: <b id="hud-unit">—</b></div>
+        <div class="hud-block">
+          <select id="fleet-select" style="width:100%;margin-top:6px;"></select>
+        </div>
         <div class="hud-block">Текущие координаты юнита: <b id="hud-unit-pos">—</b></div>
         <div class="hud-block">Текущий Z-слой: <b id="hud-z">{{ z }}</b></div>
         <div class="hud-block">Текущий tick: <b id="hud-tick">0</b></div>
         <div class="hud-block">Статус юнита: <b id="hud-unit-status">idle</b></div>
+        <div class="hud-block">ETA: <b id="hud-eta">—</b> • Прибытие: <b id="hud-arrive-tick">—</b></div>
         <div class="hud-block">Домашняя планета: <b id="hud-home">{{ data.planets[0].pos.x }}, {{ data.planets[0].pos.y }}, 0</b></div>
 
         <div class="hud-block">
-          <div class="muted" style="margin-bottom:6px;">Движение (N/S/E/W от домашней планеты):</div>
-          <div class="controls">
-            <span class="spacer"></span>
-            <button type="button" data-dir="N">↑ N</button>
-            <span class="spacer"></span>
-            <button type="button" data-dir="W">← W</button>
-            <button type="button" data-dir="C">•</button>
-            <button type="button" data-dir="E">E →</button>
-            <span class="spacer"></span>
-            <button type="button" data-dir="S">↓ S</button>
-            <span class="spacer"></span>
+          <div class="muted" style="margin-bottom:6px;">Выбранная клетка:</div>
+          <div class="hud-kv">
+            <div>Координаты: <b id="sel-coord">—</b></div>
+            <div>Terrain: <b id="sel-terrain">—</b> • Glyph: <b id="sel-glyph">—</b></div>
+            <div>Объекты: <b id="sel-objects">—</b></div>
+            <div>Расстояние: <b id="sel-distance">—</b></div>
+            <div>Время полёта: <b id="sel-travel">—</b> • Прибытие: <b id="sel-arrive">—</b></div>
           </div>
+          <div class="row" style="margin-top:8px;">
+            <button type="button" id="fly-btn" disabled>Лететь</button>
+            <button type="button" id="clear-sel-btn">Снять выбор</button>
+          </div>
+        </div>
+
+        <div class="hud-block">
+          <div class="muted" style="margin-bottom:6px;">Планета (если выбрана):</div>
+          <div id="planet-panel" class="planet-panel muted">Выбери клетку с планетой.</div>
+        </div>
+
+        <div class="hud-block">
+          <div class="muted" style="margin-bottom:6px;">Стройка (если можно):</div>
+          <div id="build-panel" class="planet-panel muted">Выбери клетку в зоне стройки.</div>
         </div>
 
         <div class="hud-block">
@@ -63,7 +97,30 @@
         </div>
 
         <div id="status" class="status-line">Ожидание действия…</div>
+
+        <div class="hud-block" style="margin-top:12px;">
+          <div class="muted" style="margin-bottom:6px;">События:</div>
+          <div id="events" class="events"></div>
+        </div>
       </aside>
+    </div>
+
+    <div id="confirm-overlay" class="overlay hidden" role="dialog" aria-modal="true">
+      <div class="overlay-card card">
+        <h3 style="margin-top:0;">Подтверждение полёта</h3>
+        <div class="hud-kv">
+          <div>Откуда: <b id="cf-from">—</b></div>
+          <div>Куда: <b id="cf-to">—</b></div>
+          <div>ETA: <b id="cf-eta">—</b> • Прибытие: <b id="cf-arrive">—</b></div>
+          <div>Топливо (MVP): <b id="cf-fuel">—</b></div>
+          <div>Назначение: <b id="cf-dest">—</b></div>
+          <div class="muted" id="cf-warn" style="margin-top:6px;"></div>
+        </div>
+        <div class="row" style="margin-top:12px;">
+          <button type="button" id="cf-ok">Поехали</button>
+          <button type="button" id="cf-cancel">Отмена</button>
+        </div>
+      </div>
     </div>
   {% else %}
     <div class="card">Планет пока нет.</div>

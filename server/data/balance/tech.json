@@ -1,0 +1,29 @@
+{
+  "tech": [
+    {
+      "id": "tech_logistics_1",
+      "name": "Logistics I",
+      "tier": 1,
+      "enabled": true,
+      "prereq": [],
+      "cost": { "metal": 200, "crystal": 120 },
+      "time_ticks": 10,
+      "effects": {
+        "travel_fuel_multiplier": 0.9
+      }
+    },
+    {
+      "id": "tech_industry_1",
+      "name": "Industry I",
+      "tier": 1,
+      "enabled": true,
+      "prereq": [],
+      "cost": { "metal": 200, "crystal": 80 },
+      "time_ticks": 10,
+      "effects": {
+        "production_multiplier": { "metal": 1.1 }
+      }
+    }
+  ]
+}
+

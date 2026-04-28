@@ -18,4 +18,5 @@ class Resource(Base):
     metal: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     crystal: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     energy: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fuel: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 

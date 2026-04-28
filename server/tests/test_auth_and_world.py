@@ -86,7 +86,10 @@ def test_move_scout_creates_order(client):
     body = move.get_json()
     assert body["ok"] is True
     assert body["status"] == "queued"
+    assert body["from"] == {"x": cx, "y": cy, "z": 0}
     assert body["target"] == {"x": cx + 1, "y": cy, "z": 0}
+    assert body["distance"] == 1
+    assert body["travel_ticks"] == 1
     assert body["start_tick"] == 1
     assert body["finish_tick"] == 1
 
@@ -160,14 +163,35 @@ def test_units_status_switches_idle_moving(client):
     assert scout_done["active_order"] is None
 
 
+def test_world_state_endpoint_shows_tick_and_unit(client):
+    client.post("/api/register", json={"display_name": "State"})
+    state0 = client.get("/api/world/state")
+    assert state0.status_code == 200
+    body0 = state0.get_json()
+    assert "current_tick" in body0
+    assert "auto_tick_enabled" in body0
+    assert "auto_tick_interval_seconds" in body0
+    assert body0["unit"]["type"] == "scout"
+    assert body0["unit"]["status"] in ("idle", "moving")
+
+    window = client.get("/api/world/window?radius=4&z=0").get_json()
+    cx, cy = window["center"]["x"], window["center"]["y"]
+    client.post("/api/units/move_scout", json={"x": cx + 2, "y": cy, "z": 0})
+
+    state1 = client.get("/api/world/state").get_json()
+    assert state1["unit"]["status"] == "moving"
+    assert state1["unit"]["active_order"] is not None
+    assert state1["unit"]["active_order"]["remaining_ticks"] >= 1
+
+
 def test_move_scout_invalid_target_fails(client):
     client.post("/api/register", json={"display_name": "BadMove"})
     window = client.get("/api/world/window?radius=4&z=0").get_json()
     cx, cy = window["center"]["x"], window["center"]["y"]
 
-    move = client.post("/api/units/move_scout", json={"x": cx + 2, "y": cy + 2, "z": 0})
+    move = client.post("/api/units/move_scout", json={"x": cx, "y": cy, "z": 0})
     assert move.status_code == 400
-    assert move.get_json()["error"] == "target_not_adjacent"
+    assert move.get_json()["error"] == "target_same_cell"
 
 
 def test_move_scout_unauthorized(client):

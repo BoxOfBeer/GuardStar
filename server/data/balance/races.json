@@ -1,0 +1,29 @@
+{
+  "races": [
+    {
+      "id": "human",
+      "name": "Human Union",
+      "enabled": true,
+      "description": "Базовая раса без штрафов.",
+      "modifiers": {
+        "build_time_multiplier": 1.0,
+        "upkeep_energy_multiplier": 1.0,
+        "travel_fuel_multiplier": 1.0,
+        "production_multiplier": { "metal": 1.0, "crystal": 1.0, "energy": 1.0, "fuel": 1.0 }
+      }
+    },
+    {
+      "id": "zenith",
+      "name": "Zenith Forge",
+      "enabled": true,
+      "description": "Строят быстрее, но дороже содержать и летать.",
+      "modifiers": {
+        "build_time_multiplier": 0.8,
+        "upkeep_energy_multiplier": 1.25,
+        "travel_fuel_multiplier": 1.15,
+        "production_multiplier": { "metal": 1.0, "crystal": 1.0, "energy": 1.0, "fuel": 1.0 }
+      }
+    }
+  ]
+}
+

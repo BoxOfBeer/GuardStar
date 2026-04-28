@@ -1,0 +1,29 @@
+{
+  "units": [
+    {
+      "id": "scout_t1",
+      "name": "Scout",
+      "tier": 1,
+      "role": "scout",
+      "hp": 10,
+      "damage": 2,
+      "speed_cells_per_tick": 1,
+      "upkeep": { "energy": 1 },
+      "travel_fuel_per_cell": 1,
+      "build": { "time_ticks": 2, "cost": { "metal": 40, "crystal": 10 } }
+    },
+    {
+      "id": "fighter_t1",
+      "name": "Fighter",
+      "tier": 1,
+      "role": "combat",
+      "hp": 25,
+      "damage": 6,
+      "speed_cells_per_tick": 1,
+      "upkeep": { "energy": 2 },
+      "travel_fuel_per_cell": 2,
+      "build": { "time_ticks": 4, "cost": { "metal": 90, "crystal": 30 } }
+    }
+  ]
+}
+

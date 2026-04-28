@@ -1,0 +1,29 @@
+{
+  "buildings": [
+    {
+      "id": "mine_t1",
+      "name": "Mine",
+      "tier": 1,
+      "build_zone_radius_required": 3,
+      "build": { "time_ticks": 3, "cost": { "metal": 120, "crystal": 60 } },
+      "effects": { "production_per_tick_add": { "metal": 2 } }
+    },
+    {
+      "id": "reactor_t1",
+      "name": "Reactor",
+      "tier": 1,
+      "build_zone_radius_required": 3,
+      "build": { "time_ticks": 3, "cost": { "metal": 160, "crystal": 40 } },
+      "effects": { "production_per_tick_add": { "energy": 1, "fuel": 1 } }
+    },
+    {
+      "id": "crystal_farm_t1",
+      "name": "Crystal Farm",
+      "tier": 1,
+      "build_zone_radius_required": 3,
+      "build": { "time_ticks": 3, "cost": { "metal": 100, "crystal": 90 } },
+      "effects": { "production_per_tick_add": { "crystal": 2 } }
+    }
+  ]
+}
+
