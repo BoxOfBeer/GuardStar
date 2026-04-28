@@ -12,6 +12,8 @@
   const statusEl = document.getElementById("status");
   const unitPosEl = document.getElementById("hud-unit-pos");
   const zEl = document.getElementById("hud-z");
+  const tickEl = document.getElementById("hud-tick");
+  const unitStatusEl = document.getElementById("hud-unit-status");
 
   const setStatus = (text, kind) => {
     if (!statusEl) return;
@@ -29,6 +31,24 @@
       }
     }
     return { x: home.x, y: home.y, z: currentZ };
+  };
+
+  const loadUnitStatus = async () => {
+    try {
+      const r = await fetch("/api/units/status");
+      if (!r.ok) return;
+      const body = await r.json();
+      if (tickEl) tickEl.textContent = String(body.current_tick ?? 0);
+
+      const scout = (body.units || []).find((u) => u.unit_type === "scout");
+      if (unitStatusEl) unitStatusEl.textContent = scout ? scout.status : "idle";
+      if (scout && scout.status === "moving" && scout.active_order) {
+        const t = scout.active_order.target;
+        if (unitPosEl) unitPosEl.textContent = `${t.x}, ${t.y}, ${t.z}`;
+      }
+    } catch (_e) {
+      // ignore
+    }
   };
 
   const renderMap = () => {
@@ -79,6 +99,7 @@
     }
     currentWindow = await r.json();
     renderMap();
+    await loadUnitStatus();
   };
 
   const moveScout = async (x, y, z) => {
@@ -143,6 +164,25 @@
     });
   }
 
+  const nextTickBtn = document.getElementById("next-tick");
+  if (nextTickBtn) {
+    nextTickBtn.addEventListener("click", async () => {
+      setStatus("Обработка следующего тика...");
+      try {
+        const r = await fetch("/api/world/tick", { method: "POST" });
+        const body = await r.json();
+        if (!r.ok || !body.ok) {
+          setStatus(`Ошибка тика: ${body.error || "tick_failed"}`, "err");
+          return;
+        }
+        setStatus(`Tick ${body.current_tick}: событий ${body.events.length}`, "ok");
+        await refreshWindow();
+      } catch (_e) {
+        setStatus("Сетевая ошибка при обработке тика", "err");
+      }
+    });
+  }
+
   const versionChip = document.getElementById("api-version-chip");
   const checkVersion = async () => {
     if (!versionChip) return;
@@ -160,4 +200,5 @@
 
   renderMap();
   checkVersion();
+  loadUnitStatus();
 })();

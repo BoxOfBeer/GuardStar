@@ -76,7 +76,7 @@ def test_health_and_ready_endpoints(client):
     assert ready.get_json() == {"status": "ready"}
 
 
-def test_move_scout_success_and_window_refresh(client):
+def test_move_scout_creates_order(client):
     client.post("/api/register", json={"display_name": "Mover"})
     window = client.get("/api/world/window?radius=4&z=0").get_json()
     cx, cy = window["center"]["x"], window["center"]["y"]
@@ -85,18 +85,79 @@ def test_move_scout_success_and_window_refresh(client):
     assert move.status_code == 200
     body = move.get_json()
     assert body["ok"] is True
-    assert body["status"] == "moved"
+    assert body["status"] == "queued"
     assert body["target"] == {"x": cx + 1, "y": cy, "z": 0}
+    assert body["start_tick"] == 1
+    assert body["finish_tick"] == 1
 
-    refreshed = client.get("/api/world/window?radius=4&z=0").get_json()
-    target_cell = None
-    for row in refreshed["cells"]:
+
+def test_move_scout_rejects_second_active_order(client):
+    client.post("/api/register", json={"display_name": "QueueLock"})
+    window = client.get("/api/world/window?radius=4&z=0").get_json()
+    cx, cy = window["center"]["x"], window["center"]["y"]
+
+    first = client.post("/api/units/move_scout", json={"x": cx + 1, "y": cy, "z": 0})
+    assert first.status_code == 200
+
+    second = client.post("/api/units/move_scout", json={"x": cx, "y": cy + 1, "z": 0})
+    assert second.status_code == 400
+    assert second.get_json()["error"] == "active_order_exists"
+
+
+def test_tick_executes_move_order(client):
+    client.post("/api/register", json={"display_name": "TickRunner"})
+    window = client.get("/api/world/window?radius=4&z=0").get_json()
+    cx, cy = window["center"]["x"], window["center"]["y"]
+
+    client.post("/api/units/move_scout", json={"x": cx + 1, "y": cy, "z": 0})
+
+    before_tick = client.get("/api/world/window?radius=4&z=0").get_json()
+    target_before = None
+    for row in before_tick["cells"]:
         for cell in row["row"]:
             if cell["x"] == cx + 1 and cell["y"] == cy:
-                target_cell = cell
-                break
-    assert target_cell is not None
-    assert any(o["type"] == "fleet" and o["unit_type"] == "scout" for o in target_cell["objects"])
+                target_before = cell
+    assert target_before is not None
+    assert not any(o["type"] == "fleet" and o["unit_type"] == "scout" for o in target_before["objects"])
+
+    tick = client.post("/api/world/tick")
+    assert tick.status_code == 200
+    tick_body = tick.get_json()
+    assert tick_body["ok"] is True
+    assert tick_body["current_tick"] == 1
+    assert any(e["type"] == "order_done" for e in tick_body["events"])
+
+    after_tick = client.get("/api/world/window?radius=4&z=0").get_json()
+    target_after = None
+    for row in after_tick["cells"]:
+        for cell in row["row"]:
+            if cell["x"] == cx + 1 and cell["y"] == cy:
+                target_after = cell
+    assert target_after is not None
+    assert any(o["type"] == "fleet" and o["unit_type"] == "scout" for o in target_after["objects"])
+
+
+def test_units_status_switches_idle_moving(client):
+    client.post("/api/register", json={"display_name": "UnitStatus"})
+    window = client.get("/api/world/window?radius=4&z=0").get_json()
+    cx, cy = window["center"]["x"], window["center"]["y"]
+
+    initial = client.get("/api/units/status").get_json()
+    scout_initial = next(u for u in initial["units"] if u["unit_type"] == "scout")
+    assert scout_initial["status"] == "idle"
+    assert scout_initial["active_order"] is None
+
+    client.post("/api/units/move_scout", json={"x": cx + 1, "y": cy, "z": 0})
+    moving = client.get("/api/units/status").get_json()
+    scout_moving = next(u for u in moving["units"] if u["unit_type"] == "scout")
+    assert scout_moving["status"] == "moving"
+    assert scout_moving["active_order"] is not None
+
+    client.post("/api/world/tick")
+    done = client.get("/api/units/status").get_json()
+    scout_done = next(u for u in done["units"] if u["unit_type"] == "scout")
+    assert scout_done["status"] == "idle"
+    assert scout_done["active_order"] is None
 
 
 def test_move_scout_invalid_target_fails(client):

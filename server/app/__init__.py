@@ -23,6 +23,8 @@ def create_app() -> Flask:
     from app.db.models.resource import Resource  # noqa: F401
     from app.db.models.resource_tick import ResourceTick  # noqa: F401
     from app.db.models.unit import Unit  # noqa: F401
+    from app.db.models.unit_order import UnitOrder  # noqa: F401
+    from app.db.models.game_clock import GameClock  # noqa: F401
 
     Base.metadata.create_all(get_engine())
 
