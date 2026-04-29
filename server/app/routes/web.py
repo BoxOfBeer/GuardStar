@@ -37,7 +37,8 @@ def register():
         return render_template("register.html", error="Введите имя.")
 
     auth = AuthService(server_salt=current_app.config["SERVER_SALT"])
-    world = WorldService()
+    balance = current_app.extensions.get("balance_service")
+    world = WorldService(balance=balance)
 
     with db_session() as s:
         player, access_code = auth.register_player(s, display_name=display_name)
@@ -88,7 +89,8 @@ def me():
     z = max(-10, min(z, 10))
 
     with db_session() as s:
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"])
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
         data = world.get_player_overview(s, player_id=player_id)
         window = world.get_player_map_window(s, player_id=player_id, radius=4, z=z)
         sector = None
@@ -226,7 +228,8 @@ def admin_accounts():
 def admin_world():
     token = _require_admin_token()
     with db_session() as s:
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"])
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
         ws = world.get_or_create_world_state(s)
 
         runtime = {
@@ -260,7 +263,8 @@ def admin_world_autotick():
     from app.services.auto_tick import start_auto_tick, stop_auto_tick
 
     with db_session() as s:
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"])
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
         ws = world.get_or_create_world_state(s)
         ws.auto_tick_enabled = bool(enabled)
         if interval is not None:

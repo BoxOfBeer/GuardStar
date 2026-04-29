@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -35,4 +35,9 @@ class FleetOrder(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     start_tick: Mapped[int] = mapped_column(Integer, nullable=False)
     finish_tick: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Если true — при прилёте на клетку с врагом бой сразу, без второго подтверждения.
+    force_attack: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Для status=pending_combat: дедлайн реального времени для подтверждения / автоотказа.
+    combat_prompt_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

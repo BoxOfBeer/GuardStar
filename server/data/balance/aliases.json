@@ -1,0 +1,38 @@
+{
+
+  "unit_aliases": {
+
+    "scout": "scout_t1",
+
+    "fighter": "fighter_t1",
+
+    "engineer": "engineer_t1"
+
+  },
+
+  "building_aliases": {
+
+    "mine": "mine_t1",
+
+    "reactor": "reactor_t1",
+
+    "fuel_depot": "fuel_depot_t1",
+
+    "crystal_farm": "crystal_farm_t1",
+
+    "habitat": "habitat_dome_t1",
+
+    "research_lab": "research_lab_t1",
+
+    "drydock_mini": "drydock_mini_t1",
+
+    "solar_array": "solar_array_t1",
+
+    "cargo_yard": "cargo_yard_t1",
+
+    "sensor_mast": "sensor_mast_t1"
+
+  }
+
+}
+

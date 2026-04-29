@@ -33,7 +33,12 @@ def create_app() -> Flask:
     from app.db.models.event import Event  # noqa: F401
     from app.db.models.fleet_order import FleetOrder  # noqa: F401
     from app.db.models.explored_sector import ExploredSector  # noqa: F401
+    from app.db.models.influence_cell import InfluenceCell  # noqa: F401
     from app.db.models.building import Building  # noqa: F401
+    from app.db.models.outpost import Outpost  # noqa: F401
+    from app.db.models.outpost_module import OutpostModule  # noqa: F401
+    from app.db.models.player_tech import PlayerTech  # noqa: F401
+    from app.db.models.fleet_ship import FleetShip  # noqa: F401
 
     Base.metadata.create_all(get_engine())
     # MVP safety net: create_all() не делает ALTER TABLE.
@@ -44,6 +49,28 @@ def create_app() -> Flask:
 
         engine = get_engine()
         insp = inspect(engine)
+
+        # Planets: добавляем колонки для населения/класса/слотов, если БД устарела.
+        if "planets" in insp.get_table_names():
+            cols = {c["name"] for c in insp.get_columns("planets")}
+            with engine.begin() as conn:
+                if "population" not in cols:
+                    conn.execute(text("ALTER TABLE planets ADD COLUMN IF NOT EXISTS population INTEGER NOT NULL DEFAULT 800"))
+                if "max_population" not in cols:
+                    conn.execute(text("ALTER TABLE planets ADD COLUMN IF NOT EXISTS max_population INTEGER NOT NULL DEFAULT 5000"))
+                if "planet_class" not in cols:
+                    conn.execute(text("ALTER TABLE planets ADD COLUMN IF NOT EXISTS planet_class VARCHAR(32) NOT NULL DEFAULT 'earthlike'"))
+                if "build_slots_total" not in cols:
+                    conn.execute(text("ALTER TABLE planets ADD COLUMN IF NOT EXISTS build_slots_total INTEGER NOT NULL DEFAULT 55"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_planets_planet_class ON planets (planet_class)"))
+
+        if "fleets" in insp.get_table_names():
+            cols = {c["name"] for c in insp.get_columns("fleets")}
+            with engine.begin() as conn:
+                if "energy" not in cols:
+                    conn.execute(text("ALTER TABLE fleets ADD COLUMN IF NOT EXISTS energy INTEGER NOT NULL DEFAULT 100"))
+                if "max_energy" not in cols:
+                    conn.execute(text("ALTER TABLE fleets ADD COLUMN IF NOT EXISTS max_energy INTEGER NOT NULL DEFAULT 100"))
 
         if "unit_orders" in insp.get_table_names():
             cols = {c["name"] for c in insp.get_columns("unit_orders")}
@@ -96,7 +123,9 @@ def create_app() -> Flask:
                           status VARCHAR(32) NOT NULL DEFAULT 'queued',
                           created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                           start_tick INTEGER NOT NULL,
-                          finish_tick INTEGER NOT NULL
+                          finish_tick INTEGER NOT NULL,
+                          force_attack BOOLEAN NOT NULL DEFAULT false,
+                          combat_prompt_expires_at TIMESTAMPTZ NULL
                         );
                         """
                     )
@@ -104,6 +133,22 @@ def create_app() -> Flask:
                 conn.execute(text("CREATE INDEX IF NOT EXISTS ix_fleet_orders_fleet_id ON fleet_orders (fleet_id)"))
                 conn.execute(text("CREATE INDEX IF NOT EXISTS ix_fleet_orders_owner_player_id ON fleet_orders (owner_player_id)"))
                 conn.execute(text("CREATE INDEX IF NOT EXISTS ix_fleet_orders_status ON fleet_orders (status)"))
+
+        # Alembic 20260429_000006: если таблица уже была без новых колонок — догоняем схему без ручного upgrade.
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "ALTER TABLE fleet_orders ADD COLUMN IF NOT EXISTS force_attack BOOLEAN NOT NULL DEFAULT false"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "ALTER TABLE fleet_orders ADD COLUMN IF NOT EXISTS combat_prompt_expires_at TIMESTAMPTZ NULL"
+                    )
+                )
+        except Exception:
+            pass
 
         if "explored_sectors" not in insp.get_table_names():
             with engine.begin() as conn:
@@ -123,6 +168,86 @@ def create_app() -> Flask:
                         """
                     )
                 )
+        if "outposts" not in insp.get_table_names():
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS outposts (
+                          id UUID PRIMARY KEY,
+                          owner_player_id UUID NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+                          planet_id UUID NULL REFERENCES planets(id) ON DELETE SET NULL,
+                          builder_fleet_id UUID NULL REFERENCES fleets(id) ON DELETE SET NULL,
+                          x INTEGER NOT NULL,
+                          y INTEGER NOT NULL,
+                          z INTEGER NOT NULL DEFAULT 0,
+                          outpost_type VARCHAR(64) NOT NULL,
+                          family VARCHAR(64) NOT NULL DEFAULT 'outpost',
+                          level INTEGER NOT NULL DEFAULT 1,
+                          module_slots_total INTEGER NOT NULL DEFAULT 1,
+                          status VARCHAR(32) NOT NULL DEFAULT 'active',
+                          started_at_tick INTEGER NOT NULL DEFAULT 0,
+                          finish_tick INTEGER NOT NULL DEFAULT 0,
+                          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                          CONSTRAINT uq_outposts_xyz UNIQUE (x, y, z)
+                        );
+                        """
+                    )
+                )
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_outposts_owner_player_id ON outposts (owner_player_id)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_outposts_planet_id ON outposts (planet_id)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_outposts_builder_fleet_id ON outposts (builder_fleet_id)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_outposts_x ON outposts (x)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_outposts_y ON outposts (y)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_outposts_z ON outposts (z)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_outposts_outpost_type ON outposts (outpost_type)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_outposts_status ON outposts (status)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_outposts_finish_tick ON outposts (finish_tick)"))
+        else:
+            cols = {c["name"] for c in insp.get_columns("outposts")}
+            with engine.begin() as conn:
+                if "started_at_tick" not in cols:
+                    conn.execute(text("ALTER TABLE outposts ADD COLUMN IF NOT EXISTS started_at_tick INTEGER NOT NULL DEFAULT 0"))
+                if "finish_tick" not in cols:
+                    conn.execute(text("ALTER TABLE outposts ADD COLUMN IF NOT EXISTS finish_tick INTEGER NOT NULL DEFAULT 0"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_outposts_finish_tick ON outposts (finish_tick)"))
+
+        if "outpost_modules" not in insp.get_table_names():
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS outpost_modules (
+                          id UUID PRIMARY KEY,
+                          outpost_id UUID NOT NULL REFERENCES outposts(id) ON DELETE CASCADE,
+                          module_type VARCHAR(64) NOT NULL,
+                          kind VARCHAR(32) NOT NULL,
+                          level INTEGER NOT NULL DEFAULT 1,
+                          slot_idx INTEGER NOT NULL,
+                          status VARCHAR(32) NOT NULL DEFAULT 'active',
+                          started_at_tick INTEGER NOT NULL DEFAULT 0,
+                          finish_tick INTEGER NOT NULL DEFAULT 0,
+                          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                          CONSTRAINT uq_outpost_modules_slot UNIQUE (outpost_id, slot_idx)
+                        );
+                        """
+                    )
+                )
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_outpost_modules_outpost_id ON outpost_modules (outpost_id)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_outpost_modules_module_type ON outpost_modules (module_type)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_outpost_modules_kind ON outpost_modules (kind)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_outpost_modules_status ON outpost_modules (status)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_outpost_modules_finish_tick ON outpost_modules (finish_tick)"))
+        else:
+            cols = {c["name"] for c in insp.get_columns("outpost_modules")}
+            with engine.begin() as conn:
+                if "started_at_tick" not in cols:
+                    conn.execute(text("ALTER TABLE outpost_modules ADD COLUMN IF NOT EXISTS started_at_tick INTEGER NOT NULL DEFAULT 0"))
+                if "finish_tick" not in cols:
+                    conn.execute(text("ALTER TABLE outpost_modules ADD COLUMN IF NOT EXISTS finish_tick INTEGER NOT NULL DEFAULT 0"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_outpost_modules_finish_tick ON outpost_modules (finish_tick)"))
                 conn.execute(text("CREATE INDEX IF NOT EXISTS ix_explored_sectors_player_id ON explored_sectors (player_id)"))
                 conn.execute(text("CREATE INDEX IF NOT EXISTS ix_explored_sectors_xyz ON explored_sectors (x, y, z)"))
                 conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_explored_sectors_player_xyz ON explored_sectors (player_id, x, y, z)"))
@@ -202,17 +327,104 @@ def create_app() -> Flask:
                 if "race_id" not in cols:
                     conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS race_id VARCHAR(32) NULL"))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_players_race_id ON players (race_id)"))
+
+        if "planets" in insp.get_table_names():
+            cols = {c["name"] for c in insp.get_columns("planets")}
+            with engine.begin() as conn:
+                if "population" not in cols:
+                    conn.execute(text("ALTER TABLE planets ADD COLUMN IF NOT EXISTS population INTEGER NOT NULL DEFAULT 800"))
+                if "max_population" not in cols:
+                    conn.execute(text("ALTER TABLE planets ADD COLUMN IF NOT EXISTS max_population INTEGER NOT NULL DEFAULT 5000"))
+
+        if "buildings" in insp.get_table_names():
+            cols = {c["name"] for c in insp.get_columns("buildings")}
+            with engine.begin() as conn:
+                if "planet_id" not in cols:
+                    conn.execute(text("ALTER TABLE buildings ADD COLUMN IF NOT EXISTS planet_id UUID NULL REFERENCES planets(id) ON DELETE SET NULL"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_buildings_planet_id ON buildings (planet_id)"))
+
+        if "fleet_ships" not in insp.get_table_names():
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS fleet_ships (
+                          fleet_id UUID NOT NULL REFERENCES fleets(id) ON DELETE CASCADE,
+                          unit_type VARCHAR(32) NOT NULL,
+                          qty INTEGER NOT NULL DEFAULT 0,
+                          PRIMARY KEY (fleet_id, unit_type)
+                        );
+                        """
+                    )
+                )
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_fleet_ships_fleet_id ON fleet_ships (fleet_id)"))
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO fleet_ships (fleet_id, unit_type, qty)
+                        SELECT id, unit_type, qty FROM fleets WHERE qty > 0
+                        ON CONFLICT (fleet_id, unit_type) DO NOTHING;
+                        """
+                    )
+                )
+
+        if "fleets" in insp.get_table_names():
+            fleet_cols_before = {c["name"] for c in insp.get_columns("fleets")}
+            fleet_name_added = "name" not in fleet_cols_before
+            from app.fleet_defaults import fleet_display_name_for_index as _fleet_name_slot
+
+            with engine.begin() as conn:
+                if fleet_name_added:
+                    conn.execute(text("ALTER TABLE fleets ADD COLUMN IF NOT EXISTS name VARCHAR(64) NOT NULL DEFAULT ''"))
+
+            if fleet_name_added:
+                with engine.begin() as conn:
+                    pids = conn.execute(text("SELECT DISTINCT owner_player_id FROM fleets")).fetchall()
+                    for (pid,) in pids:
+                        frows = conn.execute(
+                            text(
+                                "SELECT id FROM fleets WHERE owner_player_id = :pid ORDER BY created_at ASC"
+                            ),
+                            {"pid": pid},
+                        ).fetchall()
+                        for idx, (fid,) in enumerate(frows):
+                            conn.execute(
+                                text("UPDATE fleets SET name = :nm WHERE id = :fid"),
+                                {"nm": _fleet_name_slot(idx), "fid": fid},
+                            )
+
+        if "player_techs" not in insp.get_table_names():
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS player_techs (
+                          id SERIAL PRIMARY KEY,
+                          player_id UUID NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+                          tech_id VARCHAR(64) NOT NULL,
+                          status VARCHAR(16) NOT NULL DEFAULT 'in_progress',
+                          started_tick INTEGER NOT NULL DEFAULT 0,
+                          finish_tick INTEGER NOT NULL DEFAULT 0,
+                          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                          CONSTRAINT ux_player_techs_player_tech UNIQUE (player_id, tech_id)
+                        );
+                        """
+                    )
+                )
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_player_techs_player_id ON player_techs (player_id)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_player_techs_tech_id ON player_techs (tech_id)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_player_techs_status ON player_techs (status)"))
     except Exception:
         pass
 
     app.register_blueprint(web_bp)
     app.register_blueprint(api_bp, url_prefix="/api")
 
-    # Загружаем баланс (JSON) на старте, чтобы править без кода.
+    # Загружаем баланс (JSON) один раз на старте (in-memory).
     try:
-        from app.services.balance_service import default_balance_dir, load_balance_pack
+        from app.services.balance_service import BalanceService, default_balance_dir
 
-        app.extensions["balance"] = load_balance_pack(base_dir=default_balance_dir())
+        app.extensions["balance_service"] = BalanceService.load_from_path(default_balance_dir())
     except Exception as e:
         # Если баланс не загрузился — лучше сразу видеть это в /api/world/state.
         app.extensions["balance_error"] = repr(e)

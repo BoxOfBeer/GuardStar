@@ -1,0 +1,64 @@
+{
+  "outpost_modules": [
+    {
+      "id": "module_radar_t1",
+      "kind": "vision",
+      "name": "Радарный модуль I",
+      "tier": 1,
+      "level": 1,
+      "slot_cost_engineers": 1,
+      "prereq_tech": [],
+      "build": { "time_ticks": 3, "cost": { "metal": 120, "crystal": 90 } },
+      "effects": { "vision": { "radius_add": 4 } },
+      "upgrade": { "to": "module_radar_t2", "time_ticks": 4, "cost": { "metal": 140, "crystal": 120 }, "prereq_tech": ["tech_territory_2"] }
+    },
+    {
+      "id": "module_radar_t2",
+      "kind": "vision",
+      "name": "Радарный модуль II",
+      "tier": 2,
+      "level": 2,
+      "slot_cost_engineers": 1,
+      "prereq_tech": ["tech_territory_2"],
+      "build": { "time_ticks": 4, "cost": { "metal": 160, "crystal": 140 } },
+      "effects": { "vision": { "radius_add": 7 } },
+      "upgrade": null
+    },
+    {
+      "id": "module_armor_t1",
+      "kind": "defense",
+      "name": "Броневой модуль I",
+      "tier": 1,
+      "level": 1,
+      "slot_cost_engineers": 1,
+      "prereq_tech": ["tech_hull_1"],
+      "build": { "time_ticks": 4, "cost": { "metal": 140, "crystal": 120 } },
+      "effects": { "combat": { "hp_add": 18, "defense_add": 2 } },
+      "upgrade": { "to": "module_armor_t2", "time_ticks": 5, "cost": { "metal": 180, "crystal": 160 }, "prereq_tech": ["tech_territory_2"] }
+    },
+    {
+      "id": "module_armor_t2",
+      "kind": "defense",
+      "name": "Броневой модуль II",
+      "tier": 2,
+      "level": 2,
+      "slot_cost_engineers": 1,
+      "prereq_tech": ["tech_territory_2"],
+      "build": { "time_ticks": 5, "cost": { "metal": 220, "crystal": 180 } },
+      "effects": { "combat": { "hp_add": 30, "defense_add": 3 } },
+      "upgrade": null
+    },
+    {
+      "id": "module_refuel_t1",
+      "kind": "refuel",
+      "name": "Топливный модуль I",
+      "tier": 1,
+      "level": 1,
+      "slot_cost_engineers": 1,
+      "prereq_tech": ["tech_logistics_1"],
+      "build": { "time_ticks": 3, "cost": { "metal": 110, "crystal": 80 } },
+      "effects": { "refuel": { "travel_fuel_discount_pct": 15 } },
+      "upgrade": null
+    }
+  ]
+}

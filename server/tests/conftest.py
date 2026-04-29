@@ -6,6 +6,9 @@ from sqlalchemy import create_engine
 from app.db.models import Base
 from app.db.models.fleet import Fleet  # noqa: F401
 from app.db.models.game_clock import GameClock  # noqa: F401
+from app.db.models.influence_cell import InfluenceCell  # noqa: F401
+from app.db.models.outpost import Outpost  # noqa: F401
+from app.db.models.outpost_module import OutpostModule  # noqa: F401
 from app.db.models.planet import Planet  # noqa: F401
 from app.db.models.player import Player  # noqa: F401
 from app.db.models.resource import Resource  # noqa: F401

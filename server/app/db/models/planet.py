@@ -20,5 +20,9 @@ class Planet(Base):
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     pos_x: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     pos_y: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    population: Mapped[int] = mapped_column(Integer, nullable=False, default=800)
+    max_population: Mapped[int] = mapped_column(Integer, nullable=False, default=5000)
+    planet_class: Mapped[str] = mapped_column(String(32), nullable=False, default="earthlike", index=True)
+    build_slots_total: Mapped[int] = mapped_column(Integer, nullable=False, default=55)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
 

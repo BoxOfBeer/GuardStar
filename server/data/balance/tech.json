@@ -2,7 +2,8 @@
   "tech": [
     {
       "id": "tech_logistics_1",
-      "name": "Logistics I",
+      "name": "Логистика I",
+      "description": "Оптимизация маршрутов: перелёты флота расходуют меньше топлива.",
       "tier": 1,
       "enabled": true,
       "prereq": [],
@@ -14,7 +15,8 @@
     },
     {
       "id": "tech_industry_1",
-      "name": "Industry I",
+      "name": "Промышленность I",
+      "description": "Повышает добычу металла на планетах.",
       "tier": 1,
       "enabled": true,
       "prereq": [],
@@ -23,7 +25,54 @@
       "effects": {
         "production_multiplier": { "metal": 1.1 }
       }
+    },
+    {
+      "id": "tech_armament_1",
+      "name": "Вооружение I",
+      "description": "Улучшение систем наведения и зарядов: выше урон в бою флотов.",
+      "tier": 1,
+      "enabled": true,
+      "prereq": ["tech_industry_1"],
+      "cost": { "metal": 280, "crystal": 160 },
+      "time_ticks": 14,
+      "effects": {
+        "combat_damage_multiplier": 1.12
+      }
+    },
+    {
+      "id": "tech_hull_1",
+      "name": "Броня корпуса I",
+      "description": "Усиление рам и щитов: флот держит удар дольше.",
+      "tier": 1,
+      "enabled": true,
+      "prereq": ["tech_logistics_1"],
+      "cost": { "metal": 220, "crystal": 200 },
+      "time_ticks": 12,
+      "effects": {
+        "combat_hp_multiplier": 1.1
+      }
+    },
+    {
+      "id": "tech_territory_2",
+      "name": "Территориальные сети I",
+      "description": "Разрешает строить укреплённые форпосты для более уверенного удержания фронтира.",
+      "tier": 2,
+      "enabled": true,
+      "prereq": ["tech_industry_1", "tech_logistics_1"],
+      "cost": { "metal": 320, "crystal": 220 },
+      "time_ticks": 14,
+      "effects": {}
+    },
+    {
+      "id": "tech_territory_3",
+      "name": "Территориальные сети II",
+      "description": "Открывает командные узлы, расширяющие и стабилизирующие контроль сектора.",
+      "tier": 3,
+      "enabled": true,
+      "prereq": ["tech_territory_2", "tech_hull_1"],
+      "cost": { "metal": 480, "crystal": 340 },
+      "time_ticks": 18,
+      "effects": {}
     }
   ]
 }
-

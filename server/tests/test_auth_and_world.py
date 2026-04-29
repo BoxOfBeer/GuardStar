@@ -50,6 +50,29 @@ def test_world_window_returns_9x9(client):
     assert all(len(row["row"]) == 9 for row in body["cells"])
 
 
+def test_world_window_visible_cells_include_influence(client):
+    client.post("/api/register", json={"display_name": "InflWin"})
+    w = client.get("/api/world/window?radius=4&z=0").get_json()
+    visible = []
+    for row in w["cells"]:
+        for c in row["row"]:
+            if c.get("flags", {}).get("is_visible"):
+                visible.append(c)
+    assert visible
+    for cell in visible:
+        assert cell.get("influence") is not None
+        assert isinstance(cell["influence"].get("top"), list)
+
+
+def test_world_state_has_home_influence_block(client):
+    client.post("/api/register", json={"display_name": "InflSt"})
+    st = client.get("/api/world/state").get_json()
+    assert st.get("economy") is not None
+    inf = st["economy"].get("influence")
+    assert inf is not None
+    assert "home_share" in inf
+
+
 def test_world_window_z_changes_and_is_deterministic(client):
     client.post("/api/register", json={"display_name": "ZTest"})
 
@@ -198,3 +221,70 @@ def test_move_scout_unauthorized(client):
     r = client.post("/api/units/move_scout", json={"x": 0, "y": 0, "z": 0})
     assert r.status_code == 401
     assert r.get_json()["error"] == "not_authenticated"
+
+
+def test_fleet_save_deducts_metal_when_adding_ships(client):
+    client.post("/api/register", json={"display_name": "FleetSave"})
+    me = client.get("/api/me").get_json()
+    planet_id = me["planets"][0]["id"]
+    m0 = client.get("/api/world/state").get_json()["economy"]["metal"]
+
+    cr = client.post(
+        "/api/fleets/create",
+        json={"planet_id": planet_id, "name": "Alpha", "composition": {"scout": 1}},
+    )
+    assert cr.status_code == 200, cr.get_json()
+    m1 = client.get("/api/world/state").get_json()["economy"]["metal"]
+    assert m1 < m0
+
+    fid = cr.get_json()["fleet_id"]
+    sav = client.post(
+        "/api/fleets/save",
+        json={"fleet_id": fid, "name": "Alpha", "composition": {"scout": 1, "fighter": 1}},
+    )
+    assert sav.status_code == 200, sav.get_json()
+    m2 = client.get("/api/world/state").get_json()["economy"]["metal"]
+    assert m2 < m1
+
+
+def test_fleet_merge_then_split(client):
+    client.post("/api/register", json={"display_name": "FleetMergeSplit"})
+    me = client.get("/api/me").get_json()
+    pid = me["planets"][0]["id"]
+    a = client.post(
+        "/api/fleets/create",
+        json={"planet_id": pid, "name": "One", "composition": {"scout": 2}},
+    ).get_json()
+    b = client.post(
+        "/api/fleets/create",
+        json={"planet_id": pid, "name": "Two", "composition": {"fighter": 1}},
+    ).get_json()
+    aid, bid = a["fleet_id"], b["fleet_id"]
+    mg = client.post("/api/fleets/merge", json={"target_fleet_id": aid, "source_fleet_id": bid})
+    assert mg.status_code == 200, mg.get_json()
+    st = client.get("/api/world/state").get_json()
+    ids = {f["id"] for f in st["fleets"]}
+    assert bid not in ids
+    f_one = next(x for x in st["fleets"] if x["id"] == aid)
+    assert int(f_one["composition"].get("scout", 0)) == 2
+    assert int(f_one["composition"].get("fighter", 0)) == 1
+
+    sp = client.post("/api/fleets/split", json={"fleet_id": aid, "take": {"scout": 1, "fighter": 1}})
+    assert sp.status_code == 200, sp.get_json()
+    st2 = client.get("/api/world/state").get_json()
+    assert len(st2["fleets"]) == 2
+
+
+def test_fleet_disband_returns_deleted(client):
+    client.post("/api/register", json={"display_name": "DisbandT"})
+    me = client.get("/api/me").get_json()
+    pid = me["planets"][0]["id"]
+    cr = client.post(
+        "/api/fleets/create",
+        json={"planet_id": pid, "name": "X", "composition": {"scout": 1}},
+    )
+    assert cr.status_code == 200
+    fid = cr.get_json()["fleet_id"]
+    d = client.post("/api/fleets/disband", json={"fleet_id": fid})
+    assert d.status_code == 200
+    assert d.get_json().get("deleted") is True

@@ -19,10 +19,15 @@ class Fleet(Base):
     )
     unit_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    name: Mapped[str] = mapped_column(String(64), nullable=False, default="")
 
     pos_x: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     pos_y: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     pos_z: Mapped[int] = mapped_column(Integer, nullable=False, index=True, default=0)
+
+    # Локальная энергия флота (не зависит от имперских ресурсов).
+    energy: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    max_energy: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 

@@ -1,5 +1,5 @@
 from flask import Blueprint, current_app, jsonify, request, session
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from app.build_info import BUILD_ID
 from app.db.engine import db_session, get_engine
@@ -7,6 +7,7 @@ from app.services.auth_service import AuthService
 from app.services.world_service import WorldService
 from app.services.auto_tick import start_auto_tick, stop_auto_tick
 from app.db.models.world_state import WorldState
+from app.db.models.player_tech import PlayerTech
 
 api_bp = Blueprint("api", __name__)
 
@@ -33,9 +34,13 @@ def api_ready():
 
 @api_bp.get("/version")
 def api_version():
+    balance = current_app.extensions.get("balance_service")
     return jsonify(
         {
             "app": "guardstar",
+            "balance_schema_version": balance.balance_schema_version() if balance else None,
+            "balance_pack_id": balance.balance_pack_id() if balance else None,
+            "balance_pack_name": balance.balance_pack_name() if balance else None,
             "features": {
                 "z_layers": True,
                 "procgen": True,
@@ -55,7 +60,8 @@ def api_register():
         return jsonify({"error": "display_name_required"}), 400
 
     auth = AuthService(server_salt=current_app.config["SERVER_SALT"])
-    world = WorldService()
+    balance = current_app.extensions.get("balance_service")
+    world = WorldService(balance=balance)
 
     with db_session() as s:
         player, access_code = auth.register_player(s, display_name=display_name)
@@ -97,7 +103,8 @@ def api_me():
         return jsonify({"error": "not_authenticated"}), 401
 
     with db_session() as s:
-        world = WorldService()
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(balance=balance)
         data = world.get_player_overview(s, player_id=player_id)
 
     return jsonify(data)
@@ -112,7 +119,8 @@ def api_world_sector():
     player_id = _current_player_id()
 
     with db_session() as s:
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"])
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
         return jsonify(world.get_sector_stub(s, x=x, y=y, z=z, player_id=player_id))
 
 
@@ -130,7 +138,8 @@ def api_world_window():
     center_y = request.args.get("center_y", default=None, type=int)
 
     with db_session() as s:
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"])
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
         return jsonify(world.get_player_map_window(s, player_id=player_id, radius=radius, z=z, center_x=center_x, center_y=center_y))
 
 
@@ -143,7 +152,8 @@ def api_world_tick():
         return jsonify({"error": "not_authenticated"}), 401
 
     with db_session() as s:
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"])
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
         result = world.process_next_tick(s)
         s.commit()
         return jsonify({"ok": True, **result})
@@ -156,7 +166,8 @@ def api_units_status():
         return jsonify({"error": "not_authenticated"}), 401
 
     with db_session() as s:
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"])
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
         return jsonify(world.get_units_status(s, player_id=player_id))
 
 
@@ -167,7 +178,8 @@ def api_world_state():
         return jsonify({"error": "not_authenticated"}), 401
 
     with db_session() as s:
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"])
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
         ws = s.get(WorldState, 1) or world.get_or_create_world_state(s)
         state = world.get_world_state(
             s,
@@ -175,12 +187,15 @@ def api_world_state():
             auto_tick_enabled=bool(ws.auto_tick_enabled),
             auto_tick_interval_seconds=float(ws.auto_tick_interval_seconds),
         )
+        if current_app.extensions.get("balance_error"):
+            state["balance_error"] = current_app.extensions.get("balance_error")
         if current_app.extensions.get("auto_tick_error"):
             state["auto_tick_error"] = current_app.extensions.get("auto_tick_error")
         state["auto_tick_running"] = bool(current_app.extensions.get("auto_tick_scheduler"))
         state["auto_tick_last_run_at"] = current_app.extensions.get("auto_tick_last_run_at")
         state["auto_tick_last_tick"] = current_app.extensions.get("auto_tick_last_tick")
         state["build_id"] = BUILD_ID
+        s.commit()
         return jsonify(state)
 
 
@@ -253,7 +268,8 @@ def api_move_scout():
     z = max(-10, min(z, 10))
 
     with db_session() as s:
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"])
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
         result = world.create_scout_move_order(s, player_id=player_id, target_x=x, target_y=y, target_z=z)
         if not result.get("ok"):
             return jsonify(result), 400
@@ -276,11 +292,19 @@ def api_fleet_move():
         return jsonify({"error": "invalid_payload"}), 400
 
     z = max(-10, min(z, 10))
+    force_attack = bool(payload.get("force_attack"))
 
     with db_session() as s:
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"])
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
         result = world.create_fleet_move_order(
-            s, player_id=player_id, fleet_id=fleet_id, target_x=x, target_y=y, target_z=z
+            s,
+            player_id=player_id,
+            fleet_id=fleet_id,
+            target_x=x,
+            target_y=y,
+            target_z=z,
+            force_attack=force_attack,
         )
         if not result.get("ok"):
             return jsonify(result), 400
@@ -300,7 +324,8 @@ def api_fleet_cancel_order():
         return jsonify({"error": "invalid_payload"}), 400
 
     with db_session() as s:
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"])
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
         result = world.cancel_fleet_order(s, player_id=player_id, fleet_id=fleet_id)
         if not result.get("ok"):
             return jsonify(result), 400
@@ -345,13 +370,385 @@ def api_buildings_place():
     y = payload.get("y")
     z = payload.get("z", 0)
     building_type = payload.get("building_type")
-    if not isinstance(x, int) or not isinstance(y, int) or not isinstance(z, int) or not isinstance(building_type, str):
+    fleet_id = payload.get("fleet_id")
+    if (
+        not isinstance(x, int)
+        or not isinstance(y, int)
+        or not isinstance(z, int)
+        or not isinstance(building_type, str)
+        or (fleet_id is not None and not isinstance(fleet_id, str))
+    ):
         return jsonify({"error": "invalid_payload"}), 400
 
     z = max(-10, min(z, 10))
     with db_session() as s:
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"])
-        result = world.place_building(s, player_id=player_id, x=x, y=y, z=z, building_type=building_type)
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.place_building(s, player_id=player_id, x=x, y=y, z=z, building_type=building_type, fleet_id=fleet_id)
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+        return jsonify(result)
+
+
+@api_bp.post("/buildings/placement_checks")
+def api_buildings_placement_checks():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    x = payload.get("x")
+    y = payload.get("y")
+    z = payload.get("z", 0)
+    fleet_id = payload.get("fleet_id")
+    building_types = payload.get("building_types") or []
+
+    if (
+        not isinstance(x, int)
+        or not isinstance(y, int)
+        or not isinstance(z, int)
+        or (fleet_id is not None and not isinstance(fleet_id, str))
+        or not isinstance(building_types, list)
+        or not all(isinstance(t, str) for t in building_types)
+    ):
+        return jsonify({"error": "invalid_payload"}), 400
+
+    building_types = [t.strip().lower() for t in building_types if isinstance(t, str) and t.strip()]
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        results: dict[str, dict] = {}
+        for bt in building_types:
+            results[bt] = world.check_building_placement(
+                s,
+                player_id=player_id,
+                x=x,
+                y=y,
+                z=z,
+                building_type=bt,
+                fleet_id=fleet_id,
+            )
+        return jsonify({"ok": True, "results": results})
+
+
+@api_bp.post("/buildings/dismantle")
+def api_buildings_dismantle():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    building_id = payload.get("building_id")
+    if not isinstance(building_id, str):
+        return jsonify({"error": "invalid_payload"}), 400
+
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.dismantle_building(s, player_id=player_id, building_id=building_id)
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+        return jsonify(result)
+
+
+@api_bp.post("/outposts/build")
+def api_outposts_build():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    payload = request.get_json(silent=True) or {}
+    x = payload.get("x")
+    y = payload.get("y")
+    z = payload.get("z", 0)
+    outpost_type = payload.get("outpost_type")
+    fleet_id = payload.get("fleet_id")
+    if (
+        not isinstance(x, int)
+        or not isinstance(y, int)
+        or not isinstance(z, int)
+        or not isinstance(outpost_type, str)
+        or (fleet_id is not None and not isinstance(fleet_id, str))
+    ):
+        return jsonify({"error": "invalid_payload"}), 400
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.build_outpost(s, player_id=player_id, x=x, y=y, z=z, outpost_type=outpost_type, fleet_id=fleet_id)
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+        return jsonify(result)
+
+
+@api_bp.post("/outposts/upgrade")
+def api_outposts_upgrade():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    payload = request.get_json(silent=True) or {}
+    outpost_id = payload.get("outpost_id")
+    if not isinstance(outpost_id, str):
+        return jsonify({"error": "invalid_payload"}), 400
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.upgrade_outpost(s, player_id=player_id, outpost_id=outpost_id)
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+        return jsonify(result)
+
+
+@api_bp.post("/outposts/modules/install")
+def api_outpost_modules_install():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    payload = request.get_json(silent=True) or {}
+    outpost_id = payload.get("outpost_id")
+    module_type = payload.get("module_type")
+    if not isinstance(outpost_id, str) or not isinstance(module_type, str):
+        return jsonify({"error": "invalid_payload"}), 400
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.install_outpost_module(s, player_id=player_id, outpost_id=outpost_id, module_type=module_type)
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+        return jsonify(result)
+
+
+@api_bp.post("/outposts/modules/upgrade")
+def api_outpost_modules_upgrade():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    payload = request.get_json(silent=True) or {}
+    module_id = payload.get("module_id")
+    if not isinstance(module_id, str):
+        return jsonify({"error": "invalid_payload"}), 400
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.upgrade_outpost_module(s, player_id=player_id, module_id=module_id)
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+        return jsonify(result)
+
+
+@api_bp.post("/fleets/create")
+def api_fleets_create():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    planet_id = payload.get("planet_id")
+    name = payload.get("name")
+    composition = payload.get("composition")
+    if not isinstance(planet_id, str) or not isinstance(composition, dict):
+        return jsonify({"error": "invalid_payload"}), 400
+
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.create_fleet(
+            s,
+            player_id=player_id,
+            planet_id=planet_id,
+            name=name if isinstance(name, str) else None,
+            composition=composition,
+        )
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+        return jsonify(result)
+
+
+@api_bp.post("/fleets/rename")
+def api_fleets_rename():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    fleet_id = payload.get("fleet_id")
+    name = payload.get("name")
+    if not isinstance(fleet_id, str) or not isinstance(name, str):
+        return jsonify({"error": "invalid_payload"}), 400
+
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.rename_fleet(s, player_id=player_id, fleet_id=fleet_id, name=name)
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+        return jsonify(result)
+
+
+@api_bp.post("/fleets/adjust")
+def api_fleets_adjust():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    fleet_id = payload.get("fleet_id")
+    deltas = payload.get("deltas")
+    if not isinstance(fleet_id, str) or not isinstance(deltas, dict):
+        return jsonify({"error": "invalid_payload"}), 400
+
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.adjust_fleet_composition(s, player_id=player_id, fleet_id=fleet_id, deltas=deltas)
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+        return jsonify(result)
+
+
+@api_bp.post("/fleets/save")
+def api_fleets_save():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    fleet_id = payload.get("fleet_id")
+    if not isinstance(fleet_id, str):
+        return jsonify({"error": "invalid_payload"}), 400
+    if "name" not in payload and "composition" not in payload:
+        return jsonify({"error": "invalid_payload", "detail": "need_name_or_composition"}), 400
+
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        kwargs: dict = {"player_id": player_id, "fleet_id": fleet_id}
+        if "name" in payload:
+            kwargs["name"] = payload.get("name")
+        if "composition" in payload:
+            kwargs["composition"] = payload.get("composition")
+        result = world.save_fleet(s, **kwargs)
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+        return jsonify(result)
+
+
+@api_bp.post("/fleets/disband")
+def api_fleets_disband():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    fleet_id = payload.get("fleet_id")
+    if not isinstance(fleet_id, str):
+        return jsonify({"error": "invalid_payload"}), 400
+
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.disband_fleet(s, player_id=player_id, fleet_id=fleet_id)
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+        return jsonify(result)
+
+
+@api_bp.post("/fleets/merge")
+def api_fleets_merge():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    target_fleet_id = payload.get("target_fleet_id")
+    source_fleet_id = payload.get("source_fleet_id")
+    if not isinstance(target_fleet_id, str) or not isinstance(source_fleet_id, str):
+        return jsonify({"error": "invalid_payload"}), 400
+
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.merge_fleets(
+            s, player_id=player_id, target_fleet_id=target_fleet_id, source_fleet_id=source_fleet_id
+        )
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+        return jsonify(result)
+
+
+@api_bp.post("/fleets/split")
+def api_fleets_split():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    fleet_id = payload.get("fleet_id")
+    take = payload.get("take")
+    if not isinstance(fleet_id, str) or not isinstance(take, dict):
+        return jsonify({"error": "invalid_payload"}), 400
+
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.split_fleet(s, player_id=player_id, fleet_id=fleet_id, take=take)
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+        return jsonify(result)
+
+
+@api_bp.post("/fleets/combat_preview")
+def api_fleets_combat_preview():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    fleet_id = payload.get("fleet_id")
+    tx = payload.get("target_x")
+    ty = payload.get("target_y")
+    tz = payload.get("target_z", 0)
+    if not isinstance(fleet_id, str) or not isinstance(tx, int) or not isinstance(ty, int) or not isinstance(tz, int):
+        return jsonify({"error": "invalid_payload"}), 400
+
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.combat_preview_for_move(
+            s, player_id=player_id, fleet_id=fleet_id, target_x=tx, target_y=ty, target_z=tz
+        )
+        if not result.get("ok"):
+            return jsonify(result), 400
+        return jsonify(result)
+
+
+@api_bp.post("/fleets/combat_prompt_resolve")
+def api_fleets_combat_prompt_resolve():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    order_id = payload.get("order_id")
+    attack = payload.get("attack")
+    if not isinstance(order_id, str) or not isinstance(attack, bool):
+        return jsonify({"error": "invalid_payload"}), 400
+
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.resolve_fleet_combat_prompt(s, player_id=player_id, order_id=order_id, attack=attack)
         if not result.get("ok"):
             return jsonify(result), 400
         s.commit()
@@ -364,7 +761,8 @@ def api_balance():
     player_id = _current_player_id()
     if not player_id:
         return jsonify({"error": "not_authenticated"}), 401
-    pack = current_app.extensions.get("balance")
+    balance = current_app.extensions.get("balance_service")
+    pack = balance.pack if balance else None
     if not pack:
         return jsonify({"ok": False, "error": "balance_not_loaded", "detail": current_app.extensions.get("balance_error")}), 500
     return jsonify(
@@ -372,9 +770,110 @@ def api_balance():
             "ok": True,
             "meta": pack.meta,
             "resources": pack.resources,
+            "economy": pack.economy,
+            "aliases": pack.aliases,
             "races": list(pack.races_by_id.values()),
             "units": list(pack.units_by_id.values()),
             "buildings": list(pack.buildings_by_id.values()),
             "tech": list(pack.tech_by_id.values()),
         }
     )
+
+
+@api_bp.get("/tech/state")
+def api_tech_state():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    pid = __import__("uuid").UUID(player_id)
+
+    with db_session() as s:
+        rows = (
+            s.execute(
+                select(PlayerTech)
+                .where(PlayerTech.player_id == pid)
+                .order_by(PlayerTech.created_at.desc())
+            )
+            .scalars()
+            .all()
+        )
+        ws = s.get(WorldState, 1)
+        current_tick = int(ws.current_tick) if ws else 0
+        payload = []
+        for r in rows:
+            remaining = None
+            if r.status == "in_progress":
+                remaining = max(0, int(r.finish_tick - current_tick))
+            payload.append(
+                {
+                    "tech_id": r.tech_id,
+                    "status": r.status,
+                    "started_tick": int(r.started_tick),
+                    "finish_tick": int(r.finish_tick),
+                    "remaining_ticks": remaining,
+                }
+            )
+        return jsonify({"ok": True, "current_tick": current_tick, "techs": payload})
+
+
+@api_bp.post("/tech/start")
+def api_tech_start():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    tech_id = payload.get("tech_id")
+    if not isinstance(tech_id, str) or not tech_id.strip():
+        return jsonify({"error": "invalid_payload"}), 400
+    tech_id = tech_id.strip()
+
+    balance = current_app.extensions.get("balance_service")
+    if not balance:
+        return jsonify({"ok": False, "error": "balance_not_loaded", "detail": current_app.extensions.get("balance_error")}), 500
+
+    # validate tech exists and enabled + prereq
+    try:
+        tech = balance.pack.tech_by_id.get(tech_id)
+    except Exception:
+        tech = None
+    if not isinstance(tech, dict):
+        return jsonify({"ok": False, "error": "unknown_tech"}), 400
+    if tech.get("enabled") is False:
+        return jsonify({"ok": False, "error": "tech_disabled"}), 400
+
+    pid = __import__("uuid").UUID(player_id)
+    with db_session() as s:
+        ws = s.get(WorldState, 1) or WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance).get_or_create_world_state(s)
+        now = int(ws.current_tick)
+
+        existing = (
+            s.execute(select(PlayerTech).where(PlayerTech.player_id == pid, PlayerTech.tech_id == tech_id))
+            .scalars()
+            .first()
+        )
+        if existing and existing.status in ("in_progress", "done"):
+            return jsonify({"ok": False, "error": "tech_already_started"}), 400
+
+        # prereq: must be done
+        prereq = tech.get("prereq") or []
+        if not isinstance(prereq, list):
+            return jsonify({"ok": False, "error": "tech_bad_prereq"}), 400
+        if prereq:
+            done = set(
+                s.execute(
+                    select(PlayerTech.tech_id).where(PlayerTech.player_id == pid, PlayerTech.status == "done")
+                )
+                .scalars()
+                .all()
+            )
+            missing = [p for p in prereq if p not in done]
+            if missing:
+                return jsonify({"ok": False, "error": "tech_prereq_missing", "missing": missing}), 400
+
+        time_ticks = int(tech.get("time_ticks", 0))
+        time_ticks = max(1, time_ticks)
+        row = PlayerTech(player_id=pid, tech_id=tech_id, status="in_progress", started_tick=now + 1, finish_tick=now + time_ticks)
+        s.add(row)
+        s.commit()
+        return jsonify({"ok": True, "tech_id": tech_id, "status": row.status, "started_tick": row.started_tick, "finish_tick": row.finish_tick})

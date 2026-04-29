@@ -1,0 +1,56 @@
+{
+  "outposts": [
+    {
+      "id": "outpost_t1",
+      "family": "outpost",
+      "name": "Форпост I",
+      "tier": 1,
+      "level": 1,
+      "build": { "time_ticks": 5, "cost": { "metal": 220, "crystal": 120, "fuel": 10 }, "prereq_tech": [] },
+      "territory": { "influence_strength": 0.4, "influence_radius": 14 },
+      "vision": { "base_radius": 6 },
+      "combat": { "hp": 420, "attack": 8, "defense": 10, "range": 5 },
+      "upkeep_per_tick": { "metal": 1, "crystal": 1, "energy": 2, "fuel": 0 },
+      "slots": { "module_slots": 1 },
+      "upgrade": {
+        "to": "outpost_t2",
+        "time_ticks": 6,
+        "cost": { "metal": 180, "crystal": 120, "fuel": 10 },
+        "prereq_tech": ["tech_territory_2"]
+      }
+    },
+    {
+      "id": "outpost_t2",
+      "family": "outpost",
+      "name": "Форпост II",
+      "tier": 2,
+      "level": 2,
+      "build": { "time_ticks": 7, "cost": { "metal": 360, "crystal": 220, "fuel": 20 }, "prereq_tech": ["tech_territory_2"] },
+      "territory": { "influence_strength": 0.7, "influence_radius": 17 },
+      "vision": { "base_radius": 7 },
+      "combat": { "hp": 650, "attack": 9, "defense": 12, "range": 5 },
+      "upkeep_per_tick": { "metal": 2, "crystal": 2, "energy": 3, "fuel": 0 },
+      "slots": { "module_slots": 2 },
+      "upgrade": {
+        "to": "outpost_t3",
+        "time_ticks": 8,
+        "cost": { "metal": 260, "crystal": 180, "fuel": 15 },
+        "prereq_tech": ["tech_territory_3"]
+      }
+    },
+    {
+      "id": "outpost_t3",
+      "family": "outpost",
+      "name": "Форпост III",
+      "tier": 3,
+      "level": 3,
+      "build": { "time_ticks": 9, "cost": { "metal": 520, "crystal": 360, "fuel": 35 }, "prereq_tech": ["tech_territory_3"] },
+      "territory": { "influence_strength": 1.0, "influence_radius": 20 },
+      "vision": { "base_radius": 8 },
+      "combat": { "hp": 950, "attack": 10, "defense": 14, "range": 5 },
+      "upkeep_per_tick": { "metal": 3, "crystal": 3, "energy": 4, "fuel": 1 },
+      "slots": { "module_slots": 3 },
+      "upgrade": null
+    }
+  ]
+}

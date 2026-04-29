@@ -2,7 +2,7 @@
   "units": [
     {
       "id": "scout_t1",
-      "name": "Scout",
+      "name": "Разведчик",
       "tier": 1,
       "role": "scout",
       "hp": 10,
@@ -14,7 +14,7 @@
     },
     {
       "id": "fighter_t1",
-      "name": "Fighter",
+      "name": "Истребитель",
       "tier": 1,
       "role": "combat",
       "hp": 25,
@@ -23,7 +23,33 @@
       "upkeep": { "energy": 2 },
       "travel_fuel_per_cell": 2,
       "build": { "time_ticks": 4, "cost": { "metal": 90, "crystal": 30 } }
+    },
+    {
+      "id": "engineer_t1",
+      "name": "Инженерный корабль",
+      "tier": 1,
+      "role": "engineering",
+      "hp": 12,
+      "damage": 0,
+      "speed_cells_per_tick": 1,
+      "upkeep": { "energy": 1 },
+      "travel_fuel_per_cell": 3,
+      "build": { "time_ticks": 5, "cost": { "metal": 140, "crystal": 60 } },
+      "flags": ["deploy_offplanet_build"],
+      "description": "Позволяет вести сборку объектов за пределами гравитационного колодца (в будущих версиях)."
+    },
+    {
+      "id": "supplier_t1",
+      "name": "Снабженец",
+      "tier": 1,
+      "role": "logistics",
+      "hp": 8,
+      "damage": 0,
+      "speed_cells_per_tick": 0,
+      "upkeep": { "energy": 0 },
+      "travel_fuel_per_cell": 0,
+      "build": { "time_ticks": 4, "cost": { "metal": 120, "crystal": 40 } },
+      "flags": ["logistics_supply"]
     }
   ]
 }
-

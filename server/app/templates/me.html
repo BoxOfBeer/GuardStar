@@ -24,6 +24,8 @@
       <span class="muted" id="top-delta">(+—/10t)</span>
     </div>
     <button type="button" id="manual-tick-btn">Тик</button>
+    <button type="button" id="tech-modal-open" class="status-chip" style="width:auto;">Исследования</button>
+    <button type="button" id="ui-settings-btn" class="status-chip" style="width:auto;">Настройки UI</button>
     <a href="{{ url_for('web.account') }}" class="status-chip" style="text-decoration:none;">Аккаунт</a>
     <form method="post" action="{{ url_for('web.logout') }}">
       <button type="submit">Выйти</button>
@@ -34,16 +36,21 @@
     <div class="page-grid">
       <section class="card">
         <h3 style="margin-top: 0;">Карта сектора</h3>
-        <div class="muted">Клик по клетке отправляет 1 scout в выбранный сектор (соседний от домашней планеты, z=0).</div>
+        <div class="muted">Клик по клетке: выбор сектора; разведка — отдельной командой. Слой z=0.</div>
         <div class="map-wrap">
-          <div id="map-grid" class="map-grid"></div>
-          <svg id="flight-overlay" class="flight-overlay" aria-hidden="true"></svg>
+          <div class="map-layer">
+            <div id="map-grid" class="map-grid"></div>
+            <svg id="flight-overlay" class="flight-overlay" aria-hidden="true"></svg>
+            <svg id="zone-overlay" class="zone-overlay" aria-hidden="true"></svg>
+          </div>
         </div>
         <div class="legend">
           <span class="legend-item"><span class="legend-mark" style="background:#0a1324"></span>Пустой сектор</span>
           <span class="legend-item"><span class="legend-mark" style="background:#12223e"></span>Сектор игрока/объект</span>
           <span class="legend-item"><span class="legend-mark" style="box-shadow:inset 0 0 0 1px #61eaa3"></span>Юнит (scout fleet)</span>
           <span class="legend-item"><span class="legend-mark" style="opacity:.7;background:#0a1324"></span>Неизведанное/аномалии</span>
+          <span class="legend-item"><span class="legend-mark" style="box-shadow:inset 0 0 0 1px rgba(97,234,163,0.55)"></span>Ваше влияние доминирует</span>
+          <span class="legend-item"><span class="legend-mark" style="opacity:.85;background:rgba(255,200,87,0.12)"></span>Спор зон влияния</span>
           <span class="legend-item"><span class="legend-mark" style="box-shadow:inset 0 0 0 2px #ffc857"></span>Последняя цель</span>
           <button type="button" id="home-btn" style="margin-left:auto;">Домой</button>
         </div>
@@ -53,39 +60,41 @@
         <h3>HUD пилота</h3>
         <div class="hud-block muted">Имя пилота: <b>{{ data.display_name }}</b></div>
         <div class="hud-block">Активный флот: <b id="hud-unit">—</b></div>
+        <div class="hud-block muted" id="hud-pop-wrap" style="font-size:90%;margin-top:4px;">
+          Население дома: <b id="hud-pop">—</b> / <b id="hud-pop-max">—</b>
+        </div>
+        <div class="hud-block muted" id="hud-influence-wrap" style="font-size:88%;margin-top:4px;">
+          Зона влияния (дом): <b id="hud-influence-home">—</b>
+        </div>
         <div class="hud-block">
-          <select id="fleet-select" style="width:100%;margin-top:6px;"></select>
+          <div class="row" style="gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap;">
+            <select id="fleet-select" style="flex:1;min-width:0;"></select>
+            <button type="button" id="fleet-locate-btn" title="Центрировать карту на флоте">Где флот?</button>
+            <button type="button" id="fleet-edit-btn" title="Состав и имя флота">Состав</button>
+          </div>
         </div>
         <div class="hud-block">Текущие координаты юнита: <b id="hud-unit-pos">—</b></div>
         <div class="hud-block">Текущий Z-слой: <b id="hud-z">{{ z }}</b></div>
         <div class="hud-block">Текущий tick: <b id="hud-tick">0</b></div>
-        <div class="hud-block">Статус юнита: <b id="hud-unit-status">idle</b></div>
-        <div class="hud-block">ETA: <b id="hud-eta">—</b> • Прибытие: <b id="hud-arrive-tick">—</b></div>
+        <div class="hud-block">Статус флота: <b id="hud-unit-status">ожидание</b></div>
+        <div class="hud-block">Осталось тиков: <b id="hud-eta">—</b> • Прибытие (тик): <b id="hud-arrive-tick">—</b></div>
         <div class="hud-block">Домашняя планета: <b id="hud-home">{{ data.planets[0].pos.x }}, {{ data.planets[0].pos.y }}, 0</b></div>
 
         <div class="hud-block">
           <div class="muted" style="margin-bottom:6px;">Выбранная клетка:</div>
           <div class="hud-kv">
             <div>Координаты: <b id="sel-coord">—</b></div>
-            <div>Terrain: <b id="sel-terrain">—</b> • Glyph: <b id="sel-glyph">—</b></div>
+            <div>Ландшафт: <b id="sel-terrain">—</b> • Маркер: <b id="sel-glyph">—</b></div>
             <div>Объекты: <b id="sel-objects">—</b></div>
-            <div>Расстояние: <b id="sel-distance">—</b></div>
+            <div>Влияние (видимая клетка): <b id="sel-influence">—</b></div>
+            <div>Расстояние (клеток): <b id="sel-distance">—</b></div>
             <div>Время полёта: <b id="sel-travel">—</b> • Прибытие: <b id="sel-arrive">—</b></div>
           </div>
           <div class="row" style="margin-top:8px;">
             <button type="button" id="fly-btn" disabled>Лететь</button>
+            <button type="button" id="build-btn" disabled>Строительство</button>
             <button type="button" id="clear-sel-btn">Снять выбор</button>
           </div>
-        </div>
-
-        <div class="hud-block">
-          <div class="muted" style="margin-bottom:6px;">Планета (если выбрана):</div>
-          <div id="planet-panel" class="planet-panel muted">Выбери клетку с планетой.</div>
-        </div>
-
-        <div class="hud-block">
-          <div class="muted" style="margin-bottom:6px;">Стройка (если можно):</div>
-          <div id="build-panel" class="planet-panel muted">Выбери клетку в зоне стройки.</div>
         </div>
 
         <div class="hud-block">
@@ -93,6 +102,14 @@
           <div class="row">
             <button type="button" id="z-down">Z - 1</button>
             <button type="button" id="z-up">Z + 1</button>
+          </div>
+        </div>
+
+        <div class="hud-block">
+          <div class="muted" style="margin-bottom:6px;">Размер карты:</div>
+          <div class="row">
+            <button type="button" id="radius-4">9×9</button>
+            <button type="button" id="radius-10">21×21</button>
           </div>
         </div>
 
@@ -105,14 +122,45 @@
       </aside>
     </div>
 
+    <div id="planet-modal-overlay" class="overlay hidden" role="dialog" aria-modal="true">
+      <div class="overlay-card card planet-modal-card">
+        <div class="planet-modal-head">
+          <h3 id="planet-modal-title" style="margin:0;">Планета</h3>
+          <button type="button" id="planet-modal-close" class="planet-modal-close" aria-label="Закрыть">×</button>
+        </div>
+        <div id="planet-modal-body" class="planet-modal-body muted">Загрузка…</div>
+      </div>
+    </div>
+
+    <div id="fleet-modal-overlay" class="overlay hidden" role="dialog" aria-modal="true">
+      <div class="overlay-card card planet-modal-card">
+        <div class="planet-modal-head">
+          <h3 id="fleet-modal-title" style="margin:0;">Состав флота</h3>
+          <button type="button" id="fleet-modal-close" class="planet-modal-close" aria-label="Закрыть">×</button>
+        </div>
+        <div id="fleet-modal-body" class="planet-modal-body muted">Загрузка…</div>
+      </div>
+    </div>
+
+    <div id="fleet-create-overlay" class="overlay hidden" role="dialog" aria-modal="true">
+      <div class="overlay-card card planet-modal-card">
+        <div class="planet-modal-head">
+          <h3 id="fleet-create-title" style="margin:0;">Новый флот</h3>
+          <button type="button" id="fleet-create-close" class="planet-modal-close" aria-label="Закрыть">×</button>
+        </div>
+        <div id="fleet-create-body" class="planet-modal-body muted">Загрузка…</div>
+      </div>
+    </div>
+
     <div id="confirm-overlay" class="overlay hidden" role="dialog" aria-modal="true">
       <div class="overlay-card card">
         <h3 style="margin-top:0;">Подтверждение полёта</h3>
+        <div class="muted" id="cf-combat" style="margin-top:6px;white-space:pre-wrap;display:none;"></div>
         <div class="hud-kv">
           <div>Откуда: <b id="cf-from">—</b></div>
           <div>Куда: <b id="cf-to">—</b></div>
-          <div>ETA: <b id="cf-eta">—</b> • Прибытие: <b id="cf-arrive">—</b></div>
-          <div>Топливо (MVP): <b id="cf-fuel">—</b></div>
+          <div>Длительность: <b id="cf-eta">—</b> • Прибытие (тик): <b id="cf-arrive">—</b></div>
+          <div>Топливо: <b id="cf-fuel">—</b></div>
           <div>Назначение: <b id="cf-dest">—</b></div>
           <div class="muted" id="cf-warn" style="margin-top:6px;"></div>
         </div>
@@ -122,11 +170,60 @@
         </div>
       </div>
     </div>
+
+    <div id="combat-prompt-overlay" class="overlay hidden" role="dialog" aria-modal="true">
+      <div class="overlay-card card">
+        <h3 style="margin-top:0;">Второе подтверждение: бой у цели</h3>
+        <div class="muted" id="cp-summary" style="white-space:pre-wrap;"></div>
+        <div id="cp-countdown" style="margin:10px 0;font-weight:bold;"></div>
+        <div id="cp-preview" class="muted" style="white-space:pre-wrap;font-size:92%;"></div>
+        <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap;">
+          <button type="button" id="cp-attack">Атаковать</button>
+          <button type="button" id="cp-decline">Не атаковать</button>
+        </div>
+        <div class="muted" style="margin-top:10px;font-size:90%;">
+          Если не выбрать за 30 с, флот остаётся в ближайшей свободной клетке у цели (без боя и без возврата).
+        </div>
+      </div>
+    </div>
   {% else %}
     <div class="card">Планет пока нет.</div>
   {% endif %}
 
   <script id="initial-data" type="application/json">{{ {'window': window, 'z': z, 'player': data.player_id, 'home': data.planets[0].pos if data.planets and data.planets|length > 0 else None}|tojson }}</script>
+
+  <div id="tech-modal-overlay" class="overlay hidden" role="dialog" aria-modal="true">
+    <div class="overlay-card card tech-modal-card">
+      <div class="planet-modal-head">
+        <h3 style="margin:0;">Исследования</h3>
+        <button type="button" id="tech-modal-close" class="planet-modal-close" aria-label="Закрыть">×</button>
+      </div>
+      <div id="tech-modal-body" class="planet-modal-body muted">Загрузка…</div>
+    </div>
+  </div>
+
+  <div id="ui-settings-overlay" class="overlay hidden" role="dialog" aria-modal="true">
+    <div class="overlay-card card">
+      <h3 style="margin-top:0;">Настройки интерфейса</h3>
+      <div class="hud-kv">
+        <div>Размер шрифта: <b id="ui-font-size-label">—</b></div>
+        <input id="ui-font-size" type="range" min="12" max="18" step="1" />
+        <div>Межстрочный интервал: <b id="ui-line-height-label">—</b></div>
+        <input id="ui-line-height" type="range" min="1.15" max="1.6" step="0.05" />
+        <div style="margin-top:12px;">Радиус окна карты при фокусе на клетку боя: <b id="ui-battle-radius-label">—</b></div>
+        <input id="ui-battle-radius" type="range" min="3" max="10" step="1" />
+        <label style="display:flex;gap:8px;margin-top:10px;align-items:flex-start;cursor:pointer;">
+          <input id="ui-force-attack" type="checkbox" style="width:auto;margin-top:2px;" />
+          <span>Атаковать при прилёте без второго окна, если в цели вражеский флот (гарантированно).</span>
+        </label>
+      </div>
+      <div class="row" style="margin-top:12px;">
+        <button type="button" id="ui-settings-close">Закрыть</button>
+        <button type="button" id="ui-settings-reset">Сброс</button>
+      </div>
+      <div class="muted" style="margin-top:8px;">Сохраняется локально в браузере (localStorage).</div>
+    </div>
+  </div>
 {% endblock %}
 
 {% block scripts %}

@@ -15,6 +15,9 @@ class Building(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     owner_player_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="CASCADE"), nullable=False, index=True)
+    planet_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("planets.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     x: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     y: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
