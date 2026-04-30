@@ -22,14 +22,14 @@
     <div class="row">
       <div class="card">
         <h3>Персистентные настройки</h3>
-        <p>Текущий тик: <code>{{ data.current_tick }}</code></p>
-        <p>Автотик включён: <code>{{ 'true' if data.auto_tick_enabled else 'false' }}</code></p>
+        <p>Текущий сол (current_tick): <code>{{ data.current_tick }}</code></p>
+        <p>Автосол включён: <code>{{ 'true' if data.auto_tick_enabled else 'false' }}</code></p>
         <p>Интервал (сек): <code>{{ '%.1f'|format(data.auto_tick_interval_seconds) }}</code></p>
 
         <form method="post" action="{{ url_for('web.admin_world_autotick', token=token) }}">
           <label>
             <input type="checkbox" name="enabled" value="1" {% if data.auto_tick_enabled %}checked{% endif %} />
-            Включить автотик
+            Включить автосол
           </label>
           <label>
             Интервал (1..60 сек):
@@ -43,7 +43,7 @@
         <h3>Runtime-диагностика</h3>
         <p>Scheduler running: <code>{{ 'true' if data.runtime.auto_tick_running else 'false' }}</code></p>
         <p>Последний запуск: <code>{{ data.runtime.auto_tick_last_run_at or '—' }}</code></p>
-        <p>Последний тик: <code>{{ data.runtime.auto_tick_last_tick or '—' }}</code></p>
+        <p>Последний сол: <code>{{ data.runtime.auto_tick_last_tick or '—' }}</code></p>
         <p>Ошибка: <code>{{ data.runtime.auto_tick_error or '—' }}</code></p>
       </div>
     </div>

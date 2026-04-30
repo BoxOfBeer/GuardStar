@@ -30,7 +30,13 @@
 
     "cargo_yard": "cargo_yard_t1",
 
-    "sensor_mast": "sensor_mast_t1"
+    "sensor_mast": "sensor_mast_t1",
+
+    "hydro_farm": "hydro_farm_t1",
+
+    "atmospheric_reclaim": "atmospheric_reclaim_t1"
+    ,
+    "logistics_center": "logistics_center_t1"
 
   }
 

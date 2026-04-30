@@ -1,4 +1,21 @@
 {
-  "base_planet_production": { "metal": 6, "crystal": 3, "energy": 2, "fuel": 2 }
+  "base_planet_production": { "metal": 6, "crystal": 3, "energy": 2, "fuel": 2, "food": 1, "water": 1 },
+  "population_maintenance": {
+    "food_per_1000_pop_per_tick": 3,
+    "water_per_1000_pop_per_tick": 3
+  },
+  "supply_route_upkeep": {
+    "food_per_sol_per_outpost": 2,
+    "water_per_sol_per_outpost": 2,
+    "food_per_manhattan_from_hub": 0,
+    "water_per_manhattan_from_hub": 0
+  },
+  "fleet_empire_upkeep": {
+    "metal_per_sol_per_fleet": 1,
+    "crystal_per_sol_per_fleet": 1,
+    "metal_per_sol_per_ship": 0,
+    "crystal_per_sol_per_ship": 0,
+    "energy_penalty_on_unpaid": 25
+  }
 }
 

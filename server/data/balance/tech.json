@@ -14,6 +14,32 @@
       }
     },
     {
+      "id": "tech_hydroponics_1",
+      "name": "Гидропоника I",
+      "description": "Замкнутые циклы выращивания: открывает гидропонные блоки на планетах.",
+      "tier": 1,
+      "enabled": true,
+      "prereq": ["tech_logistics_1"],
+      "cost": { "metal": 160, "crystal": 100 },
+      "time_ticks": 8,
+      "effects": {
+        "production_multiplier": { "food": 1.08 }
+      }
+    },
+    {
+      "id": "tech_atmospheric_water_1",
+      "name": "Атмосферная вода I",
+      "description": "Конденсация и рециклинг паров: реклаймеры воды на планетах.",
+      "tier": 1,
+      "enabled": true,
+      "prereq": ["tech_logistics_1"],
+      "cost": { "metal": 140, "crystal": 120 },
+      "time_ticks": 8,
+      "effects": {
+        "production_multiplier": { "water": 1.08 }
+      }
+    },
+    {
       "id": "tech_industry_1",
       "name": "Промышленность I",
       "description": "Повышает добычу металла на планетах.",
@@ -64,12 +90,25 @@
       "effects": {}
     },
     {
+      "id": "tech_supply_networks_1",
+      "name": "Сети снабжения I",
+      "description": "Стандартизация конвоев и узлов: немного увеличивает радиус снабжения планет и открывает логистический центр.",
+      "tier": 2,
+      "enabled": true,
+      "prereq": ["tech_logistics_1", "tech_industry_1"],
+      "cost": { "metal": 340, "crystal": 240 },
+      "time_ticks": 14,
+      "effects": {
+        "supply_base_add": 1
+      }
+    },
+    {
       "id": "tech_territory_3",
       "name": "Территориальные сети II",
       "description": "Открывает командные узлы, расширяющие и стабилизирующие контроль сектора.",
       "tier": 3,
       "enabled": true,
-      "prereq": ["tech_territory_2", "tech_hull_1"],
+      "prereq": ["tech_territory_2", "tech_hull_1", "tech_supply_networks_1"],
       "cost": { "metal": 480, "crystal": 340 },
       "time_ticks": 18,
       "effects": {}

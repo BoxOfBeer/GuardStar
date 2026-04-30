@@ -79,7 +79,8 @@ class BalanceService:
         base = self.pack.economy.get("base_planet_production") if isinstance(self.pack.economy, dict) else None
         if not isinstance(base, dict):
             raise BalanceError("economy_missing_base_planet_production")
-        return {k: int(base.get(k, 0)) for k in ("metal", "crystal", "energy", "fuel")}
+        keys = ("metal", "crystal", "energy", "fuel", "food", "water")
+        return {k: int(base.get(k, 0)) for k in keys}
 
     def calc_unit_upkeep(self, *, unit_type: str, qty: int, race_id: str | None, techs: list[str] | None) -> dict:
         u = self.get_unit(unit_type)
@@ -230,9 +231,9 @@ def load_balance_pack(*, base_dir: Path) -> BalancePack:
 
     economy_doc = _read_json(base_dir / "economy.json")
     if not isinstance(economy_doc, dict) or not isinstance(economy_doc.get("base_planet_production"), dict):
-        raise BalanceError("economy.json: ожидаю base_planet_production: {metal,crystal,energy,fuel}")
+        raise BalanceError("economy.json: ожидаю base_planet_production (metal,crystal,energy,fuel,food,water)")
     base_prod = economy_doc.get("base_planet_production", {})
-    for k in ("metal", "crystal", "energy", "fuel"):
+    for k in ("metal", "crystal", "energy", "fuel", "food", "water"):
         if k not in base_prod or not isinstance(base_prod.get(k), (int, float)):
             raise BalanceError(f"economy.json: base_planet_production.{k} должен быть числом")
 

@@ -21,6 +21,8 @@ class ProductionPlan:
     crystal_per_tick: int
     energy_per_tick: int
     fuel_per_tick: int
+    food_per_tick: int = 0
+    water_per_tick: int = 0
 
 
 @dataclass(frozen=True)
@@ -49,7 +51,14 @@ def calc_planet_production(*, planet_level: int = 1) -> ProductionPlan:
     # MVP: фиксированная выработка на тик для стартовой планеты.
     # Дальше сюда добавятся здания/форпосты/модификаторы.
     lvl = max(1, int(planet_level))
-    return ProductionPlan(metal_per_tick=6 * lvl, crystal_per_tick=3 * lvl, energy_per_tick=2 * lvl, fuel_per_tick=2 * lvl)
+    return ProductionPlan(
+        metal_per_tick=6 * lvl,
+        crystal_per_tick=3 * lvl,
+        energy_per_tick=2 * lvl,
+        fuel_per_tick=2 * lvl,
+        food_per_tick=1 * lvl,
+        water_per_tick=1 * lvl,
+    )
 
 
 def calc_fuel_cost(*, distance: int, qty: int, unit_type: str = "scout") -> FuelPlan:

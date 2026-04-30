@@ -62,6 +62,8 @@ def create_app() -> Flask:
                     conn.execute(text("ALTER TABLE planets ADD COLUMN IF NOT EXISTS planet_class VARCHAR(32) NOT NULL DEFAULT 'earthlike'"))
                 if "build_slots_total" not in cols:
                     conn.execute(text("ALTER TABLE planets ADD COLUMN IF NOT EXISTS build_slots_total INTEGER NOT NULL DEFAULT 55"))
+                if "supplier_count" not in cols:
+                    conn.execute(text("ALTER TABLE planets ADD COLUMN IF NOT EXISTS supplier_count INTEGER NOT NULL DEFAULT 0"))
                 conn.execute(text("CREATE INDEX IF NOT EXISTS ix_planets_planet_class ON planets (planet_class)"))
 
         if "fleets" in insp.get_table_names():

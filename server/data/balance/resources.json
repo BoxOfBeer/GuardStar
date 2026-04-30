@@ -1,4 +1,4 @@
 {
-  "resources": ["metal", "crystal", "energy", "fuel"]
+  "resources": ["metal", "crystal", "energy", "fuel", "food", "water"]
 }
 

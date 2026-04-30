@@ -20,6 +20,12 @@
   };
   const STATUS_RU = { idle: "ожидание", moving: "в пути" };
   const formatTerrainRu = (t) => (t && TERRAIN_RU[t]) || (t ? String(t) : "—");
+  const ruOrderType = (t) => {
+    if (!t) return "приказ";
+    if (t === "move") return "перелёт";
+    if (t === "emergency_return") return "аварийный возврат";
+    return String(t);
+  };
   const formatInfluenceHud = (inf) => {
     if (!inf || typeof inf !== "object") return "—";
     const controlOwnerName =
@@ -63,11 +69,23 @@
     return `знак «${g}»`;
   };
   const ruFleetStatus = (s) => (s && STATUS_RU[s]) || (s ? String(s) : "—");
+  /** Склонение числа игровых солей (1 сол, 2–4 сола, иначе солов). */
+  const solWord = (n) => {
+    const v = Math.abs(Number(n)) || 0;
+    const x = v % 100;
+    const z = v % 10;
+    if (x >= 11 && x <= 14) return "солов";
+    if (z === 1) return "сол";
+    if (z >= 2 && z <= 4) return "сола";
+    return "солов";
+  };
   let viewCenter = (currentWindow && currentWindow.center) ? { ...currentWindow.center } : { ...home };
   let viewRadius = 4; // 4 => 9x9, 10 => 21x21
   let lastTarget = null;
   let selectedCell = null;
-  let worldState = { current_tick: 0, fleet: null, events: [], player_id: playerId };
+  let worldState = { current_tick: 0, current_sol: 0, fleet: null, events: [], player_id: playerId };
+  // Подсказка по линии снабжения для выбранной клетки (для подсветки "обрыва" на карте).
+  let supplyHint = null; // { for:{x,y,z}, inSupply:boolean, routeClear:boolean, blockedAt:{x,y} | null }
 
   const mapEl = document.getElementById("map-grid");
   const mapWrapEl = document.querySelector(".map-wrap");
@@ -86,6 +104,7 @@
   const selGlyphEl = document.getElementById("sel-glyph");
   const selObjectsEl = document.getElementById("sel-objects");
   const selInfluenceEl = document.getElementById("sel-influence");
+  const selSupplyEl = document.getElementById("sel-supply");
   const hudInfluenceHomeEl = document.getElementById("hud-influence-home");
   const selDistanceEl = document.getElementById("sel-distance");
   const selTravelEl = document.getElementById("sel-travel");
@@ -137,6 +156,8 @@
   const topCrystalEl = document.getElementById("top-crystal");
   const topEnergyEl = document.getElementById("top-energy");
   const topFuelEl = document.getElementById("top-fuel");
+  const topFoodEl = document.getElementById("top-food");
+  const topWaterEl = document.getElementById("top-water");
   const topDeltaEl = document.getElementById("top-delta");
   const overlayEl = document.getElementById("confirm-overlay");
   const cfFromEl = document.getElementById("cf-from");
@@ -384,7 +405,7 @@
           e.type === "fleet_combat" && e.payload
             ? `<div class="event-combat-detail muted" style="margin-top:6px;font-size:88%;white-space:pre-wrap;line-height:1.35;">${formatFleetCombatPayloadRu(e.payload)}</div>`
             : "";
-        return `<div class="event"><span class="muted">Тик ${escHtml(e.tick)}</span> — ${escHtml(e.message)}${detail}</div>`;
+        return `<div class="event"><span class="muted">Сол ${escHtml(e.tick)}</span> — ${escHtml(e.message)}${detail}</div>`;
       })
       .join("");
   };
@@ -453,6 +474,8 @@
       <button type="button" class="build-card" data-b="solar_array"><span class="ic">☀</span><span>Солнечная матрица</span></button>
       <button type="button" class="build-card" data-b="cargo_yard"><span class="ic">📦</span><span>Грузовая</span></button>
       <button type="button" class="build-card" data-b="sensor_mast"><span class="ic">📡</span><span>Сенсоры</span></button>
+      <button type="button" class="build-card" data-b="hydro_farm"><span class="ic">🍲</span><span>Гидропоника</span></button>
+      <button type="button" class="build-card" data-b="atmospheric_reclaim"><span class="ic">💧</span><span>Вода</span></button>
     </div>
   `;
 
@@ -467,6 +490,8 @@
     "solar_array",
     "cargo_yard",
     "sensor_mast",
+    "hydro_farm",
+    "atmospheric_reclaim",
   ];
 
   let showAllBuildOptions = false;
@@ -553,6 +578,59 @@
     }
   };
 
+  const refreshSupplyHud = async (cell) => {
+    if (!selSupplyEl) return;
+    if (!cell || !playerId) {
+      selSupplyEl.textContent = "—";
+      selSupplyEl.title = "";
+      selSupplyEl.classList.remove("hud-warn");
+      supplyHint = null;
+      return;
+    }
+    try {
+      const z = cell.z ?? 0;
+      const r = await fetch(`/api/supply/state?x=${cell.x}&y=${cell.y}&z=${z}`);
+      if (!r.ok) {
+        selSupplyEl.textContent = "—";
+        return;
+      }
+      const b = await r.json();
+      if (!b || !b.ok) {
+        selSupplyEl.textContent = "—";
+        supplyHint = null;
+        return;
+      }
+      const yes = Boolean(b.in_supply);
+      selSupplyEl.textContent = yes ? "есть" : "нет";
+      selSupplyEl.classList.toggle("hud-warn", !yes);
+      const hub = b.nearest_hub;
+      const hx = hub && hub.x != null ? hub.x : "—";
+      const hy = hub && hub.y != null ? hub.y : "—";
+      const R = b.supply_radius != null ? b.supply_radius : "—";
+      const dist = b.distance != null ? b.distance : "—";
+      const blk = b.route_blocked_at;
+      const blkStr = blk && blk.x != null && blk.y != null ? ` обрыв на (${blk.x},${blk.y})` : "";
+      selSupplyEl.title = yes
+        ? `Линия снабжения: L-маршрут от хаба (${hx},${hy}), R=${R}, дистанция ${dist}.`
+        : `Нет линии снабжения. Хаб (${hx},${hy}), R=${R}, дистанция ${dist}.${blkStr}`;
+
+      const prev = supplyHint ? JSON.stringify(supplyHint) : "";
+      supplyHint = {
+        for: { x: cell.x, y: cell.y, z },
+        inSupply: Boolean(b.in_supply),
+        routeClear: Boolean(b.route_clear),
+        blockedAt: blk && blk.x != null && blk.y != null ? { x: blk.x, y: blk.y } : null,
+      };
+      const next = JSON.stringify(supplyHint);
+      if (prev !== next) renderMap();
+    } catch (_e) {
+      selSupplyEl.textContent = "—";
+      selSupplyEl.title = "";
+      selSupplyEl.classList.remove("hud-warn");
+      supplyHint = null;
+    }
+  };
+
   const outpostButtonsHtml = () => `
     <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px;">
       <button type="button" data-outpost="outpost_t1">Форпост I</button>
@@ -573,6 +651,11 @@
       if (selTravelEl) selTravelEl.textContent = "—";
       if (selArriveEl) selArriveEl.textContent = "—";
       if (selInfluenceEl) selInfluenceEl.textContent = "—";
+      if (selSupplyEl) {
+        selSupplyEl.textContent = "—";
+        selSupplyEl.title = "";
+        selSupplyEl.classList.remove("hud-warn");
+      }
       if (flyBtn) flyBtn.disabled = true;
       if (buildBtn) buildBtn.disabled = true;
       return;
@@ -615,16 +698,21 @@
       if (!vis) selInfluenceEl.textContent = "— (не в обзоре)";
       else selInfluenceEl.textContent = formatInfluenceHud(selectedCell.influence);
     }
+    void refreshSupplyHud(selectedCell);
 
     const from = unit ? { x: unit.x, y: unit.y, z: unit.z } : home;
     const dist = Math.abs(selectedCell.x - from.x) + Math.abs(selectedCell.y - from.y);
     const travelTicks = Math.max(1, dist);
-    const currentTick = Number.isInteger(worldState.current_tick) ? worldState.current_tick : 0;
+    const currentTick = Number.isInteger(worldState.current_sol)
+      ? worldState.current_sol
+      : Number.isInteger(worldState.current_tick)
+        ? worldState.current_tick
+        : 0;
     const arriveTick = currentTick + travelTicks;
 
     if (selDistanceEl) selDistanceEl.textContent = String(dist);
-    if (selTravelEl) selTravelEl.textContent = `${travelTicks} тиков`;
-    if (selArriveEl) selArriveEl.textContent = `тик ${arriveTick}`;
+    if (selTravelEl) selTravelEl.textContent = `${travelTicks} ${solWord(travelTicks)}`;
+    if (selArriveEl) selArriveEl.textContent = `сол ${arriveTick}`;
 
     const sameCell = selectedCell.x === from.x && selectedCell.y === from.y && selectedCell.z === from.z;
     if (flyBtn) flyBtn.disabled = isMoving || sameCell;
@@ -872,12 +960,18 @@
       const cp = d.production ? d.production.crystal_per_tick : 0;
       const ep = d.production ? d.production.energy_per_tick : 0;
       const fp = d.production ? d.production.fuel_per_tick : 0;
+      const fdp = d.production ? d.production.food_per_tick : 0;
+      const wp = d.production ? d.production.water_per_tick : 0;
       const ownName = planetOwn.owner_name ? ` • ${planetOwn.owner_name}` : "";
       const cls = d.planet_class ? String(d.planet_class) : "—";
       const slotsLine =
         d.build_slots && typeof d.build_slots === "object"
           ? `Слоты: <b>${Number(d.build_slots.used || 0)}</b> / <b>${Number(d.build_slots.total || 0)}</b>`
           : "";
+      const supN = Number(d.supplier_count) || 0;
+      const supBase = Number(d.supply_base) || 5;
+      const supPer = Number(d.supply_per_supplier) || 3;
+      const supR = Number(d.supply_radius) || supBase + supPer * supN;
 
       const flags = cell.flags || {};
       const objs = cell.objects || [];
@@ -909,11 +1003,24 @@
         <div class="muted" style="margin-top:6px;">Ландшафт: ${formatTerrainRu(cell.terrain)}</div>
         <div class="section-title">Население</div>
         <div>Население: <b>${d.population != null ? escHtml(String(d.population)) : "—"}</b> / <b>${d.max_population != null ? escHtml(String(d.max_population)) : "—"}</b></div>
+        ${
+          d.population_vitals
+            ? `<div class="muted" style="margin-top:6px;">Содержание населения: <b>${escHtml(String(d.population_vitals.food_per_sol ?? 0))}</b> еды и <b>${escHtml(String(d.population_vitals.water_per_sol ?? 0))}</b> воды за сол (списывается после выработки).</div>`
+            : ""
+        }
         ${slotsLine ? `<div class="muted" style="margin-top:6px;">${slotsLine} • класс: ${escHtml(cls)}</div>` : `<div class="muted" style="margin-top:6px;">класс: ${escHtml(cls)}</div>`}
+        <div class="section-title">Снабжение (эта планета)</div>
+        <div>Снабженцев: <b>${supN}</b></div>
+        <div class="muted">Базовый радиус: <b>${supBase}</b> • бонус за снабженца: <b>+${supPer}</b> • <b>итого снабжение: ${supR} клеток</b></div>
+        <div class="muted" style="margin-top:6px;font-size:88%;">Линии: от планеты L-маршрут (сначала X, затем Y); чужой флот на пути обрывает снабжение. Активный форпост вне планеты тянет еду/воду с хаба за сол (см. форпост).</div>
+        <div class="row" style="gap:8px;margin-top:8px;">
+          <button type="button" id="hire-supplier-btn" data-planet-id="${escHtml(String(planetOwn.id || mapPlanet?.id || ""))}">Нанять снабженца</button>
+        </div>
+        <div class="muted" style="margin-top:6px;font-size:88%;">Снабженец — логистическая единица планеты (не корабль на карте).</div>
         <div class="section-title">Ресурсы на планете</div>
-        <div>Металл <b>${d.resources.metal}</b> • Кристалл <b>${d.resources.crystal}</b> • Энергия <b>${d.resources.energy}</b> • Топливо <b>${d.resources.fuel ?? 0}</b></div>
-        <div class="section-title">Производство (за тик)</div>
-        <div>+<b>${mp}</b> металл • +<b>${cp}</b> кристалл • +<b>${ep}</b> энергия • +<b>${fp}</b> топливо</div>
+        <div>Металл <b>${d.resources.metal}</b> • Кристалл <b>${d.resources.crystal}</b> • Энергия <b>${d.resources.energy}</b> • Топливо <b>${d.resources.fuel ?? 0}</b> • Еда <b>${d.resources.food ?? 0}</b> • Вода <b>${d.resources.water ?? 0}</b></div>
+        <div class="section-title">Производство (за сол)</div>
+        <div>+<b>${mp}</b> металл • +<b>${cp}</b> кристалл • +<b>${ep}</b> энергия • +<b>${fp}</b> топливо • +<b>${fdp}</b> еда • +<b>${wp}</b> вода</div>
         <div class="section-title">Юниты на планете</div>
         <div>${u}</div>
         <div class="section-title">Флоты</div>
@@ -934,6 +1041,36 @@
         });
       }
       await updateBuildButtonsAvailability(x, y, z, null);
+      const hireSupBtn = planetModalBody.querySelector("#hire-supplier-btn");
+      if (hireSupBtn) {
+        hireSupBtn.addEventListener("click", async () => {
+          const plid = hireSupBtn.getAttribute("data-planet-id");
+          if (!plid) return;
+          setStatus("Найм снабженца…");
+          try {
+            const r = await fetch("/api/supply/hire_supplier", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ planet_id: plid }),
+            });
+            const body = await r.json();
+            if (!r.ok || !body.ok) {
+              if (body.error === "not_enough_resources") {
+                setStatus(`Не хватает ресурсов для найма`, "err");
+              } else {
+                setStatus(`Ошибка: ${body.error || "hire_failed"}`, "err");
+              }
+              return;
+            }
+            setStatus(`Снабжение: радиус ${body.supply_radius} клеток`, "ok");
+            await loadWorldState();
+            void refreshSupplyHud(selectedCell);
+            await fillPlanetModalFromApi(cell);
+          } catch (_e) {
+            setStatus("Ошибка: network_error", "err");
+          }
+        });
+      }
       for (const btn of planetModalBody.querySelectorAll("button.btn-create-fleet")) {
         btn.addEventListener("click", () => {
           const pid = btn.getAttribute("data-planet-id");
@@ -958,6 +1095,11 @@
         <div>HP <b>${Number(d.combat?.hp || 0)}</b> • атака <b>${Number(d.combat?.attack || 0)}</b> • защита <b>${Number(d.combat?.defense || 0)}</b></div>
         <div class="section-title">Слоты</div>
         <div>Занято <b>${Number(d.slots?.used || 0)}</b> / <b>${Number(d.slots?.total || 0)}</b></div>
+        ${
+          d.supply_line
+            ? `<div class="section-title">Логистика снабжения</div><div class="muted">С хаба (планета) за сол: еда <b>${Number(d.supply_line.food_per_sol || 0)}</b>, вода <b>${Number(d.supply_line.water_per_sol || 0)}</b>. При нехватке на хабе форпост отключится.</div>`
+            : ""
+        }
         <div class="section-title">Модули</div>
         <div class="muted">Каркас модулей уже заложен в данных и БД, но в первом проходе они ещё не активированы в UI.</div>
       `;
@@ -1417,25 +1559,28 @@
     const lastTick = state && state.auto_tick_last_tick != null ? String(state.auto_tick_last_tick) : "—";
     const lastRun = state && state.auto_tick_last_run_at ? String(state.auto_tick_last_run_at) : "—";
     autotickToggle.checked = enabled;
-    autotickText.textContent = `Автотик: ${enabled ? "вкл." : "выкл."}${interval ? ` (${interval} с)` : ""} • ${running ? "работает" : "остановлен"}`;
+    autotickText.textContent = `Автосол: ${enabled ? "вкл." : "выкл."}${interval ? ` (${interval} с)` : ""} • ${running ? "работает" : "остановлен"}`;
     autotickChip.classList.toggle("status-ok", enabled && !err);
     autotickChip.classList.toggle("status-fail", Boolean(err));
-    autotickChip.title = err ? `Ошибка: ${err}` : `last_tick=${lastTick}\nlast_run_at=${lastRun}`;
+    autotickChip.title = err ? `Ошибка: ${err}` : `последний сол=${lastTick}\nlast_run_at=${lastRun}`;
   };
 
   const doManualTick = async () => {
-    setStatus("Тик...");
+    setStatus("Сол…");
     try {
       const r = await fetch("/api/world/tick", { method: "POST" });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        setStatus(`Ошибка тика: ${body.error || "tick_failed"}`, "err");
+        setStatus(`Ошибка шага: ${body.error || "tick_failed"}`, "err");
         return;
       }
-      setStatus(`Тик ${body.current_tick}: событий ${body.events.length}`, "ok");
+      setStatus(
+        `Сол ${body.current_sol ?? body.current_tick}: событий ${body.events.length}`,
+        "ok",
+      );
       await refreshWindow();
     } catch (_e) {
-      setStatus("Сетевая ошибка при обработке тика", "err");
+      setStatus("Сетевая ошибка при проведении сола", "err");
     }
   };
 
@@ -1446,7 +1591,7 @@
       const body = await r.json();
       worldState = body || worldState;
       if (body && body.player_id) worldState.player_id = body.player_id;
-      if (tickEl) tickEl.textContent = String(body.current_tick ?? 0);
+      if (tickEl) tickEl.textContent = String(body.current_sol ?? body.current_tick ?? 0);
       updateAutotickUi(body);
       if (body.home_planet) {
         const elP = document.getElementById("hud-pop");
@@ -1460,9 +1605,11 @@
         if (topCrystalEl) topCrystalEl.textContent = String(body.economy.crystal ?? "—");
         if (topEnergyEl) topEnergyEl.textContent = String(body.economy.energy ?? "—");
         if (topFuelEl) topFuelEl.textContent = String(body.economy.fuel ?? "—");
+        if (topFoodEl) topFoodEl.textContent = String(body.economy.food ?? "—");
+        if (topWaterEl) topWaterEl.textContent = String(body.economy.water ?? "—");
         if (topDeltaEl && body.economy.avg_10_ticks) {
           const a = body.economy.avg_10_ticks;
-          topDeltaEl.textContent = `(+${a.metal}/+${a.crystal}/+${a.energy}/+${a.fuel ?? 0} за 10t)`;
+          topDeltaEl.textContent = `(+${a.metal}/+${a.crystal}/+${a.energy}/+${a.fuel ?? 0}/+${a.food ?? 0}/+${a.water ?? 0} за 10 солов)`;
         }
         const einf = body.economy.influence;
         if (hudInfluenceHomeEl) {
@@ -1478,7 +1625,11 @@
         const af = activeFleetId ? owned.find((f) => f.id === activeFleetId) : null;
         const u = af || afFallback || null;
         if (!u) return;
-        if (unitStatusEl) unitStatusEl.textContent = ruFleetStatus(u.status);
+        const ao = u.active_order;
+        if (unitStatusEl) {
+          if (ao && ao.order_type === "emergency_return") unitStatusEl.textContent = "аварийный возврат";
+          else unitStatusEl.textContent = ruFleetStatus(u.status);
+        }
         if (unitPosEl) unitPosEl.textContent = `${u.x}, ${u.y}, ${u.z}`;
         const hu = document.getElementById("hud-unit");
         if (hu) {
@@ -1486,15 +1637,17 @@
           const cl = formatComposition(u.composition);
           hu.textContent = `${nm} · ${cl || u.unit_type || "—"}`;
         }
-        const ao = u.active_order;
         if (ao && ao.pending_combat && ao.combat_prompt_expires_at) {
           if (etaEl) etaEl.textContent = "Ждём второго подтверждения боя";
           if (etaArriveEl) etaArriveEl.textContent = ao.combat_prompt_expires_at.slice(11, 19) || "—";
         } else if (ao && (ao.remaining_ticks !== undefined || ao.finish_tick !== undefined)) {
           const eta = Number.isInteger(ao.remaining_ticks) ? ao.remaining_ticks : null;
           const arrive = Number.isInteger(ao.finish_tick) ? ao.finish_tick : null;
-          if (etaEl) etaEl.textContent = eta === null ? "—" : `${eta} тиков`;
-          if (etaArriveEl) etaArriveEl.textContent = arrive === null ? "—" : `тик ${arrive}`;
+          if (etaEl) {
+            const pref = ao && ao.order_type ? `${ruOrderType(ao.order_type)}: ` : "";
+            etaEl.textContent = eta === null ? "—" : `${pref}${eta} ${solWord(eta)}`;
+          }
+          if (etaArriveEl) etaArriveEl.textContent = arrive === null ? "—" : `сол ${arrive}`;
         } else {
           if (etaEl) etaEl.textContent = "—";
           if (etaArriveEl) etaArriveEl.textContent = "—";
@@ -1609,7 +1762,11 @@
         techModalBody.innerHTML = "<div class='muted'>Состояние исследований недоступно.</div>";
         return;
       }
-      const currentTick = Number.isInteger(stBody.current_tick) ? stBody.current_tick : 0;
+      const currentTick = Number.isInteger(stBody.current_sol)
+        ? stBody.current_sol
+        : Number.isInteger(stBody.current_tick)
+          ? stBody.current_tick
+          : 0;
       const rows = Array.isArray(stBody.techs) ? stBody.techs : [];
       const byId = {};
       for (const r of rows) byId[r.tech_id] = r;
@@ -1626,12 +1783,12 @@
         const btn = status === "none" ? `<button type="button" data-tech="${escHtml(t.id)}">Старт</button>` : "";
         const statusLine =
           status === "in_progress"
-            ? `<span class="muted">Идёт исследование, осталось <b>${rem ?? "?"}</b> тик.</span>`
+            ? `<span class="muted">Идёт исследование, осталось <b>${rem ?? "?"}</b> ${rem != null && Number.isFinite(Number(rem)) ? solWord(rem) : "солов"}.</span>`
             : status === "done"
               ? `<span class="muted">Завершено.</span>`
               : `<span class="muted">Не начато.</span>`;
         const tickN = Number(t.time_ticks);
-        const dur = Number.isFinite(tickN) && tickN > 0 ? `${Math.round(tickN)} тиков` : "—";
+        const dur = Number.isFinite(tickN) && tickN > 0 ? `${Math.round(tickN)} ${solWord(tickN)}` : "—";
         const costStr = formatTechCost(t.cost);
         const prereqStr = formatPrereqNames(t.prereq, byTechId);
         const effLines = formatTechEffectsRu(t.effects);
@@ -1661,7 +1818,7 @@
       };
 
       techModalBody.innerHTML = `
-        <div class="muted" style="margin-bottom:10px;">Текущий тик игры: <b>${currentTick}</b></div>
+        <div class="muted" style="margin-bottom:10px;">Текущий сол: <b>${currentTick}</b></div>
         ${enabled.map(renderCard).join("") || "<div class='muted'>Нет доступных технологий.</div>"}
       `;
       for (const b of techModalBody.querySelectorAll("button[data-tech]")) {
@@ -1760,6 +1917,19 @@
         if (selectedCell && c.x === selectedCell.x && c.y === selectedCell.y && c.z === selectedCell.z) {
           btn.classList.add("cell-selected");
         }
+        const showSupplyBlocked =
+          supplyHint &&
+          supplyHint.for &&
+          selectedCell &&
+          supplyHint.for.x === selectedCell.x &&
+          supplyHint.for.y === selectedCell.y &&
+          (supplyHint.for.z ?? 0) === (selectedCell.z ?? 0) &&
+          !supplyHint.inSupply &&
+          supplyHint.blockedAt &&
+          c.x === supplyHint.blockedAt.x &&
+          c.y === supplyHint.blockedAt.y &&
+          c.z === (selectedCell.z ?? 0);
+        if (showSupplyBlocked) btn.classList.add("cell-supply-block");
         if (pendingFleetMove && c.x === pendingFleetMove.from.x && c.y === pendingFleetMove.from.y && c.z === pendingFleetMove.from.z) {
           btn.classList.add("cell-from");
         }
@@ -1975,13 +2145,14 @@
       line.setAttribute("y1", String(from.cy));
       line.setAttribute("x2", String(to.cx));
       line.setAttribute("y2", String(to.cy));
-      line.setAttribute("class", "flight-line");
+      const isEmergency = ao && ao.order_type === "emergency_return";
+      line.setAttribute("class", isEmergency ? "flight-line flight-line-emergency" : "flight-line");
 
       const dot = document.createElementNS(ns, "circle");
       dot.setAttribute("cx", String(x));
       dot.setAttribute("cy", String(y));
       dot.setAttribute("r", "6");
-      dot.setAttribute("class", "flight-dot");
+      dot.setAttribute("class", isEmergency ? "flight-dot flight-dot-emergency" : "flight-dot");
 
       flightOverlayEl.appendChild(line);
       flightOverlayEl.appendChild(dot);
@@ -2272,7 +2443,7 @@
     const fleets = Array.isArray(worldState && worldState.fleets) ? worldState.fleets : [];
     const f = fleetId ? fleets.find((x) => x && x.id === fleetId) : null;
     if (!f) {
-      setStatus("Флот не найден в состоянии игры (обновите тик).", "err");
+      setStatus("Флот не найден в состоянии игры (обновите сол).", "err");
       return;
     }
     activeFleetId = f.id;
@@ -2361,7 +2532,9 @@
         if (body.error === "active_order_exists") {
           const f = worldState && worldState.fleet && worldState.fleet.id === fleetId ? worldState.fleet : null;
           const ao = f && f.active_order ? f.active_order : null;
-          const hint = ao ? `Уже летит в (${ao.target_x},${ao.target_y},${ao.target_z}), осталось ${ao.remaining_ticks} тиков.` : "Флот уже в пути.";
+          const hint = ao
+            ? `Уже летит в (${ao.target_x},${ao.target_y},${ao.target_z}), осталось ${ao.remaining_ticks} ${solWord(ao.remaining_ticks)}.`
+            : "Флот уже в пути.";
           setStatus(`Ошибка: active_order_exists. ${hint} Можно отменить приказ.`, "err");
         } else {
           setStatus(`Ошибка: ${body.error || "fleet_move_failed"}`, "err");
@@ -2370,7 +2543,7 @@
       }
       lastTarget = { x, y, z };
       await refreshWindow();
-      setStatus(`Флот в пути: осталось ${body.travel_ticks} тиков`, "ok");
+      setStatus(`Флот в пути: осталось ${body.travel_ticks} ${solWord(body.travel_ticks)}`, "ok");
     } catch (_e) {
       setStatus("Ошибка: network_error", "err");
     }
@@ -2532,7 +2705,11 @@
     if (!overlayEl) return;
     const distance = Math.abs(to.x - from.x) + Math.abs(to.y - from.y);
     const travelTicks = Math.max(1, distance);
-    const currentTick = Number.isInteger(worldState.current_tick) ? worldState.current_tick : 0;
+    const currentTick = Number.isInteger(worldState.current_sol)
+      ? worldState.current_sol
+      : Number.isInteger(worldState.current_tick)
+        ? worldState.current_tick
+        : 0;
     const arriveTick = currentTick + travelTicks;
     // MVP топливо: distance * qty (формула должна совпадать с сервером)
     const fuelCost = Math.max(0, distance) * Math.max(1, Number(qty) || 1);
@@ -2552,8 +2729,8 @@
     };
     if (cfFromEl) cfFromEl.textContent = `${from.x},${from.y},${from.z}`;
     if (cfToEl) cfToEl.textContent = `${to.x},${to.y},${to.z}`;
-    if (cfEtaEl) cfEtaEl.textContent = `${travelTicks} тиков`;
-    if (cfArriveEl) cfArriveEl.textContent = `тик ${arriveTick}`;
+    if (cfEtaEl) cfEtaEl.textContent = `${travelTicks} ${solWord(travelTicks)}`;
+    if (cfArriveEl) cfArriveEl.textContent = `сол ${arriveTick}`;
     if (cfFuelEl) cfFuelEl.textContent = String(fuelCost);
     if (cfDestEl) cfDestEl.textContent = dest.label;
     if (cfWarnEl) cfWarnEl.textContent = dest.warn || "";
@@ -2829,11 +3006,11 @@
         });
         const body = await r.json();
         if (!r.ok || !body.ok) {
-          setStatus(`Ошибка автотика: ${body.error || "autotick_failed"}`, "err");
+          setStatus(`Ошибка автосола: ${body.error || "autotick_failed"}`, "err");
           await loadWorldState();
           return;
         }
-        setStatus(`Автотик: ${body.auto_tick_enabled ? "ON" : "OFF"}`, "ok");
+        setStatus(`Автосол: ${body.auto_tick_enabled ? "ON" : "OFF"}`, "ok");
         await loadWorldState();
       } catch (_e) {
         setStatus("Ошибка: network_error", "err");
@@ -2849,7 +3026,8 @@
       if (!r.ok) throw new Error("bad status");
       const body = await r.json();
       versionChip.classList.add("status-ok");
-      versionChip.querySelector("span:last-child").textContent = `API: ${body.app}`;
+      const gv = body.game_version ? ` ${body.game_version}` : "";
+      versionChip.querySelector("span:last-child").textContent = `API: ${body.app}${gv}`;
     } catch (_e) {
       versionChip.classList.add("status-fail");
       versionChip.querySelector("span:last-child").textContent = "API: offline";

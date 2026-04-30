@@ -100,6 +100,39 @@
       "build": { "time_ticks": 5, "cost": { "metal": 260, "crystal": 180 } },
       "effects": { "production_per_tick_add": { "crystal": 1, "energy": 1 } },
       "build_on_terrain": ["nebula", "anomaly", "ruins"]
+    },
+    {
+      "id": "hydro_farm_t1",
+      "name": "Гидропонный блок I",
+      "tier": 1,
+      "build_zone_radius_required": 3,
+      "max_per_planet": 4,
+      "prereq_tech": ["tech_hydroponics_1"],
+      "build": { "time_ticks": 5, "cost": { "metal": 240, "crystal": 140, "energy": 20 } },
+      "effects": { "production_per_tick_add": { "food": 3 } },
+      "build_on_terrain": ["planet"]
+    },
+    {
+      "id": "atmospheric_reclaim_t1",
+      "name": "Атмосферный реклаймер I",
+      "tier": 1,
+      "build_zone_radius_required": 3,
+      "max_per_planet": 4,
+      "prereq_tech": ["tech_atmospheric_water_1"],
+      "build": { "time_ticks": 5, "cost": { "metal": 200, "crystal": 180, "energy": 25 } },
+      "effects": { "production_per_tick_add": { "water": 3 } },
+      "build_on_terrain": ["planet"]
+    },
+    {
+      "id": "logistics_center_t1",
+      "name": "Логистический центр I",
+      "tier": 2,
+      "build_zone_radius_required": 3,
+      "max_per_planet": 2,
+      "prereq_tech": ["tech_supply_networks_1"],
+      "build": { "time_ticks": 7, "cost": { "metal": 360, "crystal": 260, "energy": 40 } },
+      "effects": { "supply_base_add": 1, "supply_per_supplier_add": 1 },
+      "build_on_terrain": ["planet"]
     }
   ]
 }

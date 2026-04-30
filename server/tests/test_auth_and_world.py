@@ -237,6 +237,30 @@ def test_fleet_save_deducts_metal_when_adding_ships(client):
     m1 = client.get("/api/world/state").get_json()["economy"]["metal"]
     assert m1 < m0
 
+
+def test_fleet_empire_upkeep_deducts_from_capital_on_tick(client):
+    client.post("/api/register", json={"display_name": "EmpireUpkeep"})
+    me = client.get("/api/me").get_json()
+    planet_id = me["planets"][0]["id"]
+
+    cr = client.post(
+        "/api/fleets/create",
+        json={"planet_id": planet_id, "name": "Alpha", "composition": {"scout": 1}},
+    )
+    assert cr.status_code == 200, cr.get_json()
+
+    before = client.get("/api/world/state").get_json()["economy"]
+    m0 = before["metal"]
+    c0 = before["crystal"]
+
+    tick = client.post("/api/world/tick")
+    assert tick.status_code == 200
+
+    after = client.get("/api/world/state").get_json()["economy"]
+    # base_planet_production: metal=6, crystal=3; fleet_empire_upkeep: -1 metal, -1 crystal per fleet.
+    assert after["metal"] - m0 == 5
+    assert after["crystal"] - c0 == 2
+
     fid = cr.get_json()["fleet_id"]
     sav = client.post(
         "/api/fleets/save",

@@ -1,7 +1,7 @@
 from flask import Blueprint, current_app, jsonify, request, session
 from sqlalchemy import select, text
 
-from app.build_info import BUILD_ID
+from app.build_info import BUILD_ID, GAME_VERSION
 from app.db.engine import db_session, get_engine
 from app.services.auth_service import AuthService
 from app.services.world_service import WorldService
@@ -38,6 +38,7 @@ def api_version():
     return jsonify(
         {
             "app": "guardstar",
+            "game_version": GAME_VERSION,
             "balance_schema_version": balance.balance_schema_version() if balance else None,
             "balance_pack_id": balance.balance_pack_id() if balance else None,
             "balance_pack_name": balance.balance_pack_name() if balance else None,
@@ -108,6 +109,42 @@ def api_me():
         data = world.get_player_overview(s, player_id=player_id)
 
     return jsonify(data)
+
+
+@api_bp.get("/supply/state")
+def api_supply_state():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    x = request.args.get("x", type=int)
+    y = request.args.get("y", type=int)
+    z = request.args.get("z", default=0, type=int)
+    z = max(-10, min(z, 10))
+    if not isinstance(x, int) or not isinstance(y, int):
+        return jsonify({"error": "invalid_params"}), 400
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        return jsonify(world.get_supply_state(s, player_id=player_id, x=x, y=y, z=z))
+
+
+@api_bp.post("/supply/hire_supplier")
+def api_hire_supplier():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    payload = request.get_json(silent=True) or {}
+    planet_id = payload.get("planet_id")
+    if planet_id is not None and not isinstance(planet_id, str):
+        return jsonify({"error": "invalid_payload"}), 400
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.hire_supplier(s, player_id=player_id, planet_id=planet_id)
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+        return jsonify(result)
 
 
 @api_bp.get("/world/sector")
@@ -809,11 +846,14 @@ def api_tech_state():
                     "tech_id": r.tech_id,
                     "status": r.status,
                     "started_tick": int(r.started_tick),
+                    "started_sol": int(r.started_tick),
                     "finish_tick": int(r.finish_tick),
+                    "finish_sol": int(r.finish_tick),
                     "remaining_ticks": remaining,
+                    "remaining_sols": remaining,
                 }
             )
-        return jsonify({"ok": True, "current_tick": current_tick, "techs": payload})
+        return jsonify({"ok": True, "current_tick": current_tick, "current_sol": current_tick, "techs": payload})
 
 
 @api_bp.post("/tech/start")
@@ -876,4 +916,14 @@ def api_tech_start():
         row = PlayerTech(player_id=pid, tech_id=tech_id, status="in_progress", started_tick=now + 1, finish_tick=now + time_ticks)
         s.add(row)
         s.commit()
-        return jsonify({"ok": True, "tech_id": tech_id, "status": row.status, "started_tick": row.started_tick, "finish_tick": row.finish_tick})
+        return jsonify(
+            {
+                "ok": True,
+                "tech_id": tech_id,
+                "status": row.status,
+                "started_tick": row.started_tick,
+                "started_sol": int(row.started_tick),
+                "finish_tick": row.finish_tick,
+                "finish_sol": int(row.finish_tick),
+            }
+        )

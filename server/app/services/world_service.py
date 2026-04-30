@@ -48,6 +48,9 @@ INFLUENCE_CAPTURE_THRESHOLD = 1.0
 INFLUENCE_NATURAL_DECAY_PER_TICK = 0.1
 INFLUENCE_BUILDING_TYPES = {"outpost", "fortified_outpost", "command_post"}
 
+# Склад планеты и производство за игровой сол (металл…вода).
+PLANET_STORE_KEYS = ("metal", "crystal", "energy", "fuel", "food", "water")
+
 
 class WorldService:
     def _get_building_bonus_for_player(self, s: Session, *, player_id: uuid.UUID) -> dict:
@@ -68,6 +71,8 @@ class WorldService:
             "crystal": 2 * farms,
             "energy": 1 * reactors,
             "fuel": 1 * reactors,
+            "food": 0,
+            "water": 0,
         }
 
     def __init__(self, *, world_seed: str = "guardstar", balance: object | None = None) -> None:
@@ -91,7 +96,14 @@ class WorldService:
                 "build_time_multiplier": 1.0,
                 "upkeep_energy_multiplier": 1.0,
                 "travel_fuel_multiplier": 1.0,
-                "production_multiplier": {"metal": 1.0, "crystal": 1.0, "energy": 1.0, "fuel": 1.0},
+                "production_multiplier": {
+                    "metal": 1.0,
+                    "crystal": 1.0,
+                    "energy": 1.0,
+                    "fuel": 1.0,
+                    "food": 1.0,
+                    "water": 1.0,
+                },
             }
         race = pack.races_by_id.get(rid) if hasattr(pack, "races_by_id") else None
         mods = (race.get("modifiers") if isinstance(race, dict) else None) or {}
@@ -105,6 +117,8 @@ class WorldService:
                 "crystal": float(prod_mul.get("crystal", 1.0)),
                 "energy": float(prod_mul.get("energy", 1.0)),
                 "fuel": float(prod_mul.get("fuel", 1.0)),
+                "food": float(prod_mul.get("food", 1.0)),
+                "water": float(prod_mul.get("water", 1.0)),
             },
         }
 
@@ -118,6 +132,21 @@ class WorldService:
             .scalars()
             .all()
         )
+
+    def _tech_production_multipliers(self, s: Session, *, player_id: uuid.UUID) -> dict[str, float]:
+        out = {k: 1.0 for k in PLANET_STORE_KEYS}
+        if not self._balance:
+            return out
+        for tid in self._get_player_done_techs(s, player_id=player_id):
+            t = self._balance.pack.tech_by_id.get(tid)
+            if not isinstance(t, dict):
+                continue
+            eff = t.get("effects") if isinstance(t.get("effects"), dict) else {}
+            pm = eff.get("production_multiplier") if isinstance(eff.get("production_multiplier"), dict) else {}
+            for k in PLANET_STORE_KEYS:
+                if isinstance(pm.get(k), (int, float)):
+                    out[k] *= float(pm[k])
+        return out
 
     def _building_influence_profile(self, building_type: str) -> tuple[float, int] | None:
         btype = str(building_type or "").strip().lower()
@@ -397,6 +426,22 @@ class WorldService:
                 }
             )
 
+        supply_line: dict | None = None
+        if int(getattr(outpost, "z", 0) or 0) == 0 and not self._cell_is_owned_planet_tile(
+            s, owner_id=outpost.owner_player_id, x=int(outpost.x), y=int(outpost.y), z=0
+        ):
+            if self._is_cell_supplied(s, owner_id=outpost.owner_player_id, x=int(outpost.x), y=int(outpost.y), z=int(outpost.z)):
+                hub_p = self._supply_hub_planet_for_cell(
+                    s, owner_id=outpost.owner_player_id, x=int(outpost.x), y=int(outpost.y), z=int(outpost.z)
+                )
+                if hub_p is not None:
+                    cf, cw = self._supply_route_logistics_costs(hub=hub_p, ox=int(outpost.x), oy=int(outpost.y))
+                    supply_line = {
+                        "hub_planet_id": str(hub_p.id),
+                        "food_per_sol": int(cf),
+                        "water_per_sol": int(cw),
+                    }
+
         return {
             "outpost_type": outpost.outpost_type,
             "family": outpost.family,
@@ -411,6 +456,7 @@ class WorldService:
             "modules": payload_modules,
             "upgrade": od.get("upgrade"),
             "name": od.get("name"),
+            "supply_line": supply_line,
         }
 
     def _apply_outpost_combat_tick(self, s: Session, *, tick: int) -> None:
@@ -595,32 +641,375 @@ class WorldService:
                 else None
             )
             return set(ua.keys()) if isinstance(ua, dict) else set()
-        return {"scout", "fighter", "engineer", "supplier"}
+        return {"scout", "fighter", "engineer"}
+
+    # Фаза A снабжения: только счётчик на планете (не юнит на карте).
+    SUPPLY_BASE_RADIUS = 5
+    SUPPLY_PER_SUPPLIER = 3
+
+    def _supply_radius_modifiers_for_player(self, s: Session, *, player_id: uuid.UUID) -> tuple[int, int]:
+        """(base_add, per_supplier_add) из завершённых технологий."""
+        if not self._balance:
+            return (0, 0)
+        base_add = 0
+        per_add = 0
+        for tid in self._get_player_done_techs(s, player_id=player_id):
+            t = self._balance.pack.tech_by_id.get(tid)
+            if not isinstance(t, dict):
+                continue
+            eff = t.get("effects") if isinstance(t.get("effects"), dict) else {}
+            v = eff.get("supply_base_add")
+            if isinstance(v, (int, float)):
+                base_add += int(v)
+            v2 = eff.get("supply_per_supplier_add")
+            if isinstance(v2, (int, float)):
+                per_add += int(v2)
+        return (base_add, per_add)
+
+    def _supply_radius_modifiers_for_planet_buildings(self, s: Session, *, planet_id: uuid.UUID) -> tuple[int, int]:
+        """(base_add, per_supplier_add) из построек на планете."""
+        if not self._balance:
+            return (0, 0)
+        base_add = 0
+        per_add = 0
+        rows = (
+            s.execute(
+                select(Building.building_type, func.count(Building.id))
+                .where(Building.planet_id == planet_id)
+                .group_by(Building.building_type)
+            )
+            .all()
+        )
+        for bt, cnt in rows:
+            try:
+                bd = self._balance.get_building(str(bt))
+            except Exception:
+                bd = {}
+            eff = bd.get("effects") if isinstance(bd, dict) else {}
+            if not isinstance(eff, dict):
+                continue
+            n = max(0, int(cnt))
+            v = eff.get("supply_base_add")
+            if isinstance(v, (int, float)):
+                base_add += int(v) * n
+            v2 = eff.get("supply_per_supplier_add")
+            if isinstance(v2, (int, float)):
+                per_add += int(v2) * n
+        return (base_add, per_add)
 
     def _planet_supply_radius(self, s: Session, *, planet: Planet) -> int:
-        # MVP снабжения: базовое снабжение от планеты + расширение от "снабженцев" на планете.
-        base = 4
-        per_supplier = 3
-        suppliers = (
-            s.execute(
-                select(Unit.qty)
-                .where(Unit.planet_id == planet.id, Unit.owner_player_id == planet.owner_player_id, Unit.unit_type == "supplier")
+        n = int(getattr(planet, "supplier_count", 0) or 0)
+        base_add_t, per_add_t = self._supply_radius_modifiers_for_player(s, player_id=planet.owner_player_id)
+        base_add_b, per_add_b = self._supply_radius_modifiers_for_planet_buildings(s, planet_id=planet.id)
+        base = int(self.SUPPLY_BASE_RADIUS) + int(base_add_t) + int(base_add_b)
+        per = int(self.SUPPLY_PER_SUPPLIER) + int(per_add_t) + int(per_add_b)
+        return max(0, int(base + per * n))
+
+    @staticmethod
+    def _manhattan_l_path_cells(px: int, py: int, tx: int, ty: int) -> list[tuple[int, int]]:
+        """Клетки пути от (px,py) до (tx,ty) без стартовой клетки: сначала X, затем Y (логистика «как»)."""
+        cells: list[tuple[int, int]] = []
+        cx, cy = int(px), int(py)
+        tx, ty = int(tx), int(ty)
+        while cx != tx:
+            cx += 1 if tx > cx else -1
+            cells.append((cx, cy))
+        while cy != ty:
+            cy += 1 if ty > cy else -1
+            cells.append((cx, cy))
+        return cells
+
+    def _supply_route_block_cell(
+        self, s: Session, *, owner_id: uuid.UUID, path_cells: list[tuple[int, int]]
+    ) -> tuple[int, int] | None:
+        """Первая клетка пути с чужим флотом — обрыв линии снабжения."""
+        for cx, cy in path_cells:
+            hit = (
+                s.execute(
+                    select(Fleet.id).where(
+                        Fleet.pos_x == int(cx),
+                        Fleet.pos_y == int(cy),
+                        Fleet.pos_z == 0,
+                        Fleet.owner_player_id != owner_id,
+                        Fleet.qty > 0,
+                    )
+                )
+                .first()
             )
-            .scalar_one_or_none()
-            or 0
+            if hit:
+                return (int(cx), int(cy))
+        return None
+
+    def _planet_supply_candidates(self, s: Session, *, owner_id: uuid.UUID, x: int, y: int) -> list[tuple[Planet, int, int]]:
+        planets = s.execute(select(Planet).where(Planet.owner_player_id == owner_id)).scalars().all()
+        rows: list[tuple[Planet, int, int]] = []
+        for p in planets:
+            r = self._planet_supply_radius(s, planet=p)
+            d = abs(int(p.pos_x) - int(x)) + abs(int(p.pos_y) - int(y))
+            rows.append((p, r, d))
+        return rows
+
+    def _supply_hub_planet_for_cell(self, s: Session, *, owner_id: uuid.UUID, x: int, y: int, z: int) -> Planet | None:
+        """Планета-хаб, через которую клетка в снабжении (радиус + чистый L-путь)."""
+        if int(z) != 0:
+            return None
+        rows = self._planet_supply_candidates(s, owner_id=owner_id, x=int(x), y=int(y))
+        in_range = [(p, r, d) for p, r, d in rows if r > 0 and d <= r]
+        for p, _r, _d in sorted(in_range, key=lambda t: t[2]):
+            path = self._manhattan_l_path_cells(int(p.pos_x), int(p.pos_y), int(x), int(y))
+            if self._supply_route_block_cell(s, owner_id=owner_id, path_cells=path) is None:
+                return p
+        return None
+
+    def _cell_is_owned_planet_tile(self, s: Session, *, owner_id: uuid.UUID, x: int, y: int, z: int) -> bool:
+        if int(z) != 0:
+            return False
+        return (
+            s.execute(
+                select(Planet.id).where(
+                    Planet.owner_player_id == owner_id,
+                    Planet.pos_x == int(x),
+                    Planet.pos_y == int(y),
+                )
+            ).first()
+            is not None
         )
-        return max(0, int(base + per_supplier * int(suppliers)))
+
+    def _supply_route_logistics_costs(self, *, hub: Planet, ox: int, oy: int) -> tuple[int, int]:
+        """Еда/вода с хаба за содержание линии к форпосту за один сол (balance supply_route_upkeep)."""
+        food, water = 2, 2
+        extra_f, extra_w = 0, 0
+        if self._balance and isinstance(self._balance.pack.economy, dict):
+            sr = self._balance.pack.economy.get("supply_route_upkeep")
+            if isinstance(sr, dict):
+                v = sr.get("food_per_sol_per_outpost")
+                if isinstance(v, (int, float)):
+                    food = int(v)
+                v2 = sr.get("water_per_sol_per_outpost")
+                if isinstance(v2, (int, float)):
+                    water = int(v2)
+                d = abs(int(hub.pos_x) - int(ox)) + abs(int(hub.pos_y) - int(oy))
+                cf = sr.get("food_per_manhattan_from_hub")
+                if isinstance(cf, (int, float)):
+                    extra_f = int(cf) * max(0, d)
+                cw = sr.get("water_per_manhattan_from_hub")
+                if isinstance(cw, (int, float)):
+                    extra_w = int(cw) * max(0, d)
+        return max(0, food + extra_f), max(0, water + extra_w)
+
+    def _apply_supply_route_logistics_tick(self, s: Session, *, tick: int) -> None:
+        """После выработки на планетах: логистика линий к форпостам (еда/вода с хаба)."""
+        outposts = s.execute(select(Outpost).where(Outpost.status == "active")).scalars().all()
+        if not outposts:
+            return
+        for op in outposts:
+            if int(getattr(op, "z", 0) or 0) != 0:
+                continue
+            if self._cell_is_owned_planet_tile(s, owner_id=op.owner_player_id, x=int(op.x), y=int(op.y), z=0):
+                continue
+            if not self._is_cell_supplied(s, owner_id=op.owner_player_id, x=int(op.x), y=int(op.y), z=int(op.z)):
+                continue
+            hub = self._supply_hub_planet_for_cell(s, owner_id=op.owner_player_id, x=int(op.x), y=int(op.y), z=int(op.z))
+            if not hub:
+                continue
+            need_f, need_w = self._supply_route_logistics_costs(hub=hub, ox=int(op.x), oy=int(op.y))
+            if need_f <= 0 and need_w <= 0:
+                continue
+            res = s.execute(select(Resource).where(Resource.planet_id == hub.id)).scalar_one_or_none()
+            if not res:
+                continue
+            if int(getattr(res, "food", 0) or 0) >= need_f and int(getattr(res, "water", 0) or 0) >= need_w:
+                res.food = int(getattr(res, "food", 0) or 0) - need_f
+                res.water = int(getattr(res, "water", 0) or 0) - need_w
+                continue
+            op.status = "offline"
+            op.updated_at = datetime.utcnow()
+            self._emit_event(
+                s,
+                tick=tick,
+                type="outpost_offline",
+                message="Форпост отключён: не хватило еды/воды на логистику снабжения",
+                payload={
+                    "outpost_id": str(op.id),
+                    "reason": "supply_logistics_unpaid",
+                    "hub_planet_id": str(hub.id),
+                    "need": {"food": need_f, "water": need_w},
+                    "have": {"food": int(getattr(res, "food", 0) or 0), "water": int(getattr(res, "water", 0) or 0)},
+                },
+                player_id=op.owner_player_id,
+            )
+
+    def get_supply_state(self, s: Session, *, player_id: str, x: int, y: int, z: int = 0) -> dict:
+        """Снабжение: радиус хаба + непрерывный L-маршрут без чужих флотов на пути (фаза «как»)."""
+        pid = uuid.UUID(player_id)
+        base_tail = {"supply_base": self.SUPPLY_BASE_RADIUS, "supply_per_supplier": self.SUPPLY_PER_SUPPLIER}
+        if int(z) != 0:
+            return {
+                "ok": True,
+                "in_supply": False,
+                "nearest_hub": None,
+                "supply_radius": 0,
+                "distance": None,
+                "route_clear": False,
+                "route_blocked_at": None,
+                "supply_path": "manhattan_L",
+                **base_tail,
+            }
+        rows = self._planet_supply_candidates(s, owner_id=pid, x=int(x), y=int(y))
+        if not rows:
+            return {
+                "ok": True,
+                "in_supply": False,
+                "nearest_hub": None,
+                "supply_radius": 0,
+                "distance": None,
+                "route_clear": False,
+                "route_blocked_at": None,
+                "supply_path": "manhattan_L",
+                **base_tail,
+            }
+        in_range = [(p, r, d) for p, r, d in rows if r > 0 and d <= r]
+        best_blocked: tuple[int, int] | None = None
+        best_tuple: tuple[Planet, int, int] | None = None
+        if in_range:
+            for p, r, d in sorted(in_range, key=lambda t: t[2]):
+                path = self._manhattan_l_path_cells(int(p.pos_x), int(p.pos_y), int(x), int(y))
+                blk = self._supply_route_block_cell(s, owner_id=pid, path_cells=path)
+                base_add_t, per_add_t = self._supply_radius_modifiers_for_player(s, player_id=p.owner_player_id)
+                base_add_b, per_add_b = self._supply_radius_modifiers_for_planet_buildings(s, planet_id=p.id)
+                eff_base = int(self.SUPPLY_BASE_RADIUS) + int(base_add_t) + int(base_add_b)
+                eff_per = int(self.SUPPLY_PER_SUPPLIER) + int(per_add_t) + int(per_add_b)
+                if blk is None:
+                    return {
+                        "ok": True,
+                        "in_supply": True,
+                        "nearest_hub": {"type": "planet", "id": str(p.id), "x": int(p.pos_x), "y": int(p.pos_y), "z": 0},
+                        "supply_radius": int(r),
+                        "distance": int(d),
+                        "route_clear": True,
+                        "route_blocked_at": None,
+                        "supplier_count": int(getattr(p, "supplier_count", 0) or 0),
+                        "supply_path": "manhattan_L",
+                        "supply_base": eff_base,
+                        "supply_per_supplier": eff_per,
+                    }
+                if best_tuple is None:
+                    best_tuple = (p, r, d)
+                    best_blocked = blk
+            p, r, d = best_tuple if best_tuple else min(in_range, key=lambda t: t[2])
+            base_add_t, per_add_t = self._supply_radius_modifiers_for_player(s, player_id=p.owner_player_id)
+            base_add_b, per_add_b = self._supply_radius_modifiers_for_planet_buildings(s, planet_id=p.id)
+            eff_base = int(self.SUPPLY_BASE_RADIUS) + int(base_add_t) + int(base_add_b)
+            eff_per = int(self.SUPPLY_PER_SUPPLIER) + int(per_add_t) + int(per_add_b)
+            return {
+                "ok": True,
+                "in_supply": False,
+                "nearest_hub": {"type": "planet", "id": str(p.id), "x": int(p.pos_x), "y": int(p.pos_y), "z": 0},
+                "supply_radius": int(r),
+                "distance": int(d),
+                "route_clear": False,
+                "route_blocked_at": ({"x": best_blocked[0], "y": best_blocked[1]} if best_blocked else None),
+                "supplier_count": int(getattr(p, "supplier_count", 0) or 0),
+                "supply_path": "manhattan_L",
+                "supply_base": eff_base,
+                "supply_per_supplier": eff_per,
+            }
+        p, r, d = min(rows, key=lambda t: t[2])
+        base_add_t, per_add_t = self._supply_radius_modifiers_for_player(s, player_id=p.owner_player_id)
+        base_add_b, per_add_b = self._supply_radius_modifiers_for_planet_buildings(s, planet_id=p.id)
+        eff_base = int(self.SUPPLY_BASE_RADIUS) + int(base_add_t) + int(base_add_b)
+        eff_per = int(self.SUPPLY_PER_SUPPLIER) + int(per_add_t) + int(per_add_b)
+        return {
+            "ok": True,
+            "in_supply": False,
+            "nearest_hub": {"type": "planet", "id": str(p.id), "x": int(p.pos_x), "y": int(p.pos_y), "z": 0},
+            "supply_radius": int(r),
+            "distance": int(d),
+            "route_clear": False,
+            "route_blocked_at": None,
+            "supplier_count": int(getattr(p, "supplier_count", 0) or 0),
+            "supply_path": "manhattan_L",
+            "supply_base": eff_base,
+            "supply_per_supplier": eff_per,
+        }
+
+    def hire_supplier(self, s: Session, *, player_id: str, planet_id: str | None = None) -> dict:
+        pid = uuid.UUID(player_id)
+        planet: Planet | None = None
+        if planet_id:
+            try:
+                plid = uuid.UUID(str(planet_id).strip())
+            except Exception:
+                return {"ok": False, "error": "invalid_planet_id"}
+            planet = s.execute(select(Planet).where(Planet.id == plid, Planet.owner_player_id == pid)).scalar_one_or_none()
+        else:
+            planet = s.execute(select(Planet).where(Planet.owner_player_id == pid).order_by(Planet.created_at.asc())).scalar_one_or_none()
+        if not planet:
+            return {"ok": False, "error": "no_planet"}
+        need = {"metal": 120, "crystal": 40, "energy": 0, "fuel": 0}
+        if self._balance:
+            try:
+                u = self._balance.get_unit("supplier_t1")
+                bc = (u.get("build") if isinstance(u, dict) else None) or {}
+                cst = bc.get("cost") if isinstance(bc.get("cost"), dict) else {}
+                for k in need:
+                    if isinstance(cst.get(k), (int, float)):
+                        need[k] = int(cst[k])
+            except Exception:
+                pass
+        res = s.execute(select(Resource).where(Resource.planet_id == planet.id)).scalar_one_or_none()
+        if not res:
+            return {"ok": False, "error": "no_resources"}
+        if (
+            int(res.metal) < need["metal"]
+            or int(res.crystal) < need["crystal"]
+            or int(res.energy) < need["energy"]
+            or int(getattr(res, "fuel", 0)) < need["fuel"]
+        ):
+            return {"ok": False, "error": "not_enough_resources", "need": need}
+        res.metal -= need["metal"]
+        res.crystal -= need["crystal"]
+        res.energy -= need["energy"]
+        if hasattr(res, "fuel"):
+            res.fuel = int(getattr(res, "fuel", 0)) - need["fuel"]
+        before_r = self._planet_supply_radius(s, planet=planet)
+        planet.supplier_count = int(getattr(planet, "supplier_count", 0) or 0) + 1
+        after_r = self._planet_supply_radius(s, planet=planet)
+        tick = int(self.get_or_create_world_state(s).current_tick)
+        self._emit_event(
+            s,
+            tick=tick,
+            type="supplier_hired",
+            message="Нанят снабженец",
+            payload={"planet_id": str(planet.id), "supplier_count": int(planet.supplier_count)},
+            player_id=pid,
+        )
+        self._emit_event(
+            s,
+            tick=tick,
+            type="supply_radius_changed",
+            message=f"Радиус снабжения увеличен до {after_r}",
+            payload={"planet_id": str(planet.id), "radius_before": before_r, "radius_after": after_r},
+            player_id=pid,
+        )
+        s.flush()
+        return {
+            "ok": True,
+            "planet_id": str(planet.id),
+            "supplier_count": int(planet.supplier_count),
+            "supply_radius": after_r,
+            "cost": need,
+        }
 
     def _is_cell_supplied(self, s: Session, *, owner_id: uuid.UUID, x: int, y: int, z: int) -> bool:
         if int(z) != 0:
             return False
-        planets = s.execute(select(Planet).where(Planet.owner_player_id == owner_id)).scalars().all()
-        for p in planets:
-            r = self._planet_supply_radius(s, planet=p)
-            if r <= 0:
+        rows = self._planet_supply_candidates(s, owner_id=owner_id, x=int(x), y=int(y))
+        for p, r, d in rows:
+            if r <= 0 or d > r:
                 continue
-            d = abs(int(p.pos_x) - int(x)) + abs(int(p.pos_y) - int(y))
-            if d <= r:
+            path = self._manhattan_l_path_cells(int(p.pos_x), int(p.pos_y), int(x), int(y))
+            if self._supply_route_block_cell(s, owner_id=owner_id, path_cells=path) is None:
                 return True
         return False
 
@@ -703,7 +1092,7 @@ class WorldService:
         s.add(planet)
         s.flush()
 
-        s.add(Resource(planet_id=planet.id, metal=500, crystal=250, energy=100, fuel=100))
+        s.add(Resource(planet_id=planet.id, metal=500, crystal=250, energy=100, fuel=100, food=120, water=120))
         # Стартовые корабли должны быть видимы на карте и "стоять вокруг" планеты:
         # - выше планеты: 1 fighter
         # - слева: 1 scout
@@ -837,6 +1226,109 @@ class WorldService:
             f.energy = cur
         s.flush()
 
+    def _capital_planet_for_player(self, s: Session, *, player_id: uuid.UUID) -> Planet | None:
+        return (
+            s.execute(
+                select(Planet).where(Planet.owner_player_id == player_id).order_by(Planet.created_at.asc()).limit(1)
+            )
+            .scalars()
+            .first()
+        )
+
+    def _fleet_empire_upkeep_costs(self, *, fleets: int, ships: int) -> dict[str, int]:
+        eco = self._balance.pack.economy if self._balance and isinstance(getattr(self._balance, "pack", None), object) else {}
+        blk = eco.get("fleet_empire_upkeep") if isinstance(eco, dict) else None
+        if not isinstance(blk, dict):
+            return {"metal": 0, "crystal": 0}
+        mf = int(blk.get("metal_per_sol_per_fleet", 0) or 0)
+        cf = int(blk.get("crystal_per_sol_per_fleet", 0) or 0)
+        ms = int(blk.get("metal_per_sol_per_ship", 0) or 0)
+        cs = int(blk.get("crystal_per_sol_per_ship", 0) or 0)
+        return {
+            "metal": max(0, mf) * max(0, int(fleets)) + max(0, ms) * max(0, int(ships)),
+            "crystal": max(0, cf) * max(0, int(fleets)) + max(0, cs) * max(0, int(ships)),
+        }
+
+    def _fleet_empire_upkeep_unpaid_penalty_energy(self) -> int:
+        eco = self._balance.pack.economy if self._balance and isinstance(getattr(self._balance, "pack", None), object) else {}
+        blk = eco.get("fleet_empire_upkeep") if isinstance(eco, dict) else None
+        if not isinstance(blk, dict):
+            return 25
+        return max(0, int(blk.get("energy_penalty_on_unpaid", 25) or 25))
+
+    def _apply_fleet_empire_upkeep_tick(self, s: Session, *, tick: int) -> None:
+        """Имперское содержание флотов (кроме локальной энергии флота).
+
+        Платим с "капитальной" (самой ранней) планеты игрока из её складских ресурсов.
+        Если не хватает — штрафуем конкретный флот снижением локальной энергии и пишем событие.
+        """
+        if not self._balance:
+            return
+        eco = self._balance.pack.economy if isinstance(getattr(self._balance, "pack", None), object) else {}
+        blk = eco.get("fleet_empire_upkeep") if isinstance(eco, dict) else None
+        if not isinstance(blk, dict):
+            return
+
+        mf = int(blk.get("metal_per_sol_per_fleet", 0) or 0)
+        cf = int(blk.get("crystal_per_sol_per_fleet", 0) or 0)
+        ms = int(blk.get("metal_per_sol_per_ship", 0) or 0)
+        cs = int(blk.get("crystal_per_sol_per_ship", 0) or 0)
+        if max(mf, cf, ms, cs) <= 0:
+            return
+
+        penalty = self._fleet_empire_upkeep_unpaid_penalty_energy()
+
+        owner_ids = s.execute(select(Fleet.owner_player_id).where(Fleet.qty > 0).distinct()).scalars().all()
+        for oid in owner_ids:
+            cap = self._capital_planet_for_player(s, player_id=oid)
+            if not cap:
+                continue
+            res = s.execute(select(Resource).where(Resource.planet_id == cap.id)).scalar_one_or_none()
+            if not res:
+                continue
+
+            fleets = (
+                s.execute(
+                    select(Fleet)
+                    .where(Fleet.owner_player_id == oid, Fleet.qty > 0)
+                    .order_by(Fleet.created_at.asc(), Fleet.id.asc())
+                )
+                .scalars()
+                .all()
+            )
+            for f in fleets:
+                units_map = self._fleet_units_map(s, f)
+                ships = sum(max(0, int(q)) for q in (units_map or {}).values())
+                need = self._fleet_empire_upkeep_costs(fleets=1, ships=ships)
+                if need["metal"] <= 0 and need["crystal"] <= 0:
+                    continue
+
+                have_m = int(getattr(res, "metal", 0) or 0)
+                have_c = int(getattr(res, "crystal", 0) or 0)
+                if have_m >= need["metal"] and have_c >= need["crystal"]:
+                    res.metal = have_m - need["metal"]
+                    res.crystal = have_c - need["crystal"]
+                    continue
+
+                if penalty > 0:
+                    cur = int(getattr(f, "energy", 0) or 0)
+                    f.energy = max(0, cur - penalty)
+                self._emit_event(
+                    s,
+                    tick=tick,
+                    type="fleet_maintenance_failed",
+                    message=f"Империя не может оплатить содержание флота «{f.name or f.unit_type}»",
+                    payload={
+                        "fleet_id": str(f.id),
+                        "capital_planet_id": str(cap.id),
+                        "need": need,
+                        "have": {"metal": have_m, "crystal": have_c},
+                        "penalty_energy": penalty,
+                    },
+                    player_id=oid,
+                )
+        s.flush()
+
     def _apply_fleet_energy_tick(self, s: Session, *, tick: int) -> None:
         """Реген/пополнение энергии флота.
 
@@ -881,6 +1373,131 @@ class WorldService:
             ):
                 f.energy = min(mx, cur + 2)
         s.flush()
+
+    def _nearest_return_hub(self, s: Session, *, owner_id: uuid.UUID, x: int, y: int, z: int) -> tuple[int, int, int] | None:
+        """Ближайшая точка пополнения: своя планета или активный форпост.
+
+        Предпочитаем хаб без флота в клетке (чтобы аварийный возврат не упирался в занятую клетку).
+        Если все хабы заняты — ближайший по Манхэттену (дальше обработка ордера).
+        """
+        if int(z) != 0:
+            return None
+        hubs: list[tuple[int, int, int]] = []
+        for p in s.execute(select(Planet).where(Planet.owner_player_id == owner_id)).scalars().all():
+            hubs.append((int(p.pos_x), int(p.pos_y), 0))
+        for op in s.execute(select(Outpost).where(Outpost.owner_player_id == owner_id, Outpost.z == 0, Outpost.status == "active")).scalars().all():
+            hubs.append((int(op.x), int(op.y), int(op.z)))
+        if not hubs:
+            return None
+        scored: list[tuple[int, tuple[int, int, int]]] = []
+        for hx, hy, hz in hubs:
+            d = abs(int(hx) - int(x)) + abs(int(hy) - int(y))
+            scored.append((d, (int(hx), int(hy), int(hz))))
+        scored.sort(key=lambda t: t[0])
+        for _d, (hx, hy, hz) in scored:
+            blocked = (
+                s.execute(
+                    select(Fleet.id).where(
+                        Fleet.pos_x == int(hx),
+                        Fleet.pos_y == int(hy),
+                        Fleet.pos_z == int(hz),
+                    )
+                ).first()
+                is not None
+            )
+            if not blocked:
+                return (hx, hy, hz)
+        return scored[0][1]
+
+    def _fleet_adjacent_to_enemy_occupied_hub(self, s: Session, *, fleet: Fleet) -> bool:
+        """Флот на соседней с хабом клетке, а клетка хаба занята чужим флотом.
+
+        Иначе каждый тик создаётся новый emergency_return до хаба (осцилляция).
+        """
+        owner_id = fleet.owner_player_id
+        if int(getattr(fleet, "pos_z", 0) or 0) != 0:
+            return False
+        fx, fy = int(fleet.pos_x), int(fleet.pos_y)
+        hubs: list[tuple[int, int, int]] = []
+        for p in s.execute(select(Planet).where(Planet.owner_player_id == owner_id)).scalars().all():
+            hubs.append((int(p.pos_x), int(p.pos_y), 0))
+        for op in s.execute(select(Outpost).where(Outpost.owner_player_id == owner_id, Outpost.z == 0, Outpost.status == "active")).scalars().all():
+            hubs.append((int(op.x), int(op.y), int(op.z)))
+        for hx, hy, hz in hubs:
+            foe = (
+                s.execute(
+                    select(Fleet).where(
+                        Fleet.pos_x == int(hx),
+                        Fleet.pos_y == int(hy),
+                        Fleet.pos_z == int(hz),
+                        Fleet.owner_player_id != owner_id,
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if not foe:
+                continue
+            if abs(fx - int(hx)) + abs(fy - int(hy)) == 1:
+                return True
+        return False
+
+    def _apply_emergency_return_orders(self, s: Session, *, tick: int) -> None:
+        """Если флот без энергии и не в снабжении — ставим аварийный возврат к хабу.
+
+        Это "буксировка/аварийный режим": не требует топлива и энергии на постановку.
+        """
+        fleets = s.execute(select(Fleet).where(Fleet.qty > 0)).scalars().all()
+        if not fleets:
+            return
+        ws = self.get_or_create_world_state(s)
+        for f in fleets:
+            if int(getattr(f, "pos_z", 0) or 0) != 0:
+                continue
+            if int(getattr(f, "energy", 0) or 0) > 0:
+                continue
+            # если в снабжении — энергия скоро появится, не дёргаем
+            if self._is_cell_supplied(s, owner_id=f.owner_player_id, x=int(f.pos_x), y=int(f.pos_y), z=0):
+                continue
+            if self._active_order_for_fleet(s, fleet_id=f.id):
+                continue
+            if self._fleet_adjacent_to_enemy_occupied_hub(s, fleet=f):
+                continue
+            hub = self._nearest_return_hub(s, owner_id=f.owner_player_id, x=int(f.pos_x), y=int(f.pos_y), z=0)
+            if not hub:
+                continue
+            tx, ty, tz = hub
+            if int(tx) == int(f.pos_x) and int(ty) == int(f.pos_y) and int(tz) == 0:
+                continue
+            dist = abs(int(tx) - int(f.pos_x)) + abs(int(ty) - int(f.pos_y))
+            travel_ticks = max(1, dist)  # аварийно медленно: 1 клетка/тик
+            order = FleetOrder(
+                fleet_id=f.id,
+                owner_player_id=f.owner_player_id,
+                order_type="emergency_return",
+                from_x=int(f.pos_x),
+                from_y=int(f.pos_y),
+                from_z=int(getattr(f, "pos_z", 0) or 0),
+                target_x=int(tx),
+                target_y=int(ty),
+                target_z=0,
+                qty=int(f.qty),
+                status="queued",
+                start_tick=int(ws.current_tick) + 1,
+                finish_tick=int(ws.current_tick) + int(travel_ticks),
+                force_attack=False,
+                combat_prompt_expires_at=None,
+            )
+            s.add(order)
+            s.flush()
+            self._emit_event(
+                s,
+                tick=int(ws.current_tick),
+                type="fleet_emergency_return",
+                message=f"Аварийный возврат: флот → ({tx},{ty},{tz}) (нет энергии/снабжения)",
+                payload={"order_id": str(order.id), "fleet_id": str(f.id), "target": {"x": tx, "y": ty, "z": tz}},
+                player_id=f.owner_player_id,
+            )
 
     def _hash_u32(self, x: int, y: int, z: int) -> int:
         raw = f"{self._world_seed}:{x}:{y}:{z}".encode("utf-8")
@@ -937,23 +1554,18 @@ class WorldService:
                         "metal": res.metal if res else 0,
                         "crystal": res.crystal if res else 0,
                         "energy": res.energy if res else 0,
+                        "fuel": int(getattr(res, "fuel", 0)) if res else 0,
+                        "food": int(getattr(res, "food", 0)) if res else 0,
+                        "water": int(getattr(res, "water", 0)) if res else 0,
                     },
                     "units": [{"unit_type": u.unit_type, "qty": u.qty} for u in units],
                 }
             ],
         }
 
-    def apply_planet_production_tick(
-        self, s: Session, *, planet_id: uuid.UUID, influence_sources: list[dict] | None = None
-    ) -> dict:
-        planet = s.execute(select(Planet).where(Planet.id == planet_id)).scalar_one_or_none()
-        if not planet:
-            return {"metal": 0, "crystal": 0, "energy": 0, "fuel": 0}
-        res = s.execute(select(Resource).where(Resource.planet_id == planet_id)).scalar_one_or_none()
-        if not res:
-            return {"metal": 0, "crystal": 0, "energy": 0, "fuel": 0}
-
-        # База — из balance economy.json (главный источник чисел).
+    def _planet_production_deltas(
+        self, s: Session, *, planet: Planet, influence_sources: list[dict] | None = None
+    ) -> dict[str, int]:
         if self._balance:
             base = self._balance.get_base_production()
         else:
@@ -963,9 +1575,11 @@ class WorldService:
                 "crystal": int(prod.crystal_per_tick),
                 "energy": int(prod.energy_per_tick),
                 "fuel": int(prod.fuel_per_tick),
+                "food": int(prod.food_per_tick),
+                "water": int(prod.water_per_tick),
             }
 
-        bonus = {"metal": 0, "crystal": 0, "energy": 0, "fuel": 0}
+        bonus = {k: 0 for k in PLANET_STORE_KEYS}
         if self._balance:
             b_rows = (
                 s.execute(select(Building).where(Building.owner_player_id == planet.owner_player_id))
@@ -973,7 +1587,6 @@ class WorldService:
                 .all()
             )
             for b in b_rows:
-                # Вне снабжения постройки "встают" и не дают профита.
                 if not self._is_cell_supplied(
                     s, owner_id=planet.owner_player_id, x=int(b.x), y=int(b.y), z=int(getattr(b, "z", 0) or 0)
                 ):
@@ -984,7 +1597,7 @@ class WorldService:
                     bd = {}
                 eff = bd.get("effects") if isinstance(bd, dict) else None
                 prod_add = (eff.get("production_per_tick_add") if isinstance(eff, dict) else None) or {}
-                for k in ("metal", "crystal", "energy", "fuel"):
+                for k in PLANET_STORE_KEYS:
                     if isinstance(prod_add.get(k), (int, float)):
                         bonus[k] += int(prod_add.get(k))
         else:
@@ -992,34 +1605,82 @@ class WorldService:
 
         mods = self._race_modifiers(s, player_id=planet.owner_player_id)
         mul = mods.get("production_multiplier") if isinstance(mods.get("production_multiplier"), dict) else {}
+        tech_mul = self._tech_production_multipliers(s, player_id=planet.owner_player_id)
 
         sources = influence_sources if influence_sources is not None else self._collect_influence_sources(s)
         inf_scores = self._influence_scores_at(sources, int(planet.pos_x), int(planet.pos_y), 0)
         inf_mul = WorldService._planet_influence_production_multiplier(inf_scores, planet.owner_player_id)
 
         def _calc(k: str) -> int:
-            m = float(mul.get(k, 1.0))
+            m = float(mul.get(k, 1.0)) * float(tech_mul.get(k, 1.0))
             return int(round((base[k] + bonus[k]) * m * inf_mul))
 
-        dm, dc, de, df = _calc("metal"), _calc("crystal"), _calc("energy"), _calc("fuel")
-        res.metal += dm
-        res.crystal += dc
-        res.energy += de
-        res.fuel += df
+        return {k: _calc(k) for k in PLANET_STORE_KEYS}
+
+    def _population_vitals_upkeep_needs(self, *, population: int) -> tuple[int, int]:
+        """Еда/вода на содержание населения за один сол (из economy.json)."""
+        pop = max(0, int(population))
+        if pop <= 0:
+            return 0, 0
+        ff, ww = 3, 3
+        if self._balance and isinstance(self._balance.pack.economy, dict):
+            pm = self._balance.pack.economy.get("population_maintenance")
+            if isinstance(pm, dict):
+                v = pm.get("food_per_1000_pop_per_tick")
+                if isinstance(v, (int, float)):
+                    ff = int(v)
+                v2 = pm.get("water_per_1000_pop_per_tick")
+                if isinstance(v2, (int, float)):
+                    ww = int(v2)
+        ff = max(0, ff)
+        ww = max(0, ww)
+        return (max(0, (pop * ff + 999) // 1000), max(0, (pop * ww + 999) // 1000))
+
+    def apply_planet_production_tick(
+        self, s: Session, *, planet_id: uuid.UUID, influence_sources: list[dict] | None = None
+    ) -> dict:
+        planet = s.execute(select(Planet).where(Planet.id == planet_id)).scalar_one_or_none()
+        if not planet:
+            return {k: 0 for k in PLANET_STORE_KEYS}
+        res = s.execute(select(Resource).where(Resource.planet_id == planet_id)).scalar_one_or_none()
+        if not res:
+            return {k: 0 for k in PLANET_STORE_KEYS}
+
+        deltas = self._planet_production_deltas(s, planet=planet, influence_sources=influence_sources)
+        res.metal += deltas["metal"]
+        res.crystal += deltas["crystal"]
+        res.energy += deltas["energy"]
+        res.fuel += deltas["fuel"]
+        res.food += deltas["food"]
+        res.water += deltas["water"]
         s.flush()
 
         if hasattr(planet, "population"):
             mx = self._effective_max_population(s, planet)
             pop = int(getattr(planet, "population", 0) or 0)
             pop = min(pop, mx)
+            f_need, w_need = self._population_vitals_upkeep_needs(population=pop)
+            cur_f, cur_w = int(res.food), int(res.water)
+            take_f = min(cur_f, f_need)
+            take_w = min(cur_w, w_need)
+            res.food = cur_f - take_f
+            res.water = cur_w - take_w
+            fed_full = (f_need == 0 or take_f >= f_need) and (w_need == 0 or take_w >= w_need)
+            severe_short = (f_need > 0 and take_f * 2 < f_need) or (w_need > 0 and take_w * 2 < w_need)
+            if take_f == 0 and take_w == 0 and f_need + w_need > 0 and pop > 80:
+                planet.population = max(0, pop - max(1, pop // 100))
+            elif severe_short and pop > 150:
+                planet.population = max(0, pop - max(1, pop // 250))
+            pop = int(getattr(planet, "population", 0) or 0)
+            pop = min(pop, mx)
             gap = mx - pop
-            if gap > 0:
+            if fed_full and gap > 0:
                 step = max(1, gap // 200)
                 planet.population = min(mx, pop + step)
             elif pop > mx:
                 planet.population = mx
 
-        return {"metal": dm, "crystal": dc, "energy": de, "fuel": df}
+        return deltas
 
     def get_sector_stub(self, s: Session, *, x: int | None, y: int | None, z: int = 0, player_id: str | None) -> dict:
         sector = {"x": x, "y": y, "z": z, "objects": [], "cell": None}
@@ -1084,52 +1745,44 @@ class WorldService:
                     .scalars()
                     .all()
                 )
-                # Выработка: база из balance + бонус построек (через balance buildings effects).
-                if self._balance:
-                    base = self._balance.get_base_production()
-                    # бонус от построек игрока: суммируем эффекты из balance (id резолвится алиасами).
-                    bonus = {"metal": 0, "crystal": 0, "energy": 0, "fuel": 0}
-                    b_rows = s.execute(select(Building).where(Building.owner_player_id == p.owner_player_id)).scalars().all()
-                    for b in b_rows:
-                        bd = self._balance.get_building(b.building_type)
-                        eff = bd.get("effects") if isinstance(bd, dict) else {}
-                        add = eff.get("production_per_tick_add") if isinstance(eff.get("production_per_tick_add"), dict) else {}
-                        for k in ("metal", "crystal", "energy", "fuel"):
-                            if isinstance(add.get(k), (int, float)):
-                                bonus[k] += int(add.get(k))
-                    production = {
-                        "metal_per_tick": base["metal"] + bonus["metal"],
-                        "crystal_per_tick": base["crystal"] + bonus["crystal"],
-                        "energy_per_tick": base["energy"] + bonus["energy"],
-                        "fuel_per_tick": base["fuel"] + bonus["fuel"],
-                    }
-                else:
-                    prod = calc_planet_production()
-                    bonus = self._get_building_bonus_for_player(s, player_id=p.owner_player_id)
-                    production = {
-                        "metal_per_tick": prod.metal_per_tick + bonus["metal"],
-                        "crystal_per_tick": prod.crystal_per_tick + bonus["crystal"],
-                        "energy_per_tick": prod.energy_per_tick + bonus["energy"],
-                        "fuel_per_tick": prod.fuel_per_tick + bonus["fuel"],
-                    }
+                inf_src = self._collect_influence_sources(s)
+                dlt = self._planet_production_deltas(s, planet=p, influence_sources=inf_src)
+                production = {
+                    "metal_per_tick": dlt["metal"],
+                    "crystal_per_tick": dlt["crystal"],
+                    "energy_per_tick": dlt["energy"],
+                    "fuel_per_tick": dlt["fuel"],
+                    "food_per_tick": dlt["food"],
+                    "water_per_tick": dlt["water"],
+                }
                 built_total = int(
                     s.execute(select(func.count(Building.id)).where(Building.planet_id == p.id)).scalar() or 0
                 )
                 slots_total = int(getattr(p, "build_slots_total", 55) or 55)
                 build = {"active": None, "queue": []}
                 mxpop = self._effective_max_population(s, p)
+                sr = self._planet_supply_radius(s, planet=p)
+                ppop = int(getattr(p, "population", 0) or 0)
+                f_up, w_up = self._population_vitals_upkeep_needs(population=ppop)
                 obj["details"] = {
                     "resources": {
                         "metal": int(res.metal) if res else 0,
                         "crystal": int(res.crystal) if res else 0,
                         "energy": int(res.energy) if res else 0,
                         "fuel": int(getattr(res, "fuel", 0)) if res else 0,
+                        "food": int(getattr(res, "food", 0)) if res else 0,
+                        "water": int(getattr(res, "water", 0)) if res else 0,
                     },
                     "production": production,
-                    "population": int(getattr(p, "population", 0) or 0),
+                    "population": ppop,
+                    "population_vitals": {"food_per_sol": f_up, "water_per_sol": w_up},
                     "max_population": mxpop,
                     "planet_class": str(getattr(p, "planet_class", "earthlike") or "earthlike"),
                     "build_slots": {"used": built_total, "total": slots_total},
+                    "supplier_count": int(getattr(p, "supplier_count", 0) or 0),
+                    "supply_radius": int(sr),
+                    "supply_base": self.SUPPLY_BASE_RADIUS,
+                    "supply_per_supplier": self.SUPPLY_PER_SUPPLIER,
                     "units": [{"unit_type": u.unit_type, "qty": int(u.qty)} for u in units],
                     "build": build,
                 }
@@ -2168,9 +2821,12 @@ class WorldService:
             "target_y": ao.target_y,
             "target_z": ao.target_z,
             "finish_tick": ao.finish_tick,
+            "finish_sol": int(ao.finish_tick),
             "remaining_ticks": remaining,
+            "remaining_sols": int(remaining),
             "distance": d,
             "travel_ticks": travel_ticks,
+            "travel_sols": int(travel_ticks),
             "force_attack": bool(getattr(ao, "force_attack", False)),
         }
         if ao.status == "pending_combat" and getattr(ao, "combat_prompt_expires_at", None):
@@ -3885,8 +4541,11 @@ class WorldService:
             "qty": order.qty,
             "distance": travel.distance,
             "travel_ticks": travel.travel_ticks,
+            "travel_sols": int(travel.travel_ticks),
             "start_tick": order.start_tick,
+            "start_sol": int(order.start_tick),
             "finish_tick": order.finish_tick,
+            "finish_sol": int(order.finish_tick),
             "fuel_cost": fuel_plan.fuel_cost,
         }
 
@@ -4027,6 +4686,24 @@ class WorldService:
             )
             if occupant:
                 if occupant.owner_player_id == fleet.owner_player_id:
+                    if str(getattr(order, "order_type", "") or "") == "emergency_return":
+                        order.status = "failed"
+                        events.append(
+                            {
+                                "type": "fleet_order_failed",
+                                "order_id": str(order.id),
+                                "reason": "cell_occupied_by_own_fleet",
+                            }
+                        )
+                        self._emit_event(
+                            s,
+                            tick=next_tick,
+                            type="fleet_order_failed",
+                            message="Аварийный возврат отменён: в клетке хаба уже стоит ваш другой флот.",
+                            payload={"order_id": str(order.id), "reason": "cell_occupied_by_own_fleet"},
+                            player_id=order.owner_player_id,
+                        )
+                        continue
                     order.status = "failed"
                     # Топливо уже списали при создании приказа; к прилёту цель занялась своим флотом — возвращаем стоимость этого перелёта.
                     pid_own = fleet.owner_player_id
@@ -4086,6 +4763,51 @@ class WorldService:
                     )
                     order.status = "done"
                     events.append({"type": "fleet_order_done", "order_id": str(order.id), "fleet_id": str(fleet.id)})
+                    continue
+
+                if str(getattr(order, "order_type", "") or "") == "emergency_return":
+                    pair = self._nearest_cell_without_other_fleet(
+                        s,
+                        center_x=int(order.target_x),
+                        center_y=int(order.target_y),
+                        center_z=int(order.target_z),
+                        exclude_fleet_id=fleet.id,
+                    )
+                    if pair:
+                        fleet.pos_x, fleet.pos_y = int(pair[0]), int(pair[1])
+                        fleet.pos_z = int(order.target_z)
+                        order.status = "done"
+                        events.append({"type": "fleet_order_done", "order_id": str(order.id), "fleet_id": str(fleet.id)})
+                        self._emit_event(
+                            s,
+                            tick=next_tick,
+                            type="emergency_orbit_staging",
+                            message=(
+                                f"Аварийный возврат: у хаба ({order.target_x},{order.target_y}) враг "
+                                f"«{self._fleet_public_name(occupant)}» — флот на ({pair[0]},{pair[1]}), нужен ваш приказ."
+                            ),
+                            payload={
+                                "order_id": str(order.id),
+                                "fleet_id": str(fleet.id),
+                                "hub": {"x": order.target_x, "y": order.target_y, "z": order.target_z},
+                                "staging": {"x": pair[0], "y": pair[1], "z": fleet.pos_z},
+                                "defender_fleet_id": str(occupant.id),
+                            },
+                            player_id=order.owner_player_id,
+                        )
+                        continue
+                    order.status = "failed"
+                    events.append(
+                        {"type": "fleet_order_failed", "order_id": str(order.id), "reason": "emergency_no_staging_cell"}
+                    )
+                    self._emit_event(
+                        s,
+                        tick=next_tick,
+                        type="fleet_order_failed",
+                        message="Аварийный возврат: нет свободной клетки у хаба, занятого врагом.",
+                        payload={"order_id": str(order.id), "reason": "emergency_no_staging_cell"},
+                        player_id=order.owner_player_id,
+                    )
                     continue
 
                 # Второе подтверждение: флот у кромки цели, бой только после согласия игрока (или таймаут).
@@ -4238,7 +4960,9 @@ class WorldService:
         self._apply_outpost_upkeep_tick(s, tick=next_tick)
         # 3) Энергия флотов: пополнение/реген только при снабжении/хабе
         self._apply_fleet_energy_tick(s, tick=next_tick)
-        # 4) Форпосты: автоматический обстрел вражеских флотов (каждый тик)
+        # 4) Автопилот: аварийный возврат к хабу если нет энергии/снабжения
+        self._apply_emergency_return_orders(s, tick=next_tick)
+        # 5) Форпосты: автоматический обстрел вражеских флотов (каждый тик)
         self._apply_outpost_combat_tick(s, tick=next_tick)
 
         inf_src = self._collect_influence_sources(s)
@@ -4249,13 +4973,19 @@ class WorldService:
         for p in planets:
             self.apply_planet_production_tick(s, planet_id=p.id, influence_sources=inf_src)
 
+        # Логистика линий снабжения к форпостам (еда/вода с планеты-хаба).
+        self._apply_supply_route_logistics_tick(s, tick=next_tick)
+
+        # Имперское содержание флотов: списание с капитальной планеты.
+        self._apply_fleet_empire_upkeep_tick(s, tick=next_tick)
+
         # MVP: upkeep после обработки ордеров, для всех игроков у кого есть флоты.
         owner_ids = s.execute(select(Fleet.owner_player_id).distinct()).scalars().all()
         for oid in owner_ids:
             self.apply_fleet_upkeep_tick(s, player_id=oid, tick=next_tick)
 
         s.flush()
-        return {"current_tick": ws.current_tick, "events": events}
+        return {"current_tick": ws.current_tick, "current_sol": int(ws.current_tick), "events": events}
 
     def get_units_status(self, s: Session, *, player_id: str) -> dict:
         pid = uuid.UUID(player_id)
@@ -4296,7 +5026,7 @@ class WorldService:
             )
 
         ws = self.get_or_create_world_state(s)
-        return {"current_tick": ws.current_tick, "units": payload}
+        return {"current_tick": ws.current_tick, "current_sol": int(ws.current_tick), "units": payload}
 
     def get_world_state(self, s: Session, *, player_id: str, auto_tick_enabled: bool, auto_tick_interval_seconds: float) -> dict:
         pid = uuid.UUID(player_id)
@@ -4307,6 +5037,7 @@ class WorldService:
         if not home:
             return {
                 "current_tick": ws.current_tick,
+                "current_sol": int(ws.current_tick),
                 "player_id": str(pid),
                 "auto_tick_enabled": auto_tick_enabled,
                 "auto_tick_interval_seconds": auto_tick_interval_seconds,
@@ -4377,29 +5108,12 @@ class WorldService:
         crystal = int(res.crystal) if res else 0
         energy = int(res.energy) if res else 0
         fuel = int(getattr(res, "fuel", 0)) if res else 0
+        food = int(getattr(res, "food", 0)) if res else 0
+        water = int(getattr(res, "water", 0)) if res else 0
 
-        # Производство/бонусы: только через баланс (если доступен), иначе fallback.
-        if self._balance:
-            base = self._balance.get_base_production()
-            bonus = {"metal": 0, "crystal": 0, "energy": 0, "fuel": 0}
-            b_rows = s.execute(select(Building).where(Building.owner_player_id == pid)).scalars().all()
-            for b in b_rows:
-                bd = self._balance.get_building(b.building_type)
-                eff = bd.get("effects") if isinstance(bd, dict) else {}
-                add = eff.get("production_per_tick_add") if isinstance(eff.get("production_per_tick_add"), dict) else {}
-                for k in ("metal", "crystal", "energy", "fuel"):
-                    if isinstance(add.get(k), (int, float)):
-                        bonus[k] += int(add.get(k))
-            prod_per_tick = {k: int(base[k] + bonus[k]) for k in ("metal", "crystal", "energy", "fuel")}
-        else:
-            prod = calc_planet_production()
-            bonus = self._get_building_bonus_for_player(s, player_id=pid)
-            prod_per_tick = {
-                "metal": int(prod.metal_per_tick + bonus["metal"]),
-                "crystal": int(prod.crystal_per_tick + bonus["crystal"]),
-                "energy": int(prod.energy_per_tick + bonus["energy"]),
-                "fuel": int(prod.fuel_per_tick + bonus["fuel"]),
-            }
+        inf_src_h = self._collect_influence_sources(s)
+        dlt_home = self._planet_production_deltas(s, planet=home, influence_sources=inf_src_h)
+        prod_per_tick = {k: int(dlt_home[k]) for k in PLANET_STORE_KEYS}
 
         fleets = s.execute(select(Fleet).where(Fleet.owner_player_id == pid)).scalars().all()
         upkeep_energy = 0
@@ -4413,6 +5127,7 @@ class WorldService:
 
         home_mx = self._effective_max_population(s, home)
         home_pop = int(getattr(home, "population", 0) or 0)
+        pop_food_need, pop_water_need = self._population_vitals_upkeep_needs(population=home_pop)
 
         inf_sources_hud = self._collect_influence_sources(s)
         h_scores = self._influence_scores_at(inf_sources_hud, int(home.pos_x), int(home.pos_y), 0)
@@ -4466,6 +5181,7 @@ class WorldService:
 
         return {
             "current_tick": ws.current_tick,
+            "current_sol": int(ws.current_tick),
             "player_id": str(pid),
             "auto_tick_enabled": auto_tick_enabled,
             "auto_tick_interval_seconds": auto_tick_interval_seconds,
@@ -4482,18 +5198,25 @@ class WorldService:
                 "crystal": crystal,
                 "energy": energy,
                 "fuel": fuel,
+                "food": food,
+                "water": water,
                 "production_per_tick": {
                     "metal": prod_per_tick["metal"],
                     "crystal": prod_per_tick["crystal"],
                     "energy": prod_per_tick["energy"],
                     "fuel": prod_per_tick["fuel"],
+                    "food": prod_per_tick["food"],
+                    "water": prod_per_tick["water"],
                 },
                 "avg_10_ticks": {
                     "metal": prod_per_tick["metal"],
                     "crystal": prod_per_tick["crystal"],
                     "energy": max(0, prod_per_tick["energy"] - upkeep_energy),
                     "fuel": prod_per_tick["fuel"],
+                    "food": max(0, prod_per_tick["food"] - pop_food_need),
+                    "water": max(0, prod_per_tick["water"] - pop_water_need),
                 },
+                "population_vitals_per_sol": {"food": pop_food_need, "water": pop_water_need},
                 "upkeep_energy_per_tick": upkeep_energy,
                 "fleet_units": fleet_units,
                 "energy_ticks_left": energy_ticks_left,

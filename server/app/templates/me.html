@@ -13,7 +13,7 @@
       <span class="status-dot"></span>
       <label style="display:flex;gap:8px;align-items:center;cursor:pointer;">
         <input id="autotick-toggle" type="checkbox" style="width:auto;margin:0;" />
-        <span id="autotick-text">Автотик: —</span>
+        <span id="autotick-text">Автосол: —</span>
       </label>
     </div>
     <div class="status-chip" id="resources-chip">
@@ -21,9 +21,11 @@
       <span class="muted">💎</span><span id="top-crystal">—</span>
       <span class="muted">⚡</span><span id="top-energy">—</span>
       <span class="muted">⛽</span><span id="top-fuel">—</span>
+      <span class="muted">🍲</span><span id="top-food">—</span>
+      <span class="muted">💧</span><span id="top-water">—</span>
       <span class="muted" id="top-delta">(+—/10t)</span>
     </div>
-    <button type="button" id="manual-tick-btn">Тик</button>
+    <button type="button" id="manual-tick-btn" title="Провести один игровой сол">Сол</button>
     <button type="button" id="tech-modal-open" class="status-chip" style="width:auto;">Исследования</button>
     <button type="button" id="ui-settings-btn" class="status-chip" style="width:auto;">Настройки UI</button>
     <a href="{{ url_for('web.account') }}" class="status-chip" style="text-decoration:none;">Аккаунт</a>
@@ -75,9 +77,9 @@
         </div>
         <div class="hud-block">Текущие координаты юнита: <b id="hud-unit-pos">—</b></div>
         <div class="hud-block">Текущий Z-слой: <b id="hud-z">{{ z }}</b></div>
-        <div class="hud-block">Текущий tick: <b id="hud-tick">0</b></div>
+        <div class="hud-block">Текущий сол: <b id="hud-tick">0</b></div>
         <div class="hud-block">Статус флота: <b id="hud-unit-status">ожидание</b></div>
-        <div class="hud-block">Осталось тиков: <b id="hud-eta">—</b> • Прибытие (тик): <b id="hud-arrive-tick">—</b></div>
+        <div class="hud-block">Осталось солов: <b id="hud-eta">—</b> • Прибытие (сол): <b id="hud-arrive-tick">—</b></div>
         <div class="hud-block">Домашняя планета: <b id="hud-home">{{ data.planets[0].pos.x }}, {{ data.planets[0].pos.y }}, 0</b></div>
 
         <div class="hud-block">
@@ -87,6 +89,7 @@
             <div>Ландшафт: <b id="sel-terrain">—</b> • Маркер: <b id="sel-glyph">—</b></div>
             <div>Объекты: <b id="sel-objects">—</b></div>
             <div>Влияние (видимая клетка): <b id="sel-influence">—</b></div>
+            <div>Снабжение: <b id="sel-supply">—</b></div>
             <div>Расстояние (клеток): <b id="sel-distance">—</b></div>
             <div>Время полёта: <b id="sel-travel">—</b> • Прибытие: <b id="sel-arrive">—</b></div>
           </div>
@@ -159,7 +162,7 @@
         <div class="hud-kv">
           <div>Откуда: <b id="cf-from">—</b></div>
           <div>Куда: <b id="cf-to">—</b></div>
-          <div>Длительность: <b id="cf-eta">—</b> • Прибытие (тик): <b id="cf-arrive">—</b></div>
+          <div>Длительность: <b id="cf-eta">—</b> • Прибытие (сол): <b id="cf-arrive">—</b></div>
           <div>Топливо: <b id="cf-fuel">—</b></div>
           <div>Назначение: <b id="cf-dest">—</b></div>
           <div class="muted" id="cf-warn" style="margin-top:6px;"></div>

@@ -5,13 +5,60 @@ import pytest
 
 from app.services.balance_service import BalanceError, BalanceService, load_balance_pack
 from app.services.world_service import WorldService
+from app.db.models.planet import Planet
 
 
 def test_balance_pack_loads_from_repo_default_path():
     base = Path(__file__).resolve().parents[1] / "data" / "balance"
     svc = BalanceService.load_from_path(base)
     assert svc.balance_schema_version() == 1
-    assert svc.get_base_production()["metal"] > 0
+    bp = svc.get_base_production()
+    assert bp["metal"] > 0
+    assert "food" in bp and "water" in bp
+    eco = svc.pack.economy
+    assert isinstance(eco.get("population_maintenance"), dict)
+    assert isinstance(eco.get("supply_route_upkeep"), dict)
+    assert isinstance(eco.get("fleet_empire_upkeep"), dict)
+    assert svc.pack.tech_by_id.get("tech_supply_networks_1") is not None
+    assert svc.pack.buildings_by_id.get("logistics_center_t1") is not None
+
+    ws = WorldService(balance=svc)
+    assert ws._fleet_empire_upkeep_unpaid_penalty_energy() >= 0
+
+
+def test_supply_route_logistics_costs_use_manhattan_extras():
+    base = Path(__file__).resolve().parents[1] / "data" / "balance"
+    svc = BalanceService.load_from_path(base)
+    ws = WorldService(balance=svc)
+
+    # Подменим экстра-стоимость, чтобы тест был стабильным.
+    svc.pack.economy["supply_route_upkeep"]["food_per_sol_per_outpost"] = 2
+    svc.pack.economy["supply_route_upkeep"]["water_per_sol_per_outpost"] = 2
+    svc.pack.economy["supply_route_upkeep"]["food_per_manhattan_from_hub"] = 1
+    svc.pack.economy["supply_route_upkeep"]["water_per_manhattan_from_hub"] = 2
+
+    hub = Planet(pos_x=10, pos_y=10, owner_player_id=uuid.uuid4(), name="Hub", population=800, max_population=5000)
+    food, water = ws._supply_route_logistics_costs(hub=hub, ox=13, oy=12)  # d=5
+    assert food == 2 + 1 * 5
+    assert water == 2 + 2 * 5
+
+
+def test_fleet_empire_upkeep_costs_default_is_per_fleet():
+    base = Path(__file__).resolve().parents[1] / "data" / "balance"
+    svc = BalanceService.load_from_path(base)
+    ws = WorldService(balance=svc)
+
+    # Значения по умолчанию: 1 металл + 1 кристалл за флот, per_ship=0.
+    c = ws._fleet_empire_upkeep_costs(fleets=3, ships=99)
+    assert c["metal"] == 3
+    assert c["crystal"] == 3
+
+
+def test_supplier_unit_definition_exists():
+    base = Path(__file__).resolve().parents[1] / "data" / "balance"
+    svc = BalanceService.load_from_path(base)
+    u = svc.get_unit("supplier_t1")
+    assert u.get("id") == "supplier_t1"
 
 
 def test_unknown_unit_building_errors_are_readable():
@@ -108,6 +155,8 @@ def test_balance_contains_outposts_and_territory_techs():
     assert svc.get_outpost_module("module_radar_t1")["id"] == "module_radar_t1"
     assert "tech_territory_2" in svc.pack.tech_by_id
     assert "tech_territory_3" in svc.pack.tech_by_id
+    assert "tech_hydroponics_1" in svc.pack.tech_by_id
+    assert "tech_atmospheric_water_1" in svc.pack.tech_by_id
 
 
 def test_get_sector_stub_regression_guard_no_pobj_typo():
@@ -135,4 +184,6 @@ def test_building_foundation_terrain_rules_present():
     habitat = svc.get_building("habitat")
     assert "build_on_terrain" in habitat
     assert "empty" not in habitat["build_on_terrain"]
+    hf = svc.get_building("hydro_farm")
+    assert hf.get("effects", {}).get("production_per_tick_add", {}).get("food") == 3
 
