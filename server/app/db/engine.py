@@ -19,7 +19,9 @@ def init_session_factory() -> None:
     global _SessionFactory
     if _engine is None:
         raise RuntimeError("DB engine is not initialized")
-    _SessionFactory = sessionmaker(bind=_engine, expire_on_commit=False, autoflush=False, future=True)
+    _SessionFactory = sessionmaker(
+        bind=_engine, expire_on_commit=False, autoflush=False, future=True
+    )
 
 
 @contextmanager
@@ -40,4 +42,3 @@ def get_engine():
     if _engine is None:
         raise RuntimeError("DB engine is not initialized")
     return _engine
-

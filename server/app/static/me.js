@@ -569,6 +569,14 @@
           .join(" ");
         btn.textContent = extra ? `${baseLabel} ${extra}` : baseLabel;
 
+        const nm = meta && meta.name ? String(meta.name) : bt;
+        const desc = meta && meta.description ? String(meta.description) : "";
+        const baseTipParts = [];
+        baseTipParts.push(`${nm}${desc ? " — " + desc : ""}`);
+        if (effectsRu && effectsRu !== "—") baseTipParts.push(`Эффект: ${effectsRu}`);
+        if (terrainsRu) baseTipParts.push(`Террейн: ${terrainsRu}`);
+        const baseTip = baseTipParts.filter(Boolean).join("\n");
+
         // По умолчанию — показываем только реально доступные варианты.
         // По галочке "Показать все варианты" — показываем весь список (с подсказками).
         if (!showAll && !(res && res.ok)) {
@@ -579,27 +587,27 @@
 
         if (res && res.ok) {
           btn.disabled = false;
-          btn.title = "";
+          btn.title = baseTip;
         } else {
           btn.disabled = true;
           const err = res ? res.error : "not_allowed";
           if (err === "wrong_foundation_terrain") {
             const exp = Array.isArray(res.expected) ? res.expected.join(", ") : "—";
             const got = res.terrain ? String(res.terrain) : "—";
-            btn.title = `Нужно основание: ${exp}. Сейчас: ${got}.`;
+            btn.title = [baseTip, `Нужно основание: ${exp}. Сейчас: ${got}.`].filter(Boolean).join("\n");
           } else if (err === "planet_required") {
-            btn.title = "Можно построить только в клетке планеты.";
+            btn.title = [baseTip, "Можно построить только в клетке планеты."].filter(Boolean).join("\n");
           } else if (err === "tech_required") {
             const missing = Array.isArray(res.missing_techs) ? res.missing_techs.join(", ") : "—";
-            btn.title = `Нужно исследование: ${missing}`;
+            btn.title = [baseTip, `Нужно исследование: ${missing}`].filter(Boolean).join("\n");
           } else if (err === "engineer_required") {
-            btn.title = "Нужен ваш флот с инженерами в этой клетке.";
+            btn.title = [baseTip, "Нужен ваш флот с инженерами в этой клетке."].filter(Boolean).join("\n");
           } else if (err === "not_enough_engineers") {
-            btn.title = "Не хватает инженеров в этом флоте.";
+            btn.title = [baseTip, "Не хватает инженеров в этом флоте."].filter(Boolean).join("\n");
           } else if (err === "inside_enemy_control_zone") {
-            btn.title = "Нельзя: клетка под подтверждённым вражеским контролем.";
+            btn.title = [baseTip, "Нельзя: клетка под подтверждённым вражеским контролем."].filter(Boolean).join("\n");
           } else {
-            btn.title = `Нельзя: ${err}`;
+            btn.title = [baseTip, `Нельзя: ${err}`].filter(Boolean).join("\n");
           }
         }
       }

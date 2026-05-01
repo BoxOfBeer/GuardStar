@@ -19,7 +19,9 @@ EFFECT_ANOMALY_DATA = "anomaly_data"
 EFFECT_RESEARCH_FRAGMENTS = "research_fragments"
 
 
-def list_active_player_effects(s: Session, *, player_id: uuid.UUID, tick: int) -> list[dict]:
+def list_active_player_effects(
+    s: Session, *, player_id: uuid.UUID, tick: int
+) -> list[dict]:
     """Список активных (не used, не истёк) эффектов игрока для UI."""
     now = int(tick)
     rows = (
@@ -54,7 +56,9 @@ def list_active_player_effects(s: Session, *, player_id: uuid.UUID, tick: int) -
                 "source_type": str(r.source_type or ""),
                 "source_ref": str(r.source_ref or ""),
                 "created_tick": int(r.created_tick or 0),
-                "expires_tick": int(r.expires_tick) if r.expires_tick is not None else None,
+                "expires_tick": int(r.expires_tick)
+                if r.expires_tick is not None
+                else None,
                 "remaining_ticks": rem,
                 "payload": payload,
             }
@@ -95,17 +99,13 @@ def count_field_data(s: Session, *, player_id: uuid.UUID, tick: int, kind: str) 
     if k not in (EFFECT_RUIN_ARCHIVES, EFFECT_ANOMALY_DATA, EFFECT_RESEARCH_FRAGMENTS):
         return 0
     now = int(tick)
-    rows = (
-        s.execute(
-            select(PlayerEffect.id, PlayerEffect.expires_tick)
-            .where(
-                PlayerEffect.player_id == player_id,
-                PlayerEffect.effect_type == k,
-                PlayerEffect.used_at_tick.is_(None),
-            )
+    rows = s.execute(
+        select(PlayerEffect.id, PlayerEffect.expires_tick).where(
+            PlayerEffect.player_id == player_id,
+            PlayerEffect.effect_type == k,
+            PlayerEffect.used_at_tick.is_(None),
         )
-        .all()
-    )
+    ).all()
     c = 0
     for _id, exp in rows:
         if exp is not None and int(exp) <= now:
@@ -114,7 +114,9 @@ def count_field_data(s: Session, *, player_id: uuid.UUID, tick: int, kind: str) 
     return c
 
 
-def consume_field_data(s: Session, *, player_id: uuid.UUID, tick: int, kind: str, qty: int = 1) -> bool:
+def consume_field_data(
+    s: Session, *, player_id: uuid.UUID, tick: int, kind: str, qty: int = 1
+) -> bool:
     k = str(kind or "").strip()
     need = max(0, int(qty))
     if need <= 0:
@@ -149,7 +151,13 @@ def consume_field_data(s: Session, *, player_id: uuid.UUID, tick: int, kind: str
 
 
 def upsert_single_blueprint_cache(
-    s: Session, *, player_id: uuid.UUID, tick: int, source_type: str, source_ref: str, payload: dict
+    s: Session,
+    *,
+    player_id: uuid.UUID,
+    tick: int,
+    source_type: str,
+    source_ref: str,
+    payload: dict,
 ) -> PlayerEffect:
     """Гарантирует максимум один активный blueprint_cache: обновляет существующий или создаёт новый."""
     row = (
@@ -188,7 +196,14 @@ def upsert_single_blueprint_cache(
 
 
 def upsert_research_speed_boost(
-    s: Session, *, player_id: uuid.UUID, tick: int, source_type: str, source_ref: str, time_multiplier: float, duration_ticks: int
+    s: Session,
+    *,
+    player_id: uuid.UUID,
+    tick: int,
+    source_type: str,
+    source_ref: str,
+    time_multiplier: float,
+    duration_ticks: int,
 ) -> PlayerEffect:
     """
     research_speed_boost не стакуется:
@@ -234,13 +249,17 @@ def upsert_research_speed_boost(
     if not isinstance(cur_payload, dict):
         cur_payload = {}
     cur_m = cur_payload.get("time_multiplier")
-    cur_m = float(cur_m) if isinstance(cur_m, (int, float)) and float(cur_m) > 0 else 1.0
+    cur_m = (
+        float(cur_m) if isinstance(cur_m, (int, float)) and float(cur_m) > 0 else 1.0
+    )
 
     if new_m < cur_m:
         exp = now + dur
         row.source_type = str(source_type or row.source_type or "unknown")
         row.source_ref = str(source_ref or row.source_ref or "")
-        row.payload_json = json.dumps({"time_multiplier": new_m, "duration_ticks": dur}, ensure_ascii=False)
+        row.payload_json = json.dumps(
+            {"time_multiplier": new_m, "duration_ticks": dur}, ensure_ascii=False
+        )
         row.created_tick = now
         row.expires_tick = exp
         s.flush()
@@ -255,25 +274,24 @@ def upsert_research_speed_boost(
 
 def has_active_ambush_cooldown(s: Session, *, player_id: uuid.UUID, tick: int) -> bool:
     now = int(tick)
-    row = (
-        s.execute(
-            select(PlayerEffect.id, PlayerEffect.expires_tick)
-            .where(
-                PlayerEffect.player_id == player_id,
-                PlayerEffect.effect_type == EFFECT_BANDIT_AMBUSH_COOLDOWN,
-                PlayerEffect.used_at_tick.is_(None),
-            )
-            .order_by(PlayerEffect.id.desc())
+    row = s.execute(
+        select(PlayerEffect.id, PlayerEffect.expires_tick)
+        .where(
+            PlayerEffect.player_id == player_id,
+            PlayerEffect.effect_type == EFFECT_BANDIT_AMBUSH_COOLDOWN,
+            PlayerEffect.used_at_tick.is_(None),
         )
-        .first()
-    )
+        .order_by(PlayerEffect.id.desc())
+    ).first()
     if not row:
         return False
     exp = row[1]
     return exp is None or int(exp) > now
 
 
-def start_ambush_cooldown(s: Session, *, player_id: uuid.UUID, tick: int, cooldown_ticks: int) -> None:
+def start_ambush_cooldown(
+    s: Session, *, player_id: uuid.UUID, tick: int, cooldown_ticks: int
+) -> None:
     now = int(tick)
     cd = max(1, int(cooldown_ticks))
     s.add(
@@ -292,10 +310,17 @@ def start_ambush_cooldown(s: Session, *, player_id: uuid.UUID, tick: int, cooldo
 
 def cleanup_expired_player_effects(s: Session, *, before_tick: int) -> None:
     """Удаляет истёкшие по expires_tick эффекты (строго < before_tick)."""
-    s.execute(delete(PlayerEffect).where(PlayerEffect.expires_tick.isnot(None), PlayerEffect.expires_tick < int(before_tick)))
+    s.execute(
+        delete(PlayerEffect).where(
+            PlayerEffect.expires_tick.isnot(None),
+            PlayerEffect.expires_tick < int(before_tick),
+        )
+    )
 
 
-def get_research_time_multiplier(s: Session, *, player_id: uuid.UUID, tick: int) -> float:
+def get_research_time_multiplier(
+    s: Session, *, player_id: uuid.UUID, tick: int
+) -> float:
     """
     Множитель длительности исследования (чем меньше — тем быстрее).
     Берём лучший активный research_speed_boost.
@@ -330,7 +355,9 @@ def get_research_time_multiplier(s: Session, *, player_id: uuid.UUID, tick: int)
     return float(best) if best is not None else 1.0
 
 
-def consume_blueprint_cache(s: Session, *, player_id: uuid.UUID, tick: int) -> dict | None:
+def consume_blueprint_cache(
+    s: Session, *, player_id: uuid.UUID, tick: int
+) -> dict | None:
     """
     Списывает один активный blueprint_cache (самый ранний по id).
     Возвращает payload-скидки или None.

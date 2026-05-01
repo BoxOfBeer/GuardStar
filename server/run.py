@@ -19,7 +19,9 @@ if __name__ == "__main__":
     try:
         s.bind((host, port))
     except OSError:
-        print(f"[GuardStar] Порт {host}:{port} уже занят. Остановите старый сервер и запустите снова.")
+        print(
+            f"[GuardStar] Порт {host}:{port} уже занят. Остановите старый сервер и запустите снова."
+        )
         sys.exit(1)
     finally:
         try:

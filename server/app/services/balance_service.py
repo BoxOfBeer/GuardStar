@@ -32,13 +32,21 @@ class BalanceService:
         return str(v) if isinstance(v, str) and v.strip() else None
 
     def _resolve_unit_id(self, unit_type: str) -> str:
-        aliases = self.pack.aliases.get("unit_aliases") if isinstance(self.pack.aliases, dict) else {}
+        aliases = (
+            self.pack.aliases.get("unit_aliases")
+            if isinstance(self.pack.aliases, dict)
+            else {}
+        )
         if isinstance(aliases, dict) and unit_type in aliases:
             return str(aliases[unit_type])
         return unit_type
 
     def _resolve_building_id(self, building_type: str) -> str:
-        aliases = self.pack.aliases.get("building_aliases") if isinstance(self.pack.aliases, dict) else {}
+        aliases = (
+            self.pack.aliases.get("building_aliases")
+            if isinstance(self.pack.aliases, dict)
+            else {}
+        )
         if isinstance(aliases, dict) and building_type in aliases:
             return str(aliases[building_type])
         return building_type
@@ -54,7 +62,9 @@ class BalanceService:
         bid = self._resolve_building_id(building_type)
         b = self.pack.buildings_by_id.get(bid)
         if not b:
-            raise BalanceError(f"unknown_building: building_type={building_type} resolved_id={bid}")
+            raise BalanceError(
+                f"unknown_building: building_type={building_type} resolved_id={bid}"
+            )
         return b
 
     def get_outpost(self, outpost_type: str) -> dict:
@@ -76,20 +86,30 @@ class BalanceService:
         return r
 
     def get_base_production(self) -> dict:
-        base = self.pack.economy.get("base_planet_production") if isinstance(self.pack.economy, dict) else None
+        base = (
+            self.pack.economy.get("base_planet_production")
+            if isinstance(self.pack.economy, dict)
+            else None
+        )
         if not isinstance(base, dict):
             raise BalanceError("economy_missing_base_planet_production")
         keys = ("metal", "crystal", "energy", "fuel", "food", "water")
         return {k: int(base.get(k, 0)) for k in keys}
 
-    def calc_unit_upkeep(self, *, unit_type: str, qty: int, race_id: str | None, techs: list[str] | None) -> dict:
+    def calc_unit_upkeep(
+        self, *, unit_type: str, qty: int, race_id: str | None, techs: list[str] | None
+    ) -> dict:
         u = self.get_unit(unit_type)
         upkeep = u.get("upkeep") if isinstance(u.get("upkeep"), dict) else {}
         base_energy = int(upkeep.get("energy", 0)) * max(0, int(qty))
 
         mult = 1.0
         if race_id:
-            mods = (self.get_race(race_id).get("modifiers") if isinstance(self.get_race(race_id), dict) else {}) or {}
+            mods = (
+                self.get_race(race_id).get("modifiers")
+                if isinstance(self.get_race(race_id), dict)
+                else {}
+            ) or {}
             if isinstance(mods, dict):
                 mult *= float(mods.get("upkeep_energy_multiplier", 1.0))
 
@@ -120,7 +140,11 @@ class BalanceService:
 
         mult = 1.0
         if race_id:
-            mods = (self.get_race(race_id).get("modifiers") if isinstance(self.get_race(race_id), dict) else {}) or {}
+            mods = (
+                self.get_race(race_id).get("modifiers")
+                if isinstance(self.get_race(race_id), dict)
+                else {}
+            ) or {}
             if isinstance(mods, dict):
                 mult *= float(mods.get("travel_fuel_multiplier", 1.0))
 
@@ -142,6 +166,7 @@ class BalanceService:
         d = max(0, int(distance))
         travel_ticks = max(1, int(math.ceil(d / speed))) if d > 0 else 0
         return {"distance": d, "travel_ticks": travel_ticks}
+
 
 @dataclass(frozen=True)
 class BalancePack:
@@ -188,7 +213,9 @@ def _validate_meta(meta: dict) -> None:
 
 def _validate_resources(res: dict) -> list[str]:
     resources = res.get("resources")
-    if not isinstance(resources, list) or not all(isinstance(x, str) for x in resources):
+    if not isinstance(resources, list) or not all(
+        isinstance(x, str) for x in resources
+    ):
         raise BalanceError("resources.json: ожидаю resources: [string]")
     if len(set(resources)) != len(resources):
         raise BalanceError("resources.json: ресурсы не должны повторяться")
@@ -197,7 +224,9 @@ def _validate_resources(res: dict) -> list[str]:
 
 def _validate_tech_dag(tech_by_id: dict[str, dict]) -> None:
     # DAG check by DFS colors
-    color: dict[str, int] = {k: 0 for k in tech_by_id.keys()}  # 0=unseen,1=visiting,2=done
+    color: dict[str, int] = {
+        k: 0 for k in tech_by_id.keys()
+    }  # 0=unseen,1=visiting,2=done
 
     def dfs(tid: str) -> None:
         c = color.get(tid, 0)
@@ -230,20 +259,36 @@ def load_balance_pack(*, base_dir: Path) -> BalancePack:
     resources = _validate_resources(resources_doc)
 
     economy_doc = _read_json(base_dir / "economy.json")
-    if not isinstance(economy_doc, dict) or not isinstance(economy_doc.get("base_planet_production"), dict):
-        raise BalanceError("economy.json: ожидаю base_planet_production (metal,crystal,energy,fuel,food,water)")
+    if not isinstance(economy_doc, dict) or not isinstance(
+        economy_doc.get("base_planet_production"), dict
+    ):
+        raise BalanceError(
+            "economy.json: ожидаю base_planet_production (metal,crystal,energy,fuel,food,water)"
+        )
     base_prod = economy_doc.get("base_planet_production", {})
     for k in ("metal", "crystal", "energy", "fuel", "food", "water"):
         if k not in base_prod or not isinstance(base_prod.get(k), (int, float)):
-            raise BalanceError(f"economy.json: base_planet_production.{k} должен быть числом")
+            raise BalanceError(
+                f"economy.json: base_planet_production.{k} должен быть числом"
+            )
 
-    aliases_doc = _read_json(base_dir / "aliases.json") if (base_dir / "aliases.json").exists() else {}
+    aliases_doc = (
+        _read_json(base_dir / "aliases.json")
+        if (base_dir / "aliases.json").exists()
+        else {}
+    )
     if aliases_doc and not isinstance(aliases_doc, dict):
         raise BalanceError("aliases.json: ожидаю object")
-    unit_aliases = aliases_doc.get("unit_aliases", {}) if isinstance(aliases_doc, dict) else {}
-    building_aliases = aliases_doc.get("building_aliases", {}) if isinstance(aliases_doc, dict) else {}
+    unit_aliases = (
+        aliases_doc.get("unit_aliases", {}) if isinstance(aliases_doc, dict) else {}
+    )
+    building_aliases = (
+        aliases_doc.get("building_aliases", {}) if isinstance(aliases_doc, dict) else {}
+    )
     if not isinstance(unit_aliases, dict) or not isinstance(building_aliases, dict):
-        raise BalanceError("aliases.json: unit_aliases/building_aliases должны быть object")
+        raise BalanceError(
+            "aliases.json: unit_aliases/building_aliases должны быть object"
+        )
 
     units_doc = _read_json(base_dir / "units.json")
     units = units_doc.get("units", [])
@@ -257,14 +302,20 @@ def load_balance_pack(*, base_dir: Path) -> BalancePack:
         raise BalanceError("buildings.json: ожидаю buildings: []")
     buildings_by_id = _require_id_map(buildings, kind="buildings")
 
-    outposts_doc = _read_json(base_dir / "outposts.json") if (base_dir / "outposts.json").exists() else {"outposts": []}
+    outposts_doc = (
+        _read_json(base_dir / "outposts.json")
+        if (base_dir / "outposts.json").exists()
+        else {"outposts": []}
+    )
     outposts = outposts_doc.get("outposts", [])
     if not isinstance(outposts, list):
         raise BalanceError("outposts.json: ожидаю outposts: []")
     outposts_by_id = _require_id_map(outposts, kind="outposts")
 
     modules_doc = (
-        _read_json(base_dir / "outpost_modules.json") if (base_dir / "outpost_modules.json").exists() else {"outpost_modules": []}
+        _read_json(base_dir / "outpost_modules.json")
+        if (base_dir / "outpost_modules.json").exists()
+        else {"outpost_modules": []}
     )
     outpost_modules = modules_doc.get("outpost_modules", [])
     if not isinstance(outpost_modules, list):
@@ -279,9 +330,13 @@ def load_balance_pack(*, base_dir: Path) -> BalancePack:
             raise BalanceError(f"aliases.json: unit_aliases[{k}]={v} не найден в units")
     for k, v in building_aliases.items():
         if not isinstance(k, str) or not isinstance(v, str):
-            raise BalanceError("aliases.json: building_aliases должен быть {string:string}")
+            raise BalanceError(
+                "aliases.json: building_aliases должен быть {string:string}"
+            )
         if v not in buildings_by_id:
-            raise BalanceError(f"aliases.json: building_aliases[{k}]={v} не найден в buildings")
+            raise BalanceError(
+                f"aliases.json: building_aliases[{k}]={v} не найден в buildings"
+            )
 
     races_doc = _read_json(base_dir / "races.json")
     races = races_doc.get("races", [])
@@ -313,4 +368,3 @@ def load_balance_pack(*, base_dir: Path) -> BalancePack:
 def default_balance_dir() -> Path:
     # server/app/services/balance_service.py -> server/data/balance
     return Path(__file__).resolve().parents[2] / "data" / "balance"
-

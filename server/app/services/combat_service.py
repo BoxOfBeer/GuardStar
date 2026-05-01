@@ -11,4 +11,3 @@ class CombatService:
     """Combat-related rules and helpers (placeholder for extraction)."""
 
     pass
-

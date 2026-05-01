@@ -41,7 +41,14 @@ def test_supply_route_logistics_costs_use_manhattan_extras():
     svc.pack.economy["supply_route_upkeep"]["food_per_manhattan_from_hub"] = 1
     svc.pack.economy["supply_route_upkeep"]["water_per_manhattan_from_hub"] = 2
 
-    hub = Planet(pos_x=10, pos_y=10, owner_player_id=uuid.uuid4(), name="Hub", population=800, max_population=5000)
+    hub = Planet(
+        pos_x=10,
+        pos_y=10,
+        owner_player_id=uuid.uuid4(),
+        name="Hub",
+        population=800,
+        max_population=5000,
+    )
     food, water = ws._supply_route_logistics_costs(hub=hub, ox=13, oy=12)  # d=5
     assert food == 2 + 1 * 5
     assert water == 2 + 2 * 5
@@ -81,12 +88,20 @@ def test_scout_and_fighter_have_different_upkeep_and_fuel():
     base = Path(__file__).resolve().parents[1] / "data" / "balance"
     svc = BalanceService.load_from_path(base)
 
-    up_scout = svc.calc_unit_upkeep(unit_type="scout", qty=2, race_id=None, techs=None)["energy"]
-    up_fighter = svc.calc_unit_upkeep(unit_type="fighter", qty=2, race_id=None, techs=None)["energy"]
+    up_scout = svc.calc_unit_upkeep(unit_type="scout", qty=2, race_id=None, techs=None)[
+        "energy"
+    ]
+    up_fighter = svc.calc_unit_upkeep(
+        unit_type="fighter", qty=2, race_id=None, techs=None
+    )["energy"]
     assert up_fighter != up_scout
 
-    fuel_scout = svc.calc_travel_cost(unit_type="scout", qty=2, distance=5, race_id=None, techs=None)["fuel"]
-    fuel_fighter = svc.calc_travel_cost(unit_type="fighter", qty=2, distance=5, race_id=None, techs=None)["fuel"]
+    fuel_scout = svc.calc_travel_cost(
+        unit_type="scout", qty=2, distance=5, race_id=None, techs=None
+    )["fuel"]
+    fuel_fighter = svc.calc_travel_cost(
+        unit_type="fighter", qty=2, distance=5, race_id=None, techs=None
+    )["fuel"]
     assert fuel_fighter != fuel_scout
 
 
@@ -112,12 +127,20 @@ def test_race_modifiers_affect_costs_and_production():
     svc = BalanceService(pack=pack)
 
     # zenith: travel_fuel_multiplier=1.15, upkeep_energy_multiplier=1.25 (from races.json in repo)
-    fuel_h = svc.calc_travel_cost(unit_type="scout", qty=1, distance=10, race_id="human", techs=None)["fuel"]
-    fuel_z = svc.calc_travel_cost(unit_type="scout", qty=1, distance=10, race_id="zenith", techs=None)["fuel"]
+    fuel_h = svc.calc_travel_cost(
+        unit_type="scout", qty=1, distance=10, race_id="human", techs=None
+    )["fuel"]
+    fuel_z = svc.calc_travel_cost(
+        unit_type="scout", qty=1, distance=10, race_id="zenith", techs=None
+    )["fuel"]
     assert fuel_z > fuel_h
 
-    up_h = svc.calc_unit_upkeep(unit_type="fighter", qty=1, race_id="human", techs=None)["energy"]
-    up_z = svc.calc_unit_upkeep(unit_type="fighter", qty=1, race_id="zenith", techs=None)["energy"]
+    up_h = svc.calc_unit_upkeep(
+        unit_type="fighter", qty=1, race_id="human", techs=None
+    )["energy"]
+    up_z = svc.calc_unit_upkeep(
+        unit_type="fighter", qty=1, race_id="zenith", techs=None
+    )["energy"]
     assert up_z > up_h
 
     base_prod = svc.get_base_production()
@@ -142,7 +165,9 @@ def test_influence_helpers_decay_and_multiplier():
     assert at_edge.get(pid, 0) > 0.0
     oid = uuid.uuid4()
     oid2 = uuid.uuid4()
-    mul = WorldService._planet_influence_production_multiplier({oid: 50.0, oid2: 50.0}, oid)
+    mul = WorldService._planet_influence_production_multiplier(
+        {oid: 50.0, oid2: 50.0}, oid
+    )
     assert 0.88 <= mul <= 1.12
 
 
@@ -161,7 +186,9 @@ def test_influence_control_accumulates_with_decay_and_opposition():
 
 
 def test_influence_decay_has_building_whitelist_guard():
-    ws_path = Path(__file__).resolve().parents[1] / "app" / "services" / "world_service.py"
+    ws_path = (
+        Path(__file__).resolve().parents[1] / "app" / "services" / "world_service.py"
+    )
     txt = ws_path.read_text(encoding="utf-8")
     assert "INFLUENCE_BUILDING_TYPES" in txt
 
@@ -181,7 +208,9 @@ def test_balance_contains_outposts_and_territory_techs():
 
 def test_get_sector_stub_regression_guard_no_pobj_typo():
     # Regression guard: раньше в get_sector_stub было pobj.owner_player_id (NameError).
-    ws_path = Path(__file__).resolve().parents[1] / "app" / "services" / "world_service.py"
+    ws_path = (
+        Path(__file__).resolve().parents[1] / "app" / "services" / "world_service.py"
+    )
     txt = ws_path.read_text(encoding="utf-8")
     assert "pobj.owner_player_id" not in txt
 
@@ -206,4 +235,3 @@ def test_building_foundation_terrain_rules_present():
     assert "empty" not in habitat["build_on_terrain"]
     hf = svc.get_building("hydro_farm")
     assert hf.get("effects", {}).get("production_per_tick_add", {}).get("food") == 3
-

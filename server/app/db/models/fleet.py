@@ -13,9 +13,14 @@ from app.db.models import Base
 class Fleet(Base):
     __tablename__ = "fleets"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     owner_player_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("players.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("players.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     unit_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -29,5 +34,6 @@ class Fleet(Base):
     energy: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     max_energy: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )

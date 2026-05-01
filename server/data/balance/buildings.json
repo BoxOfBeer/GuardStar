@@ -222,6 +222,7 @@
     {
       "id": "research_lab_t1",
       "name": "Лаборатория I",
+      "description": "Генерирует очки исследования (RP) каждый сол. Имеет upkeep (см. economy.json).",
       "tier": 1,
       "build_zone_radius_required": 3,
       "max_per_planet": 2,
@@ -240,6 +241,7 @@
     {
       "id": "drydock_mini_t1",
       "name": "Мини-верфь",
+      "description": "Разрешает создавать флоты у этой планеты (не только у домашней).",
       "tier": 1,
       "build_zone_radius_required": 3,
       "max_per_planet": 1,

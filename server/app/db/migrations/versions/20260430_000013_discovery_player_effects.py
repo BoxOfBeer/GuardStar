@@ -37,34 +37,82 @@ def upgrade() -> None:
             """
         )
     )
-    op.execute(sa.text("CREATE INDEX IF NOT EXISTS ix_explored_sectors_player_id ON explored_sectors (player_id)"))
-    op.execute(sa.text("CREATE INDEX IF NOT EXISTS ix_explored_sectors_x ON explored_sectors (x)"))
-    op.execute(sa.text("CREATE INDEX IF NOT EXISTS ix_explored_sectors_y ON explored_sectors (y)"))
-    op.execute(sa.text("CREATE INDEX IF NOT EXISTS ix_explored_sectors_z ON explored_sectors (z)"))
-    op.execute(sa.text("CREATE INDEX IF NOT EXISTS ix_explored_sectors_last_seen_tick ON explored_sectors (last_seen_tick)"))
+    op.execute(
+        sa.text(
+            "CREATE INDEX IF NOT EXISTS ix_explored_sectors_player_id ON explored_sectors (player_id)"
+        )
+    )
+    op.execute(
+        sa.text(
+            "CREATE INDEX IF NOT EXISTS ix_explored_sectors_x ON explored_sectors (x)"
+        )
+    )
+    op.execute(
+        sa.text(
+            "CREATE INDEX IF NOT EXISTS ix_explored_sectors_y ON explored_sectors (y)"
+        )
+    )
+    op.execute(
+        sa.text(
+            "CREATE INDEX IF NOT EXISTS ix_explored_sectors_z ON explored_sectors (z)"
+        )
+    )
+    op.execute(
+        sa.text(
+            "CREATE INDEX IF NOT EXISTS ix_explored_sectors_last_seen_tick ON explored_sectors (last_seen_tick)"
+        )
+    )
 
     with op.batch_alter_table("explored_sectors") as batch:
-        batch.add_column(sa.Column("discovery_done", sa.Boolean(), nullable=False, server_default=sa.text("false")))
+        batch.add_column(
+            sa.Column(
+                "discovery_done",
+                sa.Boolean(),
+                nullable=False,
+                server_default=sa.text("false"),
+            )
+        )
         batch.add_column(sa.Column("discovery_seen_tick", sa.Integer(), nullable=True))
     op.alter_column("explored_sectors", "discovery_done", server_default=None)
 
     op.create_table(
         "player_effects",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
-        sa.Column("player_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("players.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "player_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("players.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("effect_type", sa.String(length=64), nullable=False),
-        sa.Column("source_type", sa.String(length=32), nullable=False, server_default="unknown"),
-        sa.Column("source_ref", sa.String(length=128), nullable=False, server_default=""),
+        sa.Column(
+            "source_type",
+            sa.String(length=32),
+            nullable=False,
+            server_default="unknown",
+        ),
+        sa.Column(
+            "source_ref", sa.String(length=128), nullable=False, server_default=""
+        ),
         sa.Column("payload_json", sa.Text(), nullable=True),
         sa.Column("created_tick", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("expires_tick", sa.Integer(), nullable=True),
         sa.Column("used_at_tick", sa.Integer(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
     )
     op.create_index("ix_player_effects_player_id", "player_effects", ["player_id"])
     op.create_index("ix_player_effects_effect_type", "player_effects", ["effect_type"])
-    op.create_index("ix_player_effects_created_tick", "player_effects", ["created_tick"])
-    op.create_index("ix_player_effects_expires_tick", "player_effects", ["expires_tick"])
+    op.create_index(
+        "ix_player_effects_created_tick", "player_effects", ["created_tick"]
+    )
+    op.create_index(
+        "ix_player_effects_expires_tick", "player_effects", ["expires_tick"]
+    )
 
 
 def downgrade() -> None:

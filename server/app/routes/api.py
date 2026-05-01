@@ -49,7 +49,9 @@ def api_version():
         {
             "app": "guardstar",
             "game_version": GAME_VERSION,
-            "balance_schema_version": balance.balance_schema_version() if balance else None,
+            "balance_schema_version": balance.balance_schema_version()
+            if balance
+            else None,
             "balance_pack_id": balance.balance_pack_id() if balance else None,
             "balance_pack_name": balance.balance_pack_name() if balance else None,
             "features": {
@@ -69,13 +71,23 @@ def api_register():
     display_name = (payload.get("display_name") or "").strip()
     if not display_name:
         return jsonify({"error": "display_name_required"}), 400
+    race_id = (payload.get("race_id") or "").strip() or "human"
 
     auth = AuthService(server_salt=current_app.config["SERVER_SALT"])
     balance = current_app.extensions.get("balance_service")
     world = WorldService(balance=balance)
+    if balance:
+        try:
+            r = balance.get_race(race_id)
+        except Exception:
+            r = None
+        if not isinstance(r, dict) or r.get("enabled") is False:
+            return jsonify({"error": "invalid_race_id"}), 400
 
     with db_session() as s:
-        player, access_code = auth.register_player(s, display_name=display_name)
+        player, access_code = auth.register_player(
+            s, display_name=display_name, race_id=race_id
+        )
         world.ensure_player_has_start(s, player_id=player.id)
         s.commit()
 
@@ -134,7 +146,9 @@ def api_supply_state():
         return jsonify({"error": "invalid_params"}), 400
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         return jsonify(world.get_supply_state(s, player_id=player_id, x=x, y=y, z=z))
 
 
@@ -149,7 +163,9 @@ def api_hire_supplier():
         return jsonify({"error": "invalid_payload"}), 400
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         result = world.hire_supplier(s, player_id=player_id, planet_id=planet_id)
         if not result.get("ok"):
             return jsonify(result), 400
@@ -167,7 +183,9 @@ def api_world_sector():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         return jsonify(world.get_sector_stub(s, x=x, y=y, z=z, player_id=player_id))
 
 
@@ -187,7 +205,9 @@ def api_discovery_resolve():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         result = world.resolve_discovery_at_cell(s, player_id=player_id, x=x, y=y, z=z)
         if not result.get("ok"):
             code = 400
@@ -213,10 +233,19 @@ def api_world_window():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
-        return jsonify(world.get_player_map_window(s, player_id=player_id, radius=radius, z=z, center_x=center_x, center_y=center_y))
-
-
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        return jsonify(
+            world.get_player_map_window(
+                s,
+                player_id=player_id,
+                radius=radius,
+                z=z,
+                center_x=center_x,
+                center_y=center_y,
+            )
+        )
 
 
 @api_bp.post("/world/tick")
@@ -227,7 +256,9 @@ def api_world_tick():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         result = world.process_next_tick(s)
         s.commit()
         return jsonify({"ok": True, **result})
@@ -241,7 +272,9 @@ def api_units_status():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         return jsonify(world.get_units_status(s, player_id=player_id))
 
 
@@ -253,7 +286,9 @@ def api_world_state():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         ws = s.get(WorldState, 1) or world.get_or_create_world_state(s)
         state = world.get_world_state(
             s,
@@ -265,8 +300,12 @@ def api_world_state():
             state["balance_error"] = current_app.extensions.get("balance_error")
         if current_app.extensions.get("auto_tick_error"):
             state["auto_tick_error"] = current_app.extensions.get("auto_tick_error")
-        state["auto_tick_running"] = bool(current_app.extensions.get("auto_tick_scheduler"))
-        state["auto_tick_last_run_at"] = current_app.extensions.get("auto_tick_last_run_at")
+        state["auto_tick_running"] = bool(
+            current_app.extensions.get("auto_tick_scheduler")
+        )
+        state["auto_tick_last_run_at"] = current_app.extensions.get(
+            "auto_tick_last_run_at"
+        )
         state["auto_tick_last_tick"] = current_app.extensions.get("auto_tick_last_tick")
         state["build_id"] = BUILD_ID
         s.commit()
@@ -302,7 +341,9 @@ def api_world_autotick():
 
         # Дублируем в config для совместимости с текущим кодом автотика.
         current_app.config["AUTO_TICK_ENABLED"] = bool(ws.auto_tick_enabled)
-        current_app.config["AUTO_TICK_INTERVAL_SECONDS"] = float(ws.auto_tick_interval_seconds)
+        current_app.config["AUTO_TICK_INTERVAL_SECONDS"] = float(
+            ws.auto_tick_interval_seconds
+        )
 
     # reset last error on user action
     current_app.extensions.pop("auto_tick_error", None)
@@ -315,13 +356,17 @@ def api_world_autotick():
             start_auto_tick(app_obj)
     except Exception as e:
         current_app.extensions["auto_tick_error"] = repr(e)
-        return jsonify({"ok": False, "error": "autotick_toggle_failed", "detail": repr(e)}), 500
+        return jsonify(
+            {"ok": False, "error": "autotick_toggle_failed", "detail": repr(e)}
+        ), 500
 
     return jsonify(
         {
             "ok": True,
             "auto_tick_enabled": bool(current_app.config.get("AUTO_TICK_ENABLED")),
-            "auto_tick_interval_seconds": float(current_app.config.get("AUTO_TICK_INTERVAL_SECONDS", 5)),
+            "auto_tick_interval_seconds": float(
+                current_app.config.get("AUTO_TICK_INTERVAL_SECONDS", 5)
+            ),
         }
     )
 
@@ -343,8 +388,12 @@ def api_move_scout():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
-        result = world.create_scout_move_order(s, player_id=player_id, target_x=x, target_y=y, target_z=z)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        result = world.create_scout_move_order(
+            s, player_id=player_id, target_x=x, target_y=y, target_z=z
+        )
         if not result.get("ok"):
             return jsonify(result), 400
         s.commit()
@@ -362,7 +411,12 @@ def api_fleet_move():
     x = payload.get("x")
     y = payload.get("y")
     z = payload.get("z", 0)
-    if not isinstance(fleet_id, str) or not isinstance(x, int) or not isinstance(y, int) or not isinstance(z, int):
+    if (
+        not isinstance(fleet_id, str)
+        or not isinstance(x, int)
+        or not isinstance(y, int)
+        or not isinstance(z, int)
+    ):
         return jsonify({"error": "invalid_payload"}), 400
 
     z = max(-10, min(z, 10))
@@ -370,7 +424,9 @@ def api_fleet_move():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         result = world.create_fleet_move_order(
             s,
             player_id=player_id,
@@ -399,7 +455,9 @@ def api_fleet_cancel_order():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         result = world.cancel_fleet_order(s, player_id=player_id, fleet_id=fleet_id)
         if not result.get("ok"):
             return jsonify(result), 400
@@ -422,14 +480,23 @@ def api_buildings_list():
 
     with db_session() as s:
         world = WorldService(world_seed=current_app.config["SERVER_SALT"])
-        window = world.get_player_map_window(s, player_id=player_id, radius=radius, z=z, center_x=center_x, center_y=center_y)
+        window = world.get_player_map_window(
+            s,
+            player_id=player_id,
+            radius=radius,
+            z=z,
+            center_x=center_x,
+            center_y=center_y,
+        )
         # buildings уже включены в объекты карты; отдаём только их, чтобы не тащить всю карту.
         buildings = []
         for row in window.get("cells", []):
             for cell in row.get("row", []):
-                for o in (cell.get("objects") or []):
+                for o in cell.get("objects") or []:
                     if o.get("type") == "building":
-                        buildings.append({"x": cell["x"], "y": cell["y"], "z": cell["z"], **o})
+                        buildings.append(
+                            {"x": cell["x"], "y": cell["y"], "z": cell["z"], **o}
+                        )
         return jsonify({"ok": True, "buildings": buildings})
 
 
@@ -457,8 +524,18 @@ def api_buildings_place():
     z = max(-10, min(z, 10))
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
-        result = world.place_building(s, player_id=player_id, x=x, y=y, z=z, building_type=building_type, fleet_id=fleet_id)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        result = world.place_building(
+            s,
+            player_id=player_id,
+            x=x,
+            y=y,
+            z=z,
+            building_type=building_type,
+            fleet_id=fleet_id,
+        )
         if not result.get("ok"):
             return jsonify(result), 400
         s.commit()
@@ -488,10 +565,14 @@ def api_buildings_placement_checks():
     ):
         return jsonify({"error": "invalid_payload"}), 400
 
-    building_types = [t.strip().lower() for t in building_types if isinstance(t, str) and t.strip()]
+    building_types = [
+        t.strip().lower() for t in building_types if isinstance(t, str) and t.strip()
+    ]
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         results: dict[str, dict] = {}
         for bt in building_types:
             results[bt] = world.check_building_placement(
@@ -519,8 +600,12 @@ def api_buildings_dismantle():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
-        result = world.dismantle_building(s, player_id=player_id, building_id=building_id)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        result = world.dismantle_building(
+            s, player_id=player_id, building_id=building_id
+        )
         if not result.get("ok"):
             return jsonify(result), 400
         s.commit()
@@ -540,7 +625,9 @@ def api_buildings_upgrade():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         result = world.upgrade_building(s, player_id=player_id, building_id=building_id)
         if not result.get("ok"):
             return jsonify(result), 400
@@ -569,8 +656,18 @@ def api_outposts_build():
         return jsonify({"error": "invalid_payload"}), 400
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
-        result = world.build_outpost(s, player_id=player_id, x=x, y=y, z=z, outpost_type=outpost_type, fleet_id=fleet_id)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        result = world.build_outpost(
+            s,
+            player_id=player_id,
+            x=x,
+            y=y,
+            z=z,
+            outpost_type=outpost_type,
+            fleet_id=fleet_id,
+        )
         if not result.get("ok"):
             return jsonify(result), 400
         s.commit()
@@ -588,7 +685,9 @@ def api_outposts_upgrade():
         return jsonify({"error": "invalid_payload"}), 400
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         result = world.upgrade_outpost(s, player_id=player_id, outpost_id=outpost_id)
         if not result.get("ok"):
             return jsonify(result), 400
@@ -608,8 +707,12 @@ def api_outpost_modules_install():
         return jsonify({"error": "invalid_payload"}), 400
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
-        result = world.install_outpost_module(s, player_id=player_id, outpost_id=outpost_id, module_type=module_type)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        result = world.install_outpost_module(
+            s, player_id=player_id, outpost_id=outpost_id, module_type=module_type
+        )
         if not result.get("ok"):
             return jsonify(result), 400
         s.commit()
@@ -627,8 +730,12 @@ def api_outpost_modules_upgrade():
         return jsonify({"error": "invalid_payload"}), 400
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
-        result = world.upgrade_outpost_module(s, player_id=player_id, module_id=module_id)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        result = world.upgrade_outpost_module(
+            s, player_id=player_id, module_id=module_id
+        )
         if not result.get("ok"):
             return jsonify(result), 400
         s.commit()
@@ -650,7 +757,9 @@ def api_fleets_create():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         result = world.create_fleet(
             s,
             player_id=player_id,
@@ -678,8 +787,12 @@ def api_fleets_rename():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
-        result = world.rename_fleet(s, player_id=player_id, fleet_id=fleet_id, name=name)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        result = world.rename_fleet(
+            s, player_id=player_id, fleet_id=fleet_id, name=name
+        )
         if not result.get("ok"):
             return jsonify(result), 400
         s.commit()
@@ -700,8 +813,12 @@ def api_fleets_adjust():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
-        result = world.adjust_fleet_composition(s, player_id=player_id, fleet_id=fleet_id, deltas=deltas)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        result = world.adjust_fleet_composition(
+            s, player_id=player_id, fleet_id=fleet_id, deltas=deltas
+        )
         if not result.get("ok"):
             return jsonify(result), 400
         s.commit()
@@ -719,11 +836,15 @@ def api_fleets_save():
     if not isinstance(fleet_id, str):
         return jsonify({"error": "invalid_payload"}), 400
     if "name" not in payload and "composition" not in payload:
-        return jsonify({"error": "invalid_payload", "detail": "need_name_or_composition"}), 400
+        return jsonify(
+            {"error": "invalid_payload", "detail": "need_name_or_composition"}
+        ), 400
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         kwargs: dict = {"player_id": player_id, "fleet_id": fleet_id}
         if "name" in payload:
             kwargs["name"] = payload.get("name")
@@ -749,7 +870,9 @@ def api_fleets_disband():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         result = world.disband_fleet(s, player_id=player_id, fleet_id=fleet_id)
         if not result.get("ok"):
             return jsonify(result), 400
@@ -771,9 +894,14 @@ def api_fleets_merge():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         result = world.merge_fleets(
-            s, player_id=player_id, target_fleet_id=target_fleet_id, source_fleet_id=source_fleet_id
+            s,
+            player_id=player_id,
+            target_fleet_id=target_fleet_id,
+            source_fleet_id=source_fleet_id,
         )
         if not result.get("ok"):
             return jsonify(result), 400
@@ -795,7 +923,9 @@ def api_fleets_split():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         result = world.split_fleet(s, player_id=player_id, fleet_id=fleet_id, take=take)
         if not result.get("ok"):
             return jsonify(result), 400
@@ -814,14 +944,26 @@ def api_fleets_combat_preview():
     tx = payload.get("target_x")
     ty = payload.get("target_y")
     tz = payload.get("target_z", 0)
-    if not isinstance(fleet_id, str) or not isinstance(tx, int) or not isinstance(ty, int) or not isinstance(tz, int):
+    if (
+        not isinstance(fleet_id, str)
+        or not isinstance(tx, int)
+        or not isinstance(ty, int)
+        or not isinstance(tz, int)
+    ):
         return jsonify({"error": "invalid_payload"}), 400
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         result = world.combat_preview_for_move(
-            s, player_id=player_id, fleet_id=fleet_id, target_x=tx, target_y=ty, target_z=tz
+            s,
+            player_id=player_id,
+            fleet_id=fleet_id,
+            target_x=tx,
+            target_y=ty,
+            target_z=tz,
         )
         if not result.get("ok"):
             return jsonify(result), 400
@@ -842,8 +984,12 @@ def api_fleets_combat_prompt_resolve():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
-        result = world.resolve_fleet_combat_prompt(s, player_id=player_id, order_id=order_id, attack=attack)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        result = world.resolve_fleet_combat_prompt(
+            s, player_id=player_id, order_id=order_id, attack=attack
+        )
         if not result.get("ok"):
             return jsonify(result), 400
         s.commit()
@@ -859,7 +1005,13 @@ def api_balance():
     balance = current_app.extensions.get("balance_service")
     pack = balance.pack if balance else None
     if not pack:
-        return jsonify({"ok": False, "error": "balance_not_loaded", "detail": current_app.extensions.get("balance_error")}), 500
+        return jsonify(
+            {
+                "ok": False,
+                "error": "balance_not_loaded",
+                "detail": current_app.extensions.get("balance_error"),
+            }
+        ), 500
     return jsonify(
         {
             "ok": True,
@@ -943,13 +1095,19 @@ def api_economy_summary():
     player_id = _current_player_id()
     if not player_id:
         return jsonify({"error": "not_authenticated"}), 401
-    include_external = request.args.get("include_external_buildings", default=1, type=int)
+    include_external = request.args.get(
+        "include_external_buildings", default=1, type=int
+    )
     include_external = 1 if int(include_external or 0) != 0 else 0
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
-        result = world.get_economy_summary(s, player_id=player_id, include_external_buildings=bool(include_external))
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        result = world.get_economy_summary(
+            s, player_id=player_id, include_external_buildings=bool(include_external)
+        )
         return jsonify(result)
 
 
@@ -967,7 +1125,13 @@ def api_tech_start():
 
     balance = current_app.extensions.get("balance_service")
     if not balance:
-        return jsonify({"ok": False, "error": "balance_not_loaded", "detail": current_app.extensions.get("balance_error")}), 500
+        return jsonify(
+            {
+                "ok": False,
+                "error": "balance_not_loaded",
+                "detail": current_app.extensions.get("balance_error"),
+            }
+        ), 500
 
     # validate tech exists and enabled + prereq
     try:
@@ -981,22 +1145,38 @@ def api_tech_start():
 
     pid = __import__("uuid").UUID(player_id)
     with db_session() as s:
-        ws = s.get(WorldState, 1) or WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance).get_or_create_world_state(s)
+        ws = s.get(WorldState, 1) or WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        ).get_or_create_world_state(s)
         now = int(ws.current_tick)
 
         # Research slots: MVP = 1 активное исследование одновременно.
         # В будущем можно расширять слотами от техов/построек/расы.
         active_slots_total = 1
         active_now = int(
-            s.execute(select(func.count(PlayerTech.id)).where(PlayerTech.player_id == pid, PlayerTech.status == "in_progress"))
-            .scalar()
+            s.execute(
+                select(func.count(PlayerTech.id)).where(
+                    PlayerTech.player_id == pid, PlayerTech.status == "in_progress"
+                )
+            ).scalar()
             or 0
         )
         if active_now >= active_slots_total:
-            return jsonify({"ok": False, "error": "tech_queue_full", "active": active_now, "slots": active_slots_total}), 400
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "tech_queue_full",
+                    "active": active_now,
+                    "slots": active_slots_total,
+                }
+            ), 400
 
         existing = (
-            s.execute(select(PlayerTech).where(PlayerTech.player_id == pid, PlayerTech.tech_id == tech_id))
+            s.execute(
+                select(PlayerTech).where(
+                    PlayerTech.player_id == pid, PlayerTech.tech_id == tech_id
+                )
+            )
             .scalars()
             .first()
         )
@@ -1010,20 +1190,26 @@ def api_tech_start():
         if prereq:
             done = set(
                 s.execute(
-                    select(PlayerTech.tech_id).where(PlayerTech.player_id == pid, PlayerTech.status == "done")
+                    select(PlayerTech.tech_id).where(
+                        PlayerTech.player_id == pid, PlayerTech.status == "done"
+                    )
                 )
                 .scalars()
                 .all()
             )
             missing = [p for p in prereq if p not in done]
             if missing:
-                return jsonify({"ok": False, "error": "tech_prereq_missing", "missing": missing}), 400
+                return jsonify(
+                    {"ok": False, "error": "tech_prereq_missing", "missing": missing}
+                ), 400
 
         req_fd = tech.get("field_data_requirements")
         if req_fd is None:
             req_fd = []
         if not isinstance(req_fd, list):
-            return jsonify({"ok": False, "error": "tech_bad_field_data_requirements"}), 400
+            return jsonify(
+                {"ok": False, "error": "tech_bad_field_data_requirements"}
+            ), 400
         req_fd = [str(x) for x in req_fd if isinstance(x, str) and x.strip()]
         if req_fd:
             missing_fd = []
@@ -1031,7 +1217,13 @@ def api_tech_start():
                 if count_field_data(s, player_id=pid, tick=now, kind=k) < 1:
                     missing_fd.append(k)
             if missing_fd:
-                return jsonify({"ok": False, "error": "tech_field_data_missing", "missing": missing_fd}), 400
+                return jsonify(
+                    {
+                        "ok": False,
+                        "error": "tech_field_data_missing",
+                        "missing": missing_fd,
+                    }
+                ), 400
 
         time_ticks = int(tech.get("time_ticks", 0))
         time_ticks = max(1, time_ticks)
@@ -1050,14 +1242,25 @@ def api_tech_start():
         if rp_need > 1e-9:
             if cur_rp + 1e-9 < rp_need:
                 return (
-                    jsonify({"ok": False, "error": "not_enough_research_points", "need": rp_need, "have": cur_rp}),
+                    jsonify(
+                        {
+                            "ok": False,
+                            "error": "not_enough_research_points",
+                            "need": rp_need,
+                            "have": cur_rp,
+                        }
+                    ),
                     400,
                 )
             player_row.research_points = cur_rp - rp_need
 
-        world_svc = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world_svc = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         time_mult = get_research_time_multiplier(s, player_id=pid, tick=now)
-        adj_ticks = adjusted_research_duration_ticks(base_ticks=residual, time_multiplier=time_mult)
+        adj_ticks = adjusted_research_duration_ticks(
+            base_ticks=residual, time_multiplier=time_mult
+        )
         blueprint_discount = consume_blueprint_cache(s, player_id=pid, tick=now)
         consumed_fd: list[str] = []
         for k in req_fd:
@@ -1089,7 +1292,13 @@ def api_tech_start():
                 player_id=pid,
             )
 
-        row = PlayerTech(player_id=pid, tech_id=tech_id, status="in_progress", started_tick=now + 1, finish_tick=now + adj_ticks)
+        row = PlayerTech(
+            player_id=pid,
+            tech_id=tech_id,
+            status="in_progress",
+            started_tick=now + 1,
+            finish_tick=now + adj_ticks,
+        )
         s.add(row)
         s.commit()
         return jsonify(
@@ -1106,7 +1315,9 @@ def api_tech_start():
                 "residual_time_ticks": residual,
                 "research_ticks_adjusted": adj_ticks,
                 "research_points_spent": rp_need,
-                "research_points_after": float(getattr(player_row, "research_points", 0) or 0),
+                "research_points_after": float(
+                    getattr(player_row, "research_points", 0) or 0
+                ),
                 "blueprint_cache_consumed": bool(blueprint_discount),
                 "blueprint_discount": blueprint_discount,
                 "field_data_required": req_fd,

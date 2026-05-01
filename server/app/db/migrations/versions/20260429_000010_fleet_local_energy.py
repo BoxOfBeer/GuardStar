@@ -19,12 +19,15 @@ depends_on = None
 
 def upgrade() -> None:
     with op.batch_alter_table("fleets") as batch:
-        batch.add_column(sa.Column("energy", sa.Integer(), nullable=False, server_default="100"))
-        batch.add_column(sa.Column("max_energy", sa.Integer(), nullable=False, server_default="100"))
+        batch.add_column(
+            sa.Column("energy", sa.Integer(), nullable=False, server_default="100")
+        )
+        batch.add_column(
+            sa.Column("max_energy", sa.Integer(), nullable=False, server_default="100")
+        )
 
 
 def downgrade() -> None:
     with op.batch_alter_table("fleets") as batch:
         batch.drop_column("max_energy")
         batch.drop_column("energy")
-

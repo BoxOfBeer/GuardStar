@@ -24,11 +24,17 @@ def start_auto_tick(app: Flask) -> None:
                 with app.app_context():
                     with db_session() as s:
                         balance = app.extensions.get("balance_service")
-                        world = WorldService(world_seed=app.config["SERVER_SALT"], balance=balance)
+                        world = WorldService(
+                            world_seed=app.config["SERVER_SALT"], balance=balance
+                        )
                         result = world.process_next_tick(s)
                         s.commit()
-                app.extensions["auto_tick_last_tick"] = int(result.get("current_tick", 0))
-                app.extensions["auto_tick_last_run_at"] = __import__("datetime").datetime.utcnow().isoformat() + "Z"
+                app.extensions["auto_tick_last_tick"] = int(
+                    result.get("current_tick", 0)
+                )
+                app.extensions["auto_tick_last_run_at"] = (
+                    __import__("datetime").datetime.utcnow().isoformat() + "Z"
+                )
                 app.extensions.pop("auto_tick_error", None)
             except Exception as e:
                 # Не даём job «молча умереть» — сохраняем ошибку в state.
@@ -63,4 +69,3 @@ def stop_auto_tick(app: Flask) -> None:
     app.extensions.pop("auto_tick_scheduler", None)
     app.extensions.pop("auto_tick_last_run_at", None)
     app.extensions.pop("auto_tick_last_tick", None)
-

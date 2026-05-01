@@ -17,6 +17,7 @@ from app.db.models.fleet import Fleet
 from app.db.models.planet import Planet
 from app.db.models.player_tech import PlayerTech
 
+
 class SupplyService:
     """Supply-related rules and helpers."""
 
@@ -38,7 +39,9 @@ class SupplyService:
             .all()
         )
 
-    def _supply_radius_modifiers_for_player(self, s: Session, *, player_id: uuid.UUID) -> tuple[int, int]:
+    def _supply_radius_modifiers_for_player(
+        self, s: Session, *, player_id: uuid.UUID
+    ) -> tuple[int, int]:
         """(base_add, per_supplier_add) из завершённых технологий."""
         if not self._balance:
             return (0, 0)
@@ -57,20 +60,19 @@ class SupplyService:
                 per_add += int(v2)
         return (base_add, per_add)
 
-    def _supply_radius_modifiers_for_planet_buildings(self, s: Session, *, planet_id: uuid.UUID) -> tuple[int, int]:
+    def _supply_radius_modifiers_for_planet_buildings(
+        self, s: Session, *, planet_id: uuid.UUID
+    ) -> tuple[int, int]:
         """(base_add, per_supplier_add) из построек на планете."""
         if not self._balance:
             return (0, 0)
         base_add = 0
         per_add = 0
-        rows = (
-            s.execute(
-                select(Building.building_type, func.count(Building.id))
-                .where(Building.planet_id == planet_id)
-                .group_by(Building.building_type)
-            )
-            .all()
-        )
+        rows = s.execute(
+            select(Building.building_type, func.count(Building.id))
+            .where(Building.planet_id == planet_id)
+            .group_by(Building.building_type)
+        ).all()
         for bt, cnt in rows:
             try:
                 bd = self._balance.get_building(str(bt))
@@ -88,18 +90,26 @@ class SupplyService:
                 per_add += int(v2) * n
         return (base_add, per_add)
 
-    def planet_supply_radius(self, s: Session, *, planet: Planet) -> tuple[int, int, int]:
+    def planet_supply_radius(
+        self, s: Session, *, planet: Planet
+    ) -> tuple[int, int, int]:
         """(effective_radius, effective_base, effective_per_supplier)"""
         n = int(getattr(planet, "supplier_count", 0) or 0)
-        base_add_t, per_add_t = self._supply_radius_modifiers_for_player(s, player_id=planet.owner_player_id)
-        base_add_b, per_add_b = self._supply_radius_modifiers_for_planet_buildings(s, planet_id=planet.id)
+        base_add_t, per_add_t = self._supply_radius_modifiers_for_player(
+            s, player_id=planet.owner_player_id
+        )
+        base_add_b, per_add_b = self._supply_radius_modifiers_for_planet_buildings(
+            s, planet_id=planet.id
+        )
         eff_base = int(self.SUPPLY_BASE_RADIUS) + int(base_add_t) + int(base_add_b)
         eff_per = int(self.SUPPLY_PER_SUPPLIER) + int(per_add_t) + int(per_add_b)
         eff_radius = max(0, int(eff_base + eff_per * n))
         return eff_radius, eff_base, eff_per
 
     @staticmethod
-    def manhattan_l_path_cells(px: int, py: int, tx: int, ty: int) -> list[tuple[int, int]]:
+    def manhattan_l_path_cells(
+        px: int, py: int, tx: int, ty: int
+    ) -> list[tuple[int, int]]:
         """Клетки пути от (px,py) до (tx,ty) без стартовой клетки: сначала X, затем Y."""
         cells: list[tuple[int, int]] = []
         cx, cy = int(px), int(py)
@@ -117,18 +127,15 @@ class SupplyService:
     ) -> tuple[int, int] | None:
         """Первая клетка пути с чужим флотом — обрыв линии снабжения."""
         for cx, cy in path_cells:
-            hit = (
-                s.execute(
-                    select(Fleet.id).where(
-                        Fleet.pos_x == int(cx),
-                        Fleet.pos_y == int(cy),
-                        Fleet.pos_z == 0,
-                        Fleet.owner_player_id != owner_id,
-                        Fleet.qty > 0,
-                    )
+            hit = s.execute(
+                select(Fleet.id).where(
+                    Fleet.pos_x == int(cx),
+                    Fleet.pos_y == int(cy),
+                    Fleet.pos_z == 0,
+                    Fleet.owner_player_id != owner_id,
+                    Fleet.qty > 0,
                 )
-                .first()
-            )
+            ).first()
             if hit:
                 return (int(cx), int(cy))
         return None
@@ -137,7 +144,11 @@ class SupplyService:
         self, s: Session, *, owner_id: uuid.UUID, x: int, y: int
     ) -> list[tuple[Planet, int, int, int, int]]:
         """(planet, radius, distance, eff_base, eff_per_supplier)"""
-        planets = s.execute(select(Planet).where(Planet.owner_player_id == owner_id)).scalars().all()
+        planets = (
+            s.execute(select(Planet).where(Planet.owner_player_id == owner_id))
+            .scalars()
+            .all()
+        )
         rows: list[tuple[Planet, int, int, int, int]] = []
         for p in planets:
             r, eff_base, eff_per = self.planet_supply_radius(s, planet=p)
@@ -145,31 +156,47 @@ class SupplyService:
             rows.append((p, int(r), int(d), int(eff_base), int(eff_per)))
         return rows
 
-    def supply_hub_planet_for_cell(self, s: Session, *, owner_id: uuid.UUID, x: int, y: int, z: int) -> Planet | None:
+    def supply_hub_planet_for_cell(
+        self, s: Session, *, owner_id: uuid.UUID, x: int, y: int, z: int
+    ) -> Planet | None:
         """Планета-хаб, через которую клетка в снабжении (радиус + чистый L-путь)."""
         if int(z) != 0:
             return None
         rows = self.planet_supply_candidates(s, owner_id=owner_id, x=int(x), y=int(y))
         in_range = [(p, r, d, _b, _ps) for p, r, d, _b, _ps in rows if r > 0 and d <= r]
         for p, _r, _d, _b, _ps in sorted(in_range, key=lambda t: t[2]):
-            path = self.manhattan_l_path_cells(int(p.pos_x), int(p.pos_y), int(x), int(y))
-            if self.supply_route_block_cell(s, owner_id=owner_id, path_cells=path) is None:
+            path = self.manhattan_l_path_cells(
+                int(p.pos_x), int(p.pos_y), int(x), int(y)
+            )
+            if (
+                self.supply_route_block_cell(s, owner_id=owner_id, path_cells=path)
+                is None
+            ):
                 return p
         return None
 
-    def is_cell_supplied(self, s: Session, *, owner_id: uuid.UUID, x: int, y: int, z: int) -> bool:
+    def is_cell_supplied(
+        self, s: Session, *, owner_id: uuid.UUID, x: int, y: int, z: int
+    ) -> bool:
         if int(z) != 0:
             return False
         rows = self.planet_supply_candidates(s, owner_id=owner_id, x=int(x), y=int(y))
         for p, r, d, _b, _ps in rows:
             if r <= 0 or d > r:
                 continue
-            path = self.manhattan_l_path_cells(int(p.pos_x), int(p.pos_y), int(x), int(y))
-            if self.supply_route_block_cell(s, owner_id=owner_id, path_cells=path) is None:
+            path = self.manhattan_l_path_cells(
+                int(p.pos_x), int(p.pos_y), int(x), int(y)
+            )
+            if (
+                self.supply_route_block_cell(s, owner_id=owner_id, path_cells=path)
+                is None
+            ):
                 return True
         return False
 
-    def get_supply_state(self, s: Session, *, player_id: str, x: int, y: int, z: int = 0) -> dict:
+    def get_supply_state(
+        self, s: Session, *, player_id: str, x: int, y: int, z: int = 0
+    ) -> dict:
         """Публичный контракт для GET /api/supply/state."""
         pid = uuid.UUID(player_id)
         if int(z) != 0:
@@ -207,13 +234,21 @@ class SupplyService:
 
         if in_range:
             for p, r, d, b, ps in sorted(in_range, key=lambda t: t[2]):
-                path = self.manhattan_l_path_cells(int(p.pos_x), int(p.pos_y), int(x), int(y))
+                path = self.manhattan_l_path_cells(
+                    int(p.pos_x), int(p.pos_y), int(x), int(y)
+                )
                 blk = self.supply_route_block_cell(s, owner_id=pid, path_cells=path)
                 if blk is None:
                     return {
                         "ok": True,
                         "in_supply": True,
-                        "nearest_hub": {"type": "planet", "id": str(p.id), "x": int(p.pos_x), "y": int(p.pos_y), "z": 0},
+                        "nearest_hub": {
+                            "type": "planet",
+                            "id": str(p.id),
+                            "x": int(p.pos_x),
+                            "y": int(p.pos_y),
+                            "z": 0,
+                        },
                         "supply_radius": int(r),
                         "distance": int(d),
                         "route_clear": True,
@@ -227,15 +262,27 @@ class SupplyService:
                     best_tuple = (p, r, d, b, ps)
                     best_blocked = blk
 
-            p, r, d, b, ps = best_tuple if best_tuple else min(in_range, key=lambda t: t[2])
+            p, r, d, b, ps = (
+                best_tuple if best_tuple else min(in_range, key=lambda t: t[2])
+            )
             return {
                 "ok": True,
                 "in_supply": False,
-                "nearest_hub": {"type": "planet", "id": str(p.id), "x": int(p.pos_x), "y": int(p.pos_y), "z": 0},
+                "nearest_hub": {
+                    "type": "planet",
+                    "id": str(p.id),
+                    "x": int(p.pos_x),
+                    "y": int(p.pos_y),
+                    "z": 0,
+                },
                 "supply_radius": int(r),
                 "distance": int(d),
                 "route_clear": False,
-                "route_blocked_at": ({"x": best_blocked[0], "y": best_blocked[1]} if best_blocked else None),
+                "route_blocked_at": (
+                    {"x": best_blocked[0], "y": best_blocked[1]}
+                    if best_blocked
+                    else None
+                ),
                 "supplier_count": int(getattr(p, "supplier_count", 0) or 0),
                 "supply_path": "manhattan_L",
                 "supply_base": int(b),
@@ -246,7 +293,13 @@ class SupplyService:
         return {
             "ok": True,
             "in_supply": False,
-            "nearest_hub": {"type": "planet", "id": str(p.id), "x": int(p.pos_x), "y": int(p.pos_y), "z": 0},
+            "nearest_hub": {
+                "type": "planet",
+                "id": str(p.id),
+                "x": int(p.pos_x),
+                "y": int(p.pos_y),
+                "z": 0,
+            },
             "supply_radius": int(r),
             "distance": int(d),
             "route_clear": False,
@@ -256,4 +309,3 @@ class SupplyService:
             "supply_base": int(b),
             "supply_per_supplier": int(ps),
         }
-

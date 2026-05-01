@@ -29,16 +29,49 @@ def upgrade() -> None:
         sa.Column("y", sa.Integer(), nullable=False),
         sa.Column("z", sa.Integer(), nullable=False, server_default=sa.text("0")),
         sa.Column("outpost_type", sa.String(length=64), nullable=False),
-        sa.Column("family", sa.String(length=64), nullable=False, server_default=sa.text("'outpost'")),
+        sa.Column(
+            "family",
+            sa.String(length=64),
+            nullable=False,
+            server_default=sa.text("'outpost'"),
+        ),
         sa.Column("level", sa.Integer(), nullable=False, server_default=sa.text("1")),
-        sa.Column("module_slots_total", sa.Integer(), nullable=False, server_default=sa.text("1")),
-        sa.Column("status", sa.String(length=32), nullable=False, server_default=sa.text("'active'")),
-        sa.Column("started_at_tick", sa.Integer(), nullable=False, server_default=sa.text("0")),
-        sa.Column("finish_tick", sa.Integer(), nullable=False, server_default=sa.text("0")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.ForeignKeyConstraint(["builder_fleet_id"], ["fleets.id"], ondelete="SET NULL"),
-        sa.ForeignKeyConstraint(["owner_player_id"], ["players.id"], ondelete="CASCADE"),
+        sa.Column(
+            "module_slots_total",
+            sa.Integer(),
+            nullable=False,
+            server_default=sa.text("1"),
+        ),
+        sa.Column(
+            "status",
+            sa.String(length=32),
+            nullable=False,
+            server_default=sa.text("'active'"),
+        ),
+        sa.Column(
+            "started_at_tick", sa.Integer(), nullable=False, server_default=sa.text("0")
+        ),
+        sa.Column(
+            "finish_tick", sa.Integer(), nullable=False, server_default=sa.text("0")
+        ),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.ForeignKeyConstraint(
+            ["builder_fleet_id"], ["fleets.id"], ondelete="SET NULL"
+        ),
+        sa.ForeignKeyConstraint(
+            ["owner_player_id"], ["players.id"], ondelete="CASCADE"
+        ),
         sa.ForeignKeyConstraint(["planet_id"], ["planets.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("x", "y", "z", name="uq_outposts_xyz"),
@@ -61,20 +94,43 @@ def upgrade() -> None:
         sa.Column("kind", sa.String(length=32), nullable=False),
         sa.Column("level", sa.Integer(), nullable=False, server_default=sa.text("1")),
         sa.Column("slot_idx", sa.Integer(), nullable=False),
-        sa.Column("status", sa.String(length=32), nullable=False, server_default=sa.text("'active'")),
-        sa.Column("started_at_tick", sa.Integer(), nullable=False, server_default=sa.text("0")),
-        sa.Column("finish_tick", sa.Integer(), nullable=False, server_default=sa.text("0")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "status",
+            sa.String(length=32),
+            nullable=False,
+            server_default=sa.text("'active'"),
+        ),
+        sa.Column(
+            "started_at_tick", sa.Integer(), nullable=False, server_default=sa.text("0")
+        ),
+        sa.Column(
+            "finish_tick", sa.Integer(), nullable=False, server_default=sa.text("0")
+        ),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
         sa.ForeignKeyConstraint(["outpost_id"], ["outposts.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("outpost_id", "slot_idx", name="uq_outpost_modules_slot"),
     )
     op.create_index("ix_outpost_modules_outpost_id", "outpost_modules", ["outpost_id"])
-    op.create_index("ix_outpost_modules_module_type", "outpost_modules", ["module_type"])
+    op.create_index(
+        "ix_outpost_modules_module_type", "outpost_modules", ["module_type"]
+    )
     op.create_index("ix_outpost_modules_kind", "outpost_modules", ["kind"])
     op.create_index("ix_outpost_modules_status", "outpost_modules", ["status"])
-    op.create_index("ix_outpost_modules_finish_tick", "outpost_modules", ["finish_tick"])
+    op.create_index(
+        "ix_outpost_modules_finish_tick", "outpost_modules", ["finish_tick"]
+    )
 
 
 def downgrade() -> None:
@@ -95,4 +151,3 @@ def downgrade() -> None:
     op.drop_index("ix_outposts_owner_player_id", table_name="outposts")
     op.drop_index("ix_outposts_finish_tick", table_name="outposts")
     op.drop_table("outposts")
-

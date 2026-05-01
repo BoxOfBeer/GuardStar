@@ -24,17 +24,25 @@ class AuthService:
         raw = (access_code + self._server_salt).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()
 
-    def register_player(self, s: Session, *, display_name: str) -> tuple[Player, str]:
+    def register_player(
+        self, s: Session, *, display_name: str, race_id: str = "human"
+    ) -> tuple[Player, str]:
         # Пытаемся избегать коллизий на практике (не должны случаться).
         for _ in range(5):
             access_code = self.generate_access_code()
             access_code_hash = self.hash_access_code(access_code)
 
-            existing = s.execute(select(Player.id).where(Player.access_code_hash == access_code_hash)).first()
+            existing = s.execute(
+                select(Player.id).where(Player.access_code_hash == access_code_hash)
+            ).first()
             if existing:
                 continue
 
-            player = Player(display_name=display_name, access_code_hash=access_code_hash, race_id="human")
+            player = Player(
+                display_name=display_name,
+                access_code_hash=access_code_hash,
+                race_id=race_id,
+            )
             s.add(player)
             s.flush()
             return player, access_code
@@ -43,11 +51,12 @@ class AuthService:
 
     def authenticate_by_code(self, s: Session, *, access_code: str) -> Player | None:
         access_code_hash = self.hash_access_code(access_code)
-        player = s.execute(select(Player).where(Player.access_code_hash == access_code_hash)).scalar_one_or_none()
+        player = s.execute(
+            select(Player).where(Player.access_code_hash == access_code_hash)
+        ).scalar_one_or_none()
         if not player:
             return None
 
         player.last_login_at = datetime.utcnow()
         s.flush()
         return player
-

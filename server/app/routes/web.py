@@ -1,4 +1,13 @@
-from flask import Blueprint, current_app, redirect, render_template, request, session, url_for, abort
+from flask import (
+    Blueprint,
+    current_app,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+    abort,
+)
 
 from app.db.engine import db_session
 from app.services.auth_service import AuthService
@@ -37,24 +46,53 @@ def index():
 
 @web_bp.route("/register", methods=["GET", "POST"])
 def register():
+    balance = current_app.extensions.get("balance_service")
+    races = []
+    if (
+        balance
+        and getattr(balance, "pack", None)
+        and isinstance(getattr(balance.pack, "races_by_id", None), dict)
+    ):
+        races = sorted(
+            [
+                r
+                for r in balance.pack.races_by_id.values()
+                if isinstance(r, dict) and r.get("enabled") is not False
+            ],
+            key=lambda r: str(r.get("name") or r.get("id") or ""),
+        )
     if request.method == "GET":
-        return render_template("register.html")
+        return render_template("register.html", races=races)
 
     display_name = (request.form.get("display_name") or "").strip()
     if not display_name:
-        return render_template("register.html", error="Введите имя.")
+        return render_template("register.html", error="Введите имя.", races=races)
+
+    race_id = (request.form.get("race_id") or "").strip() or "human"
+    if race_id and balance:
+        try:
+            r = balance.get_race(race_id)
+        except Exception:
+            r = None
+        if not isinstance(r, dict) or r.get("enabled") is False:
+            return render_template(
+                "register.html", error="Выберите расу из списка.", races=races
+            )
 
     auth = AuthService(server_salt=current_app.config["SERVER_SALT"])
-    balance = current_app.extensions.get("balance_service")
     world = WorldService(balance=balance)
 
     with db_session() as s:
-        player, access_code = auth.register_player(s, display_name=display_name)
+        player, access_code = auth.register_player(
+            s, display_name=display_name, race_id=race_id
+        )
         world.ensure_player_has_start(s, player_id=player.id)
         s.commit()
 
     session["player_id"] = str(player.id)
-    return render_template("show_code.html", access_code=access_code, display_name=display_name)
+    return render_template(
+        "show_code.html", access_code=access_code, display_name=display_name
+    )
 
 
 @web_bp.route("/login", methods=["GET", "POST"])
@@ -98,14 +136,26 @@ def me():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         data = world.get_player_overview(s, player_id=player_id)
         window = world.get_player_map_window(s, player_id=player_id, radius=4, z=z)
         sector = None
         if sel_x is not None and sel_y is not None:
-            sector = world.get_sector_stub(s, x=sel_x, y=sel_y, z=z, player_id=player_id)
+            sector = world.get_sector_stub(
+                s, x=sel_x, y=sel_y, z=z, player_id=player_id
+            )
 
-    return render_template("me.html", data=data, window=window, sector=sector, sel_x=sel_x, sel_y=sel_y, z=z)
+    return render_template(
+        "me.html",
+        data=data,
+        window=window,
+        sector=sector,
+        sel_x=sel_x,
+        sel_y=sel_y,
+        z=z,
+    )
 
 
 @web_bp.get("/account")
@@ -188,7 +238,9 @@ def _require_admin_token() -> str:
     token = (request.args.get("token") or "").strip()
     # Админский токен живёт в БД (хэш), чтобы не зависеть от env.
     with db_session() as s:
-        cfg = s.execute(select(AdminConfig).where(AdminConfig.id == 1)).scalar_one_or_none()
+        cfg = s.execute(
+            select(AdminConfig).where(AdminConfig.id == 1)
+        ).scalar_one_or_none()
         expected_hash = (cfg.admin_token_hash if cfg else "").strip()
     if not expected_hash:
         abort(403)
@@ -202,17 +254,27 @@ def _require_admin_token() -> str:
 def admin_accounts():
     token = _require_admin_token()
     with db_session() as s:
-        players = s.execute(select(Player).order_by(Player.created_at.desc())).scalars().all()
+        players = (
+            s.execute(select(Player).order_by(Player.created_at.desc())).scalars().all()
+        )
 
         ids = [p.id for p in players]
         planets_by_owner = {}
         fleets_by_owner = {}
         if ids:
             planets_by_owner = dict(
-                s.execute(select(Planet.owner_player_id, func.count(Planet.id)).where(Planet.owner_player_id.in_(ids)).group_by(Planet.owner_player_id)).all()
+                s.execute(
+                    select(Planet.owner_player_id, func.count(Planet.id))
+                    .where(Planet.owner_player_id.in_(ids))
+                    .group_by(Planet.owner_player_id)
+                ).all()
             )
             fleets_by_owner = dict(
-                s.execute(select(Fleet.owner_player_id, func.count(Fleet.id)).where(Fleet.owner_player_id.in_(ids)).group_by(Fleet.owner_player_id)).all()
+                s.execute(
+                    select(Fleet.owner_player_id, func.count(Fleet.id))
+                    .where(Fleet.owner_player_id.in_(ids))
+                    .group_by(Fleet.owner_player_id)
+                ).all()
             )
 
         payload = []
@@ -238,18 +300,26 @@ def admin_world():
     token = _require_admin_token()
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         ws = world.get_or_create_world_state(s)
 
         runtime = {
-            "auto_tick_running": bool(current_app.extensions.get("auto_tick_scheduler")),
-            "auto_tick_last_run_at": current_app.extensions.get("auto_tick_last_run_at"),
+            "auto_tick_running": bool(
+                current_app.extensions.get("auto_tick_scheduler")
+            ),
+            "auto_tick_last_run_at": current_app.extensions.get(
+                "auto_tick_last_run_at"
+            ),
             "auto_tick_last_tick": current_app.extensions.get("auto_tick_last_tick"),
             "auto_tick_error": current_app.extensions.get("auto_tick_error"),
         }
         spawn_min = max(0, int(getattr(ws, "player_spawn_min_manhattan", 25) or 25))
 
-        planets_n = int(s.execute(select(func.count()).select_from(Planet)).scalar_one())
+        planets_n = int(
+            s.execute(select(func.count()).select_from(Planet)).scalar_one()
+        )
 
         data = {
             "auto_tick_enabled": bool(ws.auto_tick_enabled),
@@ -261,7 +331,9 @@ def admin_world():
             "api_app": "guardstar",
             "game_version": GAME_VERSION,
             "build_id": BUILD_ID,
-            "balance_schema_version": balance.balance_schema_version() if balance else None,
+            "balance_schema_version": balance.balance_schema_version()
+            if balance
+            else None,
         }
     return render_template("admin_world.html", token=token, data=data)
 
@@ -269,7 +341,12 @@ def admin_world():
 @web_bp.post("/admin/world/autotick")
 def admin_world_autotick():
     token = _require_admin_token()
-    enabled = (request.form.get("enabled") or "").strip().lower() in ("1", "true", "yes", "on")
+    enabled = (request.form.get("enabled") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     interval_raw = (request.form.get("interval_seconds") or "").strip()
     interval = None
     if interval_raw:
@@ -283,7 +360,9 @@ def admin_world_autotick():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         ws = world.get_or_create_world_state(s)
         ws.auto_tick_enabled = bool(enabled)
         if interval is not None:
@@ -291,7 +370,9 @@ def admin_world_autotick():
         s.commit()
 
         current_app.config["AUTO_TICK_ENABLED"] = bool(ws.auto_tick_enabled)
-        current_app.config["AUTO_TICK_INTERVAL_SECONDS"] = float(ws.auto_tick_interval_seconds)
+        current_app.config["AUTO_TICK_INTERVAL_SECONDS"] = float(
+            ws.auto_tick_interval_seconds
+        )
 
     current_app.extensions.pop("auto_tick_error", None)
     try:
@@ -318,7 +399,9 @@ def admin_world_spawn_settings():
 
     with db_session() as s:
         balance = current_app.extensions.get("balance_service")
-        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
         ws = world.get_or_create_world_state(s)
         ws.player_spawn_min_manhattan = int(v)
         s.commit()
@@ -374,7 +457,12 @@ def admin_regenerate_player_access_code(player_id: str):
         player.access_code_hash = access_code_hash
         s.commit()
         # Показываем код один раз (как на регистрации).
-        return render_template("show_code.html", access_code=access_code, display_name=player.display_name, admin_token=token)
+        return render_template(
+            "show_code.html",
+            access_code=access_code,
+            display_name=player.display_name,
+            admin_token=token,
+        )
 
 
 @web_bp.route("/actions/move_scout", methods=["GET", "POST"])
@@ -399,9 +487,10 @@ def move_scout():
 
     with db_session() as s:
         world = WorldService(world_seed=current_app.config["SERVER_SALT"])
-        result = world.create_scout_move_order(s, player_id=player_id, target_x=x, target_y=y, target_z=z)
+        result = world.create_scout_move_order(
+            s, player_id=player_id, target_x=x, target_y=y, target_z=z
+        )
         if result.get("ok"):
             s.commit()
 
     return redirect(url_for("web.me", x=x, y=y, z=z))
-

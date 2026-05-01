@@ -33,7 +33,9 @@ def upgrade() -> None:
 
     op.create_table(
         "fleets",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
+        sa.Column(
+            "id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False
+        ),
         sa.Column(
             "owner_player_id",
             postgresql.UUID(as_uuid=True),
@@ -47,7 +49,9 @@ def upgrade() -> None:
         sa.Column("pos_z", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
-    op.create_index("ix_fleets_owner_player_id", "fleets", ["owner_player_id"], unique=False)
+    op.create_index(
+        "ix_fleets_owner_player_id", "fleets", ["owner_player_id"], unique=False
+    )
     op.create_index("ix_fleets_unit_type", "fleets", ["unit_type"], unique=False)
     op.create_index("ix_fleets_pos_x", "fleets", ["pos_x"], unique=False)
     op.create_index("ix_fleets_pos_y", "fleets", ["pos_y"], unique=False)
@@ -62,4 +66,3 @@ def downgrade() -> None:
     op.drop_index("ix_fleets_owner_player_id", table_name="fleets")
     op.drop_table("fleets")
     op.drop_table("resource_ticks")
-

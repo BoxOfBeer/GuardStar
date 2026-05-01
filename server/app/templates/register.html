@@ -5,6 +5,17 @@
     <form method="post">
       <label>Имя (любое):</label>
       <input name="display_name" placeholder="например, Molot" maxlength="64" />
+      <label style="margin-top:10px;">Раса:</label>
+      <select name="race_id">
+        {% set list = races if races is defined and races else [] %}
+        {% if not list %}
+          <option value="human">Human Union</option>
+        {% else %}
+          {% for r in list %}
+            <option value="{{ r.id }}">{{ r.name or r.id }}</option>
+          {% endfor %}
+        {% endif %}
+      </select>
       <button type="submit">Создать</button>
     </form>
     {% if error %}<div class="error">{{ error }}</div>{% endif %}

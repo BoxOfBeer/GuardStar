@@ -144,7 +144,10 @@ def test_tick_executes_move_order(client):
             if cell["x"] == cx + 1 and cell["y"] == cy:
                 target_before = cell
     assert target_before is not None
-    assert not any(o["type"] == "fleet" and o["unit_type"] == "scout" for o in target_before["objects"])
+    assert not any(
+        o["type"] == "fleet" and o["unit_type"] == "scout"
+        for o in target_before["objects"]
+    )
 
     tick = client.post("/api/world/tick")
     assert tick.status_code == 200
@@ -160,7 +163,10 @@ def test_tick_executes_move_order(client):
             if cell["x"] == cx + 1 and cell["y"] == cy:
                 target_after = cell
     assert target_after is not None
-    assert any(o["type"] == "fleet" and o["unit_type"] == "scout" for o in target_after["objects"])
+    assert any(
+        o["type"] == "fleet" and o["unit_type"] == "scout"
+        for o in target_after["objects"]
+    )
 
 
 def test_units_status_switches_idle_moving(client):
@@ -264,7 +270,11 @@ def test_fleet_empire_upkeep_deducts_from_capital_on_tick(client):
     fid = cr.get_json()["fleet_id"]
     sav = client.post(
         "/api/fleets/save",
-        json={"fleet_id": fid, "name": "Alpha", "composition": {"scout": 1, "fighter": 1}},
+        json={
+            "fleet_id": fid,
+            "name": "Alpha",
+            "composition": {"scout": 1, "fighter": 1},
+        },
     )
     assert sav.status_code == 200, sav.get_json()
     m2 = client.get("/api/world/state").get_json()["economy"]["metal"]
@@ -284,7 +294,9 @@ def test_fleet_merge_then_split(client):
         json={"planet_id": pid, "name": "Two", "composition": {"fighter": 1}},
     ).get_json()
     aid, bid = a["fleet_id"], b["fleet_id"]
-    mg = client.post("/api/fleets/merge", json={"target_fleet_id": aid, "source_fleet_id": bid})
+    mg = client.post(
+        "/api/fleets/merge", json={"target_fleet_id": aid, "source_fleet_id": bid}
+    )
     assert mg.status_code == 200, mg.get_json()
     st = client.get("/api/world/state").get_json()
     ids = {f["id"] for f in st["fleets"]}
@@ -293,7 +305,9 @@ def test_fleet_merge_then_split(client):
     assert int(f_one["composition"].get("scout", 0)) == 2
     assert int(f_one["composition"].get("fighter", 0)) == 1
 
-    sp = client.post("/api/fleets/split", json={"fleet_id": aid, "take": {"scout": 1, "fighter": 1}})
+    sp = client.post(
+        "/api/fleets/split", json={"fleet_id": aid, "take": {"scout": 1, "fighter": 1}}
+    )
     assert sp.status_code == 200, sp.get_json()
     st2 = client.get("/api/world/state").get_json()
     assert len(st2["fleets"]) == 2

@@ -34,7 +34,9 @@ def manhattan_distance(*, from_x: int, from_y: int, to_x: int, to_y: int) -> int
     return abs(to_x - from_x) + abs(to_y - from_y)
 
 
-def calc_travel_plan(*, from_x: int, from_y: int, to_x: int, to_y: int, unit_type: str = "scout") -> TravelPlan:
+def calc_travel_plan(
+    *, from_x: int, from_y: int, to_x: int, to_y: int, unit_type: str = "scout"
+) -> TravelPlan:
     # MVP: базовая формула. Дальше можно подключить скорость юнита/terrain/форпосты.
     dist = manhattan_distance(from_x=from_x, from_y=from_y, to_x=to_x, to_y=to_y)
     travel_ticks = max(1, dist)
@@ -67,4 +69,3 @@ def calc_fuel_cost(*, distance: int, qty: int, unit_type: str = "scout") -> Fuel
     d = max(0, int(distance))
     q = max(1, int(qty))
     return FuelPlan(fuel_cost=d * q)
-

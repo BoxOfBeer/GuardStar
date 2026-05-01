@@ -20,7 +20,12 @@ depends_on = None
 def upgrade() -> None:
     op.add_column(
         "players",
-        sa.Column("research_points", sa.Numeric(precision=16, scale=6), nullable=False, server_default=sa.text("0")),
+        sa.Column(
+            "research_points",
+            sa.Numeric(precision=16, scale=6),
+            nullable=False,
+            server_default=sa.text("0"),
+        ),
     )
     op.alter_column("players", "research_points", server_default=None)
 

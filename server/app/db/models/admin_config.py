@@ -13,6 +13,9 @@ class AdminConfig(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     # Храним только хэш токена, как и у игроков (не сам токен).
-    admin_token_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-
+    admin_token_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=""
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )

@@ -12,13 +12,20 @@ from app.db.models import Base
 class Unit(Base):
     __tablename__ = "units"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     owner_player_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("players.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("players.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     planet_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("planets.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("planets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     unit_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-

@@ -17,13 +17,22 @@ class PlayerEffect(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     player_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("players.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("players.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     effect_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    source_type: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    source_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="unknown"
+    )
     source_ref: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_tick: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
+    created_tick: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, index=True
+    )
     expires_tick: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     used_at_tick: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )

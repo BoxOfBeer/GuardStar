@@ -21,9 +21,19 @@ depends_on = None
 def upgrade() -> None:
     op.add_column(
         "fleet_orders",
-        sa.Column("force_attack", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+        sa.Column(
+            "force_attack",
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.text("false"),
+        ),
     )
-    op.add_column("fleet_orders", sa.Column("combat_prompt_expires_at", sa.DateTime(timezone=True), nullable=True))
+    op.add_column(
+        "fleet_orders",
+        sa.Column(
+            "combat_prompt_expires_at", sa.DateTime(timezone=True), nullable=True
+        ),
+    )
 
 
 def downgrade() -> None:

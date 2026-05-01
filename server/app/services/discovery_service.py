@@ -26,20 +26,32 @@ from app.services.player_research_effects import (
 TERRAIN_DISCOVERY = frozenset({"ruins", "anomaly"})
 
 
-def _roll_u32(world_seed: str, player_id: uuid.UUID, x: int, y: int, z: int, salt: str) -> int:
+def _roll_u32(
+    world_seed: str, player_id: uuid.UUID, x: int, y: int, z: int, salt: str
+) -> int:
     raw = f"{world_seed}|{player_id}|{x}|{y}|{z}|{salt}".encode()
     h = hashlib.sha256(raw).digest()
     return int.from_bytes(h[:4], "big")
 
 
-def _source_subtype(world_seed: str, player_id: uuid.UUID, x: int, y: int, z: int, terrain: str) -> str:
+def _source_subtype(
+    world_seed: str, player_id: uuid.UUID, x: int, y: int, z: int, terrain: str
+) -> str:
     v = _roll_u32(world_seed, player_id, x, y, z, f"disc_subtype_v1::{terrain}") % 3
     if terrain == "ruins":
         return ["archive", "storage", "damaged_beacon"][v]
     return ["unstable_field", "signal", "trap"][v]
 
 
-def _weighted_outcome(world_seed: str, player_id: uuid.UUID, x: int, y: int, z: int, terrain: str, subtype: str) -> str:
+def _weighted_outcome(
+    world_seed: str,
+    player_id: uuid.UUID,
+    x: int,
+    y: int,
+    z: int,
+    terrain: str,
+    subtype: str,
+) -> str:
     """
     Возвращает одно из: 'boost' | 'cache' | 'ambush'
     Тип источника меняет веса исходов (без новой механики).
@@ -56,7 +68,12 @@ def _weighted_outcome(world_seed: str, player_id: uuid.UUID, x: int, y: int, z: 
         "trap": (15, 25, 60),
     }
     w = weights.get(subtype, (45, 40, 15))
-    r = _roll_u32(world_seed, player_id, x, y, z, f"disc_outcome_v1::{terrain}::{subtype}") % 100
+    r = (
+        _roll_u32(
+            world_seed, player_id, x, y, z, f"disc_outcome_v1::{terrain}::{subtype}"
+        )
+        % 100
+    )
     if r < w[0]:
         return "boost"
     if r < w[0] + w[1]:
@@ -83,7 +100,9 @@ def try_resolve_ruins_anomaly_for_sector(
 
     seed = str(getattr(world, "_world_seed", "") or "")
     subtype = _source_subtype(seed, player_id, int(x), int(y), int(z), terrain)
-    outcome = _weighted_outcome(seed, player_id, int(x), int(y), int(z), terrain, subtype)
+    outcome = _weighted_outcome(
+        seed, player_id, int(x), int(y), int(z), terrain, subtype
+    )
     src = str(terrain).lower()
     ref = f"{int(x)}:{int(y)}:{int(z)}"
     tick = int(now_tick)
@@ -103,7 +122,9 @@ def try_resolve_ruins_anomaly_for_sector(
             time_multiplier=mult,
             duration_ticks=duration,
         )
-        exp = int(row.expires_tick) if row.expires_tick is not None else (tick + duration)
+        exp = (
+            int(row.expires_tick) if row.expires_tick is not None else (tick + duration)
+        )
         place = "аномалии" if terrain == "anomaly" else "руинах"
         pct = max(0, int(round((1.0 - float(mult)) * 100)))
         subtype_ru = {
@@ -143,25 +164,61 @@ def try_resolve_ruins_anomaly_for_sector(
         )
         # Полевые данные: архивы руин / данные аномалий.
         if terrain == "ruins":
-            add_field_data(s, player_id=player_id, tick=tick, kind=EFFECT_RUIN_ARCHIVES, source_type=src, source_ref=ref)
+            add_field_data(
+                s,
+                player_id=player_id,
+                tick=tick,
+                kind=EFFECT_RUIN_ARCHIVES,
+                source_type=src,
+                source_ref=ref,
+            )
         else:
-            add_field_data(s, player_id=player_id, tick=tick, kind=EFFECT_ANOMALY_DATA, source_type=src, source_ref=ref)
+            add_field_data(
+                s,
+                player_id=player_id,
+                tick=tick,
+                kind=EFFECT_ANOMALY_DATA,
+                source_type=src,
+                source_ref=ref,
+            )
     elif outcome == "cache":
         payload = {"metal_discount_pct": 0.12, "crystal_discount_pct": 0.12}
-        upsert_single_blueprint_cache(s, player_id=player_id, tick=tick, source_type=src, source_ref=ref, payload=payload)
+        upsert_single_blueprint_cache(
+            s,
+            player_id=player_id,
+            tick=tick,
+            source_type=src,
+            source_ref=ref,
+            payload=payload,
+        )
         place = "аномалии" if terrain == "anomaly" else "руинах"
         if terrain == "ruins":
-            subtype_ru = {"archive": "архив", "storage": "склад", "damaged_beacon": "маяк"}.get(subtype, "руины")
+            subtype_ru = {
+                "archive": "архив",
+                "storage": "склад",
+                "damaged_beacon": "маяк",
+            }.get(subtype, "руины")
             msg = f"В {place} найден {subtype_ru} проектной документации. Следующее исследование дешевле по металлу и кристаллам."
         else:
-            subtype_ru = {"unstable_field": "поле", "signal": "сигнал", "trap": "ловушка"}.get(subtype, "аномалия")
+            subtype_ru = {
+                "unstable_field": "поле",
+                "signal": "сигнал",
+                "trap": "ловушка",
+            }.get(subtype, "аномалия")
             msg = f"В {place} обнаружены фрагменты данных ({subtype_ru}). Следующее исследование дешевле по металлу и кристаллам."
         world._emit_event(
             s,
             tick=tick,
             type="discovery_blueprint_cache",
             message=msg,
-            payload={"x": x, "y": y, "z": z, **payload, "source_subtype": subtype, "label": "Кэш чертежей"},
+            payload={
+                "x": x,
+                "y": y,
+                "z": z,
+                **payload,
+                "source_subtype": subtype,
+                "label": "Кэш чертежей",
+            },
             player_id=player_id,
         )
         world.grant_player_research_points(
@@ -174,7 +231,14 @@ def try_resolve_ruins_anomaly_for_sector(
             payload_extra={"terrain": terrain, "x": x, "y": y, "z": z},
         )
         # Фрагменты исследований (универсальные).
-        add_field_data(s, player_id=player_id, tick=tick, kind=EFFECT_RESEARCH_FRAGMENTS, source_type=src, source_ref=ref)
+        add_field_data(
+            s,
+            player_id=player_id,
+            tick=tick,
+            kind=EFFECT_RESEARCH_FRAGMENTS,
+            source_type=src,
+            source_ref=ref,
+        )
     else:
         # Не чаще N тиков.
         ambush_cd = 12
@@ -191,7 +255,11 @@ def try_resolve_ruins_anomaly_for_sector(
                 time_multiplier=mult,
                 duration_ticks=duration,
             )
-            exp = int(row.expires_tick) if row.expires_tick is not None else (tick + duration)
+            exp = (
+                int(row.expires_tick)
+                if row.expires_tick is not None
+                else (tick + duration)
+            )
             place = "аномалии" if terrain == "anomaly" else "руинах"
             pct = max(0, int(round((1.0 - float(mult)) * 100)))
             world._emit_event(
@@ -213,18 +281,40 @@ def try_resolve_ruins_anomaly_for_sector(
             )
         else:
             world._spawn_mvp_bandit_patrol_near(s, home_x=int(x), home_y=int(y))
-            start_ambush_cooldown(s, player_id=player_id, tick=tick, cooldown_ticks=ambush_cd)
+            start_ambush_cooldown(
+                s, player_id=player_id, tick=tick, cooldown_ticks=ambush_cd
+            )
             place = "аномалии" if terrain == "anomaly" else "руин"
-            danger_src = "ловушка" if subtype == "trap" else "сигнал" if subtype == "signal" else "маяк"
+            danger_src = (
+                "ловушка"
+                if subtype == "trap"
+                else "сигнал"
+                if subtype == "signal"
+                else "маяк"
+            )
             world._emit_event(
                 s,
                 tick=tick,
                 type="discovery_bandit_ambush",
                 message=f"{danger_src.capitalize()} из {place} привлёк корсаров. Засада рядом с сектором — будьте готовы к бою.",
-                payload={"x": x, "y": y, "z": z, "cooldown_ticks": ambush_cd, "source_subtype": subtype, "label": "Засада"},
+                payload={
+                    "x": x,
+                    "y": y,
+                    "z": z,
+                    "cooldown_ticks": ambush_cd,
+                    "source_subtype": subtype,
+                    "label": "Засада",
+                },
                 player_id=player_id,
             )
             # Даже в случае засады можно “поднять” пару фрагментов из места.
-            add_field_data(s, player_id=player_id, tick=tick, kind=EFFECT_RESEARCH_FRAGMENTS, source_type=src, source_ref=ref)
+            add_field_data(
+                s,
+                player_id=player_id,
+                tick=tick,
+                kind=EFFECT_RESEARCH_FRAGMENTS,
+                source_type=src,
+                source_ref=ref,
+            )
 
     s.flush()

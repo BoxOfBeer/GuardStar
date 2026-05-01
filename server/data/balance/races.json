@@ -15,7 +15,9 @@
           "metal": 1.0,
           "crystal": 1.0,
           "energy": 1.0,
-          "fuel": 1.0
+          "fuel": 1.0,
+          "food": 1.0,
+          "water": 1.0
         }
       }
     },
@@ -34,7 +36,9 @@
           "metal": 1.0,
           "crystal": 1.0,
           "energy": 1.0,
-          "fuel": 1.0
+          "fuel": 1.0,
+          "food": 1.0,
+          "water": 1.0
         }
       }
     },

@@ -23,4 +23,3 @@ def read_game_version() -> str:
 
 
 GAME_VERSION = read_game_version()
-

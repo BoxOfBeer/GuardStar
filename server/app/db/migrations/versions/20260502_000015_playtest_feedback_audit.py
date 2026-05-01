@@ -21,7 +21,12 @@ depends_on = None
 def upgrade() -> None:
     op.add_column(
         "players",
-        sa.Column("feedback_audited", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+        sa.Column(
+            "feedback_audited",
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.text("false"),
+        ),
     )
     op.create_index("ix_players_feedback_audited", "players", ["feedback_audited"])
     op.alter_column("players", "feedback_audited", server_default=None)
@@ -38,15 +43,25 @@ def upgrade() -> None:
         ),
         sa.Column("method", sa.String(length=8), nullable=False),
         sa.Column("path", sa.String(length=512), nullable=False),
-        sa.Column("query_string", sa.String(length=512), nullable=False, server_default=""),
+        sa.Column(
+            "query_string", sa.String(length=512), nullable=False, server_default=""
+        ),
         sa.Column("body_preview", sa.Text(), nullable=True),
         sa.Column("status_code", sa.SmallInteger(), nullable=False),
         sa.Column("duration_ms", sa.Integer(), nullable=False, server_default="0"),
         sa.ForeignKeyConstraint(["player_id"], ["players.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_feedback_playtest_api_logs_player_id", "feedback_playtest_api_logs", ["player_id"])
-    op.create_index("ix_feedback_playtest_api_logs_created_at", "feedback_playtest_api_logs", ["created_at"])
+    op.create_index(
+        "ix_feedback_playtest_api_logs_player_id",
+        "feedback_playtest_api_logs",
+        ["player_id"],
+    )
+    op.create_index(
+        "ix_feedback_playtest_api_logs_created_at",
+        "feedback_playtest_api_logs",
+        ["created_at"],
+    )
     op.alter_column("feedback_playtest_api_logs", "query_string", server_default=None)
     op.alter_column("feedback_playtest_api_logs", "duration_ms", server_default=None)
 

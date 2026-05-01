@@ -15,7 +15,9 @@ class FleetShip(Base):
     __tablename__ = "fleet_ships"
 
     fleet_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("fleets.id", ondelete="CASCADE"), primary_key=True
+        UUID(as_uuid=True),
+        ForeignKey("fleets.id", ondelete="CASCADE"),
+        primary_key=True,
     )
     unit_type: Mapped[str] = mapped_column(String(32), primary_key=True)
     qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

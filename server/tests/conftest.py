@@ -27,7 +27,9 @@ from app.db.models.fleet_ship import FleetShip  # noqa: F401
 def database_url() -> str:
     url = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
     if not url:
-        pytest.skip("Set TEST_DATABASE_URL or DATABASE_URL to run DB tests (PostgreSQL).")
+        pytest.skip(
+            "Set TEST_DATABASE_URL or DATABASE_URL to run DB tests (PostgreSQL)."
+        )
     return url
 
 
@@ -52,4 +54,3 @@ def client(monkeypatch, database_url: str, db_schema):
     app.config.update(TESTING=True)
 
     return app.test_client()
-

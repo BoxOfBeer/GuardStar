@@ -35,9 +35,9 @@ def _cached_feedback_audited(player_id: uuid.UUID) -> bool:
         if hit is not None and (now - hit[1]) < _CACHE_TTL_SEC:
             return hit[0]
     with db_session() as s:
-        row = (
-            s.execute(select(Player.feedback_audited).where(Player.id == player_id)).scalar_one_or_none()
-        )
+        row = s.execute(
+            select(Player.feedback_audited).where(Player.id == player_id)
+        ).scalar_one_or_none()
     flag = bool(row)
     with _lock:
         _flag_cache[key] = (flag, now)
@@ -103,7 +103,11 @@ def register_playtest_audit_hooks(bp: Blueprint) -> None:
                 if raw is None:
                     preview = None
                 else:
-                    txt = raw.decode("utf-8", errors="replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+                    txt = (
+                        raw.decode("utf-8", errors="replace")
+                        if isinstance(raw, (bytes, bytearray))
+                        else str(raw)
+                    )
                     preview = txt if len(txt) <= _BODY_MAX else txt[:_BODY_MAX] + "…"
             except Exception:
                 preview = "<unreadable>"
@@ -122,7 +126,11 @@ def register_playtest_audit_hooks(bp: Blueprint) -> None:
 
         t0 = getattr(g, "_playtest_audit_t0", None)
         try:
-            ms = int(max(0, (perf_counter() - float(t0)) * 1000)) if t0 is not None else 0
+            ms = (
+                int(max(0, (perf_counter() - float(t0)) * 1000))
+                if t0 is not None
+                else 0
+            )
             _record_row(
                 player_id=meta["player_id"],
                 method=request.method,
