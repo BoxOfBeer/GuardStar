@@ -8,9 +8,29 @@
       "level": 1,
       "slot_cost_engineers": 1,
       "prereq_tech": [],
-      "build": { "time_ticks": 3, "cost": { "metal": 120, "crystal": 90 } },
-      "effects": { "vision": { "radius_add": 4 } },
-      "upgrade": { "to": "module_radar_t2", "time_ticks": 4, "cost": { "metal": 140, "crystal": 120 }, "prereq_tech": ["tech_territory_2"] }
+      "build": {
+        "time_ticks": 3,
+        "cost": {
+          "metal": 120,
+          "crystal": 90
+        }
+      },
+      "effects": {
+        "vision": {
+          "radius_add": 4
+        }
+      },
+      "upgrade": {
+        "to": "module_radar_t2",
+        "time_ticks": 4,
+        "cost": {
+          "metal": 140,
+          "crystal": 120
+        },
+        "prereq_tech": [
+          "tech_territory_2"
+        ]
+      }
     },
     {
       "id": "module_radar_t2",
@@ -19,9 +39,21 @@
       "tier": 2,
       "level": 2,
       "slot_cost_engineers": 1,
-      "prereq_tech": ["tech_territory_2"],
-      "build": { "time_ticks": 4, "cost": { "metal": 160, "crystal": 140 } },
-      "effects": { "vision": { "radius_add": 7 } },
+      "prereq_tech": [
+        "tech_territory_2"
+      ],
+      "build": {
+        "time_ticks": 4,
+        "cost": {
+          "metal": 160,
+          "crystal": 140
+        }
+      },
+      "effects": {
+        "vision": {
+          "radius_add": 7
+        }
+      },
       "upgrade": null
     },
     {
@@ -31,10 +63,33 @@
       "tier": 1,
       "level": 1,
       "slot_cost_engineers": 1,
-      "prereq_tech": ["tech_hull_1"],
-      "build": { "time_ticks": 4, "cost": { "metal": 140, "crystal": 120 } },
-      "effects": { "combat": { "hp_add": 18, "defense_add": 2 } },
-      "upgrade": { "to": "module_armor_t2", "time_ticks": 5, "cost": { "metal": 180, "crystal": 160 }, "prereq_tech": ["tech_territory_2"] }
+      "prereq_tech": [
+        "tech_hull_1"
+      ],
+      "build": {
+        "time_ticks": 4,
+        "cost": {
+          "metal": 140,
+          "crystal": 120
+        }
+      },
+      "effects": {
+        "combat": {
+          "hp_add": 18,
+          "defense_add": 2
+        }
+      },
+      "upgrade": {
+        "to": "module_armor_t2",
+        "time_ticks": 5,
+        "cost": {
+          "metal": 180,
+          "crystal": 160
+        },
+        "prereq_tech": [
+          "tech_territory_2"
+        ]
+      }
     },
     {
       "id": "module_armor_t2",
@@ -43,9 +98,22 @@
       "tier": 2,
       "level": 2,
       "slot_cost_engineers": 1,
-      "prereq_tech": ["tech_territory_2"],
-      "build": { "time_ticks": 5, "cost": { "metal": 220, "crystal": 180 } },
-      "effects": { "combat": { "hp_add": 30, "defense_add": 3 } },
+      "prereq_tech": [
+        "tech_territory_2"
+      ],
+      "build": {
+        "time_ticks": 5,
+        "cost": {
+          "metal": 220,
+          "crystal": 180
+        }
+      },
+      "effects": {
+        "combat": {
+          "hp_add": 30,
+          "defense_add": 3
+        }
+      },
       "upgrade": null
     },
     {
@@ -55,9 +123,72 @@
       "tier": 1,
       "level": 1,
       "slot_cost_engineers": 1,
-      "prereq_tech": ["tech_logistics_1"],
-      "build": { "time_ticks": 3, "cost": { "metal": 110, "crystal": 80 } },
-      "effects": { "refuel": { "travel_fuel_discount_pct": 15 } },
+      "prereq_tech": [
+        "tech_logistics_1"
+      ],
+      "build": {
+        "time_ticks": 3,
+        "cost": {
+          "metal": 110,
+          "crystal": 80
+        }
+      },
+      "effects": {
+        "refuel": {
+          "travel_fuel_discount_pct": 15
+        }
+      },
+      "upgrade": null
+    },
+    {
+      "id": "module_logistics_t1",
+      "kind": "logistics",
+      "name": "Логистический модуль I",
+      "tier": 2,
+      "level": 1,
+      "slot_cost_engineers": 1,
+      "prereq_tech": [
+        "tech_supply_networks_1"
+      ],
+      "build": {
+        "time_ticks": 4,
+        "cost": {
+          "metal": 150,
+          "crystal": 120
+        }
+      },
+      "effects": {
+        "supply": {
+          "supply_per_supplier_add": 1
+        }
+      },
+      "upgrade": null
+    },
+    {
+      "id": "module_battery_t1",
+      "kind": "defense",
+      "name": "Энерго-батарея I",
+      "tier": 2,
+      "level": 1,
+      "slot_cost_engineers": 1,
+      "prereq_tech": [
+        "tech_energy_grid_1"
+      ],
+      "build": {
+        "time_ticks": 4,
+        "cost": {
+          "metal": 140,
+          "crystal": 130
+        }
+      },
+      "effects": {
+        "combat": {
+          "attack_add": 2
+        },
+        "upkeep": {
+          "energy_add": -1
+        }
+      },
       "upgrade": null
     }
   ]
