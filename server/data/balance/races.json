@@ -11,7 +11,12 @@
         "travel_fuel_multiplier": 1.0,
         "combat_damage_multiplier": 1.0,
         "combat_hp_multiplier": 1.0,
-        "production_multiplier": { "metal": 1.0, "crystal": 1.0, "energy": 1.0, "fuel": 1.0 }
+        "production_multiplier": {
+          "metal": 1.0,
+          "crystal": 1.0,
+          "energy": 1.0,
+          "fuel": 1.0
+        }
       }
     },
     {
@@ -25,7 +30,12 @@
         "travel_fuel_multiplier": 1.15,
         "combat_damage_multiplier": 1.1,
         "combat_hp_multiplier": 0.95,
-        "production_multiplier": { "metal": 1.0, "crystal": 1.0, "energy": 1.0, "fuel": 1.0 }
+        "production_multiplier": {
+          "metal": 1.0,
+          "crystal": 1.0,
+          "energy": 1.0,
+          "fuel": 1.0
+        }
       }
     },
     {
@@ -42,9 +52,15 @@
         "influence_multiplier": 1.12,
         "supply_route_upkeep_multiplier": 1.1,
         "fleet_unsupplied_energy_decay_multiplier": 1.25,
-        "production_multiplier": { "metal": 1.0, "crystal": 1.0, "energy": 1.0, "fuel": 1.0, "food": 1.0, "water": 1.0 }
+        "production_multiplier": {
+          "metal": 1.0,
+          "crystal": 1.0,
+          "energy": 1.0,
+          "fuel": 1.0,
+          "food": 1.0,
+          "water": 1.0
+        }
       }
     }
   ]
 }
-

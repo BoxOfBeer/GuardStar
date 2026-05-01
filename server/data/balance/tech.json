@@ -7,7 +7,10 @@
       "tier": 1,
       "enabled": true,
       "prereq": [],
-      "cost": { "metal": 200, "crystal": 120 },
+      "cost": {
+        "metal": 200,
+        "crystal": 120
+      },
       "time_ticks": 10,
       "research_points_cost": 24,
       "residual_time_ticks": 6,
@@ -21,13 +24,20 @@
       "description": "Замкнутые циклы выращивания: открывает гидропонные блоки на планетах.",
       "tier": 1,
       "enabled": true,
-      "prereq": ["tech_logistics_1"],
-      "cost": { "metal": 160, "crystal": 100 },
+      "prereq": [
+        "tech_logistics_1"
+      ],
+      "cost": {
+        "metal": 160,
+        "crystal": 100
+      },
       "time_ticks": 8,
       "research_points_cost": 28,
       "residual_time_ticks": 5,
       "effects": {
-        "production_multiplier": { "food": 1.08 }
+        "production_multiplier": {
+          "food": 1.08
+        }
       }
     },
     {
@@ -36,13 +46,20 @@
       "description": "Конденсация и рециклинг паров: реклаймеры воды на планетах.",
       "tier": 1,
       "enabled": true,
-      "prereq": ["tech_logistics_1"],
-      "cost": { "metal": 140, "crystal": 120 },
+      "prereq": [
+        "tech_logistics_1"
+      ],
+      "cost": {
+        "metal": 140,
+        "crystal": 120
+      },
       "time_ticks": 8,
       "research_points_cost": 28,
       "residual_time_ticks": 5,
       "effects": {
-        "production_multiplier": { "water": 1.08 }
+        "production_multiplier": {
+          "water": 1.08
+        }
       }
     },
     {
@@ -52,12 +69,17 @@
       "tier": 1,
       "enabled": true,
       "prereq": [],
-      "cost": { "metal": 200, "crystal": 80 },
+      "cost": {
+        "metal": 200,
+        "crystal": 80
+      },
       "time_ticks": 10,
       "research_points_cost": 26,
       "residual_time_ticks": 6,
       "effects": {
-        "production_multiplier": { "metal": 1.1 }
+        "production_multiplier": {
+          "metal": 1.1
+        }
       }
     },
     {
@@ -66,8 +88,13 @@
       "description": "Улучшение систем наведения и зарядов: выше урон в бою флотов.",
       "tier": 1,
       "enabled": true,
-      "prereq": ["tech_industry_1"],
-      "cost": { "metal": 280, "crystal": 160 },
+      "prereq": [
+        "tech_industry_1"
+      ],
+      "cost": {
+        "metal": 280,
+        "crystal": 160
+      },
       "time_ticks": 14,
       "research_points_cost": 36,
       "residual_time_ticks": 7,
@@ -81,8 +108,13 @@
       "description": "Усиление рам и щитов: флот держит удар дольше.",
       "tier": 1,
       "enabled": true,
-      "prereq": ["tech_logistics_1"],
-      "cost": { "metal": 220, "crystal": 200 },
+      "prereq": [
+        "tech_logistics_1"
+      ],
+      "cost": {
+        "metal": 220,
+        "crystal": 200
+      },
       "time_ticks": 12,
       "research_points_cost": 34,
       "residual_time_ticks": 6,
@@ -96,8 +128,14 @@
       "description": "Разрешает строить укреплённые форпосты для более уверенного удержания фронтира.",
       "tier": 2,
       "enabled": true,
-      "prereq": ["tech_industry_1", "tech_logistics_1"],
-      "cost": { "metal": 320, "crystal": 220 },
+      "prereq": [
+        "tech_industry_1",
+        "tech_logistics_1"
+      ],
+      "cost": {
+        "metal": 320,
+        "crystal": 220
+      },
       "time_ticks": 14,
       "research_points_cost": 58,
       "residual_time_ticks": 8,
@@ -109,9 +147,17 @@
       "description": "Стандартизация конвоев и узлов: немного увеличивает радиус снабжения планет и открывает логистический центр.",
       "tier": 2,
       "enabled": true,
-      "prereq": ["tech_logistics_1", "tech_industry_1"],
-      "field_data_requirements": ["research_fragments"],
-      "cost": { "metal": 340, "crystal": 240 },
+      "prereq": [
+        "tech_logistics_1",
+        "tech_industry_1"
+      ],
+      "field_data_requirements": [
+        "research_fragments"
+      ],
+      "cost": {
+        "metal": 340,
+        "crystal": 240
+      },
       "time_ticks": 14,
       "research_points_cost": 62,
       "residual_time_ticks": 8,
@@ -125,8 +171,14 @@
       "description": "Улучшенные сенсорные пакеты: открывает корвет с усиленной разведкой.",
       "tier": 2,
       "enabled": true,
-      "prereq": ["tech_logistics_1", "tech_hull_1"],
-      "cost": { "metal": 300, "crystal": 260 },
+      "prereq": [
+        "tech_logistics_1",
+        "tech_hull_1"
+      ],
+      "cost": {
+        "metal": 300,
+        "crystal": 260
+      },
       "time_ticks": 16,
       "research_points_cost": 54,
       "residual_time_ticks": 7,
@@ -138,13 +190,131 @@
       "description": "Открывает командные узлы, расширяющие и стабилизирующие контроль сектора.",
       "tier": 3,
       "enabled": true,
-      "prereq": ["tech_territory_2", "tech_hull_1", "tech_supply_networks_1"],
-      "field_data_requirements": ["ruin_archives"],
-      "cost": { "metal": 480, "crystal": 340 },
+      "prereq": [
+        "tech_territory_2",
+        "tech_hull_1",
+        "tech_supply_networks_1"
+      ],
+      "field_data_requirements": [
+        "ruin_archives"
+      ],
+      "cost": {
+        "metal": 480,
+        "crystal": 340
+      },
       "time_ticks": 18,
       "research_points_cost": 102,
       "residual_time_ticks": 10,
       "effects": {}
+    },
+    {
+      "id": "tech_industry_2",
+      "name": "Промышленность II",
+      "description": "Расширенные экстракторы и автоматизация добычи металла.",
+      "tier": 2,
+      "enabled": true,
+      "prereq": [
+        "tech_industry_1"
+      ],
+      "cost": {
+        "metal": 340,
+        "crystal": 180
+      },
+      "time_ticks": 14,
+      "research_points_cost": 62,
+      "residual_time_ticks": 8,
+      "effects": {
+        "production_multiplier": {
+          "metal": 1.12
+        }
+      }
+    },
+    {
+      "id": "tech_hydroponics_2",
+      "name": "Гидропоника II",
+      "description": "Многоуровневые фермы для стабильного продовольствия.",
+      "tier": 2,
+      "enabled": true,
+      "prereq": [
+        "tech_hydroponics_1"
+      ],
+      "cost": {
+        "metal": 260,
+        "crystal": 220
+      },
+      "time_ticks": 14,
+      "research_points_cost": 64,
+      "residual_time_ticks": 8,
+      "effects": {
+        "production_multiplier": {
+          "food": 1.12
+        }
+      }
+    },
+    {
+      "id": "tech_atmospheric_water_2",
+      "name": "Атмосферная вода II",
+      "description": "Улучшенная конденсация для крупных поселений.",
+      "tier": 2,
+      "enabled": true,
+      "prereq": [
+        "tech_atmospheric_water_1"
+      ],
+      "cost": {
+        "metal": 250,
+        "crystal": 230
+      },
+      "time_ticks": 14,
+      "research_points_cost": 64,
+      "residual_time_ticks": 8,
+      "effects": {
+        "production_multiplier": {
+          "water": 1.12
+        }
+      }
+    },
+    {
+      "id": "tech_energy_grid_1",
+      "name": "Энергосети I",
+      "description": "Оптимизация распределения энергии и снижение потерь.",
+      "tier": 2,
+      "enabled": true,
+      "prereq": [
+        "tech_industry_1",
+        "tech_logistics_1"
+      ],
+      "cost": {
+        "metal": 300,
+        "crystal": 240
+      },
+      "time_ticks": 15,
+      "research_points_cost": 66,
+      "residual_time_ticks": 8,
+      "effects": {
+        "upkeep_energy_multiplier": 0.92
+      }
+    },
+    {
+      "id": "tech_fleet_doctrine_1",
+      "name": "Флотская доктрина I",
+      "description": "Координация манёвров и огня для боевых кораблей.",
+      "tier": 2,
+      "enabled": true,
+      "prereq": [
+        "tech_armament_1",
+        "tech_hull_1"
+      ],
+      "cost": {
+        "metal": 360,
+        "crystal": 280
+      },
+      "time_ticks": 16,
+      "research_points_cost": 72,
+      "residual_time_ticks": 9,
+      "effects": {
+        "combat_damage_multiplier": 1.08,
+        "combat_hp_multiplier": 1.06
+      }
     }
   ]
 }

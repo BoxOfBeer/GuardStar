@@ -6,9 +6,21 @@
       "tier": 1,
       "build_zone_radius_required": 3,
       "max_per_planet": 10,
-      "build": { "time_ticks": 3, "cost": { "metal": 120, "crystal": 60 } },
-      "effects": { "production_per_tick_add": { "metal": 2 } },
-      "build_on_terrain": ["asteroids"]
+      "build": {
+        "time_ticks": 3,
+        "cost": {
+          "metal": 120,
+          "crystal": 60
+        }
+      },
+      "effects": {
+        "production_per_tick_add": {
+          "metal": 2
+        }
+      },
+      "build_on_terrain": [
+        "asteroids"
+      ]
     },
     {
       "id": "reactor_t1",
@@ -16,9 +28,22 @@
       "tier": 1,
       "build_zone_radius_required": 3,
       "max_per_planet": 5,
-      "build": { "time_ticks": 3, "cost": { "metal": 160, "crystal": 40 } },
-      "effects": { "production_per_tick_add": { "energy": 2 } },
-      "build_on_terrain": ["empty", "asteroids"]
+      "build": {
+        "time_ticks": 3,
+        "cost": {
+          "metal": 160,
+          "crystal": 40
+        }
+      },
+      "effects": {
+        "production_per_tick_add": {
+          "energy": 2
+        }
+      },
+      "build_on_terrain": [
+        "empty",
+        "asteroids"
+      ]
     },
     {
       "id": "fuel_depot_t1",
@@ -26,9 +51,23 @@
       "tier": 1,
       "build_zone_radius_required": 3,
       "max_per_planet": 5,
-      "build": { "time_ticks": 3, "cost": { "metal": 140, "crystal": 50 } },
-      "effects": { "production_per_tick_add": { "fuel": 2 } },
-      "build_on_terrain": ["empty", "asteroids", "nebula"]
+      "build": {
+        "time_ticks": 3,
+        "cost": {
+          "metal": 140,
+          "crystal": 50
+        }
+      },
+      "effects": {
+        "production_per_tick_add": {
+          "fuel": 2
+        }
+      },
+      "build_on_terrain": [
+        "empty",
+        "asteroids",
+        "nebula"
+      ]
     },
     {
       "id": "crystal_farm_t1",
@@ -36,9 +75,21 @@
       "tier": 1,
       "build_zone_radius_required": 3,
       "max_per_planet": 5,
-      "build": { "time_ticks": 3, "cost": { "metal": 100, "crystal": 90 } },
-      "effects": { "production_per_tick_add": { "crystal": 2 } },
-      "build_on_terrain": ["asteroids"]
+      "build": {
+        "time_ticks": 3,
+        "cost": {
+          "metal": 100,
+          "crystal": 90
+        }
+      },
+      "effects": {
+        "production_per_tick_add": {
+          "crystal": 2
+        }
+      },
+      "build_on_terrain": [
+        "asteroids"
+      ]
     },
     {
       "id": "habitat_dome_t1",
@@ -46,9 +97,19 @@
       "tier": 1,
       "build_zone_radius_required": 3,
       "max_per_planet": 5,
-      "build": { "time_ticks": 4, "cost": { "metal": 220, "crystal": 80 } },
-      "effects": { "max_population_add": 400 },
-      "build_on_terrain": ["planet"]
+      "build": {
+        "time_ticks": 4,
+        "cost": {
+          "metal": 220,
+          "crystal": 80
+        }
+      },
+      "effects": {
+        "max_population_add": 400
+      },
+      "build_on_terrain": [
+        "planet"
+      ]
     },
     {
       "id": "basic_farm_t0",
@@ -56,12 +117,29 @@
       "tier": 0,
       "build_zone_radius_required": 3,
       "max_per_planet": 6,
-      "build": { "time_ticks": 2, "cost": { "metal": 80, "crystal": 40 } },
-      "effects": { "production_per_tick_add": { "food": 1 } },
-      "build_on_terrain": ["planet"],
+      "build": {
+        "time_ticks": 2,
+        "cost": {
+          "metal": 80,
+          "crystal": 40
+        }
+      },
+      "effects": {
+        "production_per_tick_add": {
+          "food": 1
+        }
+      },
+      "build_on_terrain": [
+        "planet"
+      ],
       "upgrade": {
         "to": "starter_farm",
-        "cost": { "metal": 140, "crystal": 70, "energy": 0, "fuel": 0 },
+        "cost": {
+          "metal": 140,
+          "crystal": 70,
+          "energy": 0,
+          "fuel": 0
+        },
         "prereq_tech": []
       }
     },
@@ -71,12 +149,29 @@
       "tier": 0,
       "build_zone_radius_required": 3,
       "max_per_planet": 6,
-      "build": { "time_ticks": 2, "cost": { "metal": 70, "crystal": 50 } },
-      "effects": { "production_per_tick_add": { "water": 1 } },
-      "build_on_terrain": ["planet"],
+      "build": {
+        "time_ticks": 2,
+        "cost": {
+          "metal": 70,
+          "crystal": 50
+        }
+      },
+      "effects": {
+        "production_per_tick_add": {
+          "water": 1
+        }
+      },
+      "build_on_terrain": [
+        "planet"
+      ],
       "upgrade": {
         "to": "starter_water",
-        "cost": { "metal": 120, "crystal": 80, "energy": 0, "fuel": 0 },
+        "cost": {
+          "metal": 120,
+          "crystal": 80,
+          "energy": 0,
+          "fuel": 0
+        },
         "prereq_tech": []
       }
     },
@@ -86,9 +181,21 @@
       "tier": 1,
       "build_zone_radius_required": 3,
       "max_per_planet": 6,
-      "build": { "time_ticks": 2, "cost": { "metal": 140, "crystal": 70 } },
-      "effects": { "production_per_tick_add": { "food": 2 } },
-      "build_on_terrain": ["planet"]
+      "build": {
+        "time_ticks": 2,
+        "cost": {
+          "metal": 140,
+          "crystal": 70
+        }
+      },
+      "effects": {
+        "production_per_tick_add": {
+          "food": 2
+        }
+      },
+      "build_on_terrain": [
+        "planet"
+      ]
     },
     {
       "id": "starter_water_t1",
@@ -96,9 +203,21 @@
       "tier": 1,
       "build_zone_radius_required": 3,
       "max_per_planet": 6,
-      "build": { "time_ticks": 2, "cost": { "metal": 120, "crystal": 80 } },
-      "effects": { "production_per_tick_add": { "water": 2 } },
-      "build_on_terrain": ["planet"]
+      "build": {
+        "time_ticks": 2,
+        "cost": {
+          "metal": 120,
+          "crystal": 80
+        }
+      },
+      "effects": {
+        "production_per_tick_add": {
+          "water": 2
+        }
+      },
+      "build_on_terrain": [
+        "planet"
+      ]
     },
     {
       "id": "research_lab_t1",
@@ -106,9 +225,17 @@
       "tier": 1,
       "build_zone_radius_required": 3,
       "max_per_planet": 2,
-      "build": { "time_ticks": 6, "cost": { "metal": 300, "crystal": 200 } },
-      "effects": { },
-      "build_on_terrain": ["planet"]
+      "build": {
+        "time_ticks": 6,
+        "cost": {
+          "metal": 300,
+          "crystal": 200
+        }
+      },
+      "effects": {},
+      "build_on_terrain": [
+        "planet"
+      ]
     },
     {
       "id": "drydock_mini_t1",
@@ -116,10 +243,21 @@
       "tier": 1,
       "build_zone_radius_required": 3,
       "max_per_planet": 1,
-      "build": { "time_ticks": 8, "cost": { "metal": 400, "crystal": 250 } },
-      "effects": { },
-      "flags": ["shipbuilding_slot"],
-      "build_on_terrain": ["empty", "asteroids"]
+      "build": {
+        "time_ticks": 8,
+        "cost": {
+          "metal": 400,
+          "crystal": 250
+        }
+      },
+      "effects": {},
+      "flags": [
+        "shipbuilding_slot"
+      ],
+      "build_on_terrain": [
+        "empty",
+        "asteroids"
+      ]
     },
     {
       "id": "solar_array_t1",
@@ -127,9 +265,22 @@
       "tier": 1,
       "build_zone_radius_required": 3,
       "max_per_planet": 6,
-      "build": { "time_ticks": 4, "cost": { "metal": 180, "crystal": 100 } },
-      "effects": { "production_per_tick_add": { "energy": 3 } },
-      "build_on_terrain": ["empty", "asteroids"]
+      "build": {
+        "time_ticks": 4,
+        "cost": {
+          "metal": 180,
+          "crystal": 100
+        }
+      },
+      "effects": {
+        "production_per_tick_add": {
+          "energy": 3
+        }
+      },
+      "build_on_terrain": [
+        "empty",
+        "asteroids"
+      ]
     },
     {
       "id": "cargo_yard_t1",
@@ -137,9 +288,24 @@
       "tier": 1,
       "build_zone_radius_required": 3,
       "max_per_planet": 4,
-      "build": { "time_ticks": 4, "cost": { "metal": 200, "crystal": 120 } },
-      "effects": { "production_per_tick_add": { "metal": 1, "fuel": 1 } },
-      "build_on_terrain": ["empty", "asteroids", "ruins"]
+      "build": {
+        "time_ticks": 4,
+        "cost": {
+          "metal": 200,
+          "crystal": 120
+        }
+      },
+      "effects": {
+        "production_per_tick_add": {
+          "metal": 1,
+          "fuel": 1
+        }
+      },
+      "build_on_terrain": [
+        "empty",
+        "asteroids",
+        "ruins"
+      ]
     },
     {
       "id": "sensor_mast_t1",
@@ -147,9 +313,24 @@
       "tier": 1,
       "build_zone_radius_required": 3,
       "max_per_planet": 3,
-      "build": { "time_ticks": 5, "cost": { "metal": 260, "crystal": 180 } },
-      "effects": { "production_per_tick_add": { "crystal": 1, "energy": 1 } },
-      "build_on_terrain": ["nebula", "anomaly", "ruins"]
+      "build": {
+        "time_ticks": 5,
+        "cost": {
+          "metal": 260,
+          "crystal": 180
+        }
+      },
+      "effects": {
+        "production_per_tick_add": {
+          "crystal": 1,
+          "energy": 1
+        }
+      },
+      "build_on_terrain": [
+        "nebula",
+        "anomaly",
+        "ruins"
+      ]
     },
     {
       "id": "hydro_farm_t1",
@@ -157,10 +338,25 @@
       "tier": 1,
       "build_zone_radius_required": 3,
       "max_per_planet": 4,
-      "prereq_tech": ["tech_hydroponics_1"],
-      "build": { "time_ticks": 5, "cost": { "metal": 240, "crystal": 140, "energy": 20 } },
-      "effects": { "production_per_tick_add": { "food": 3 } },
-      "build_on_terrain": ["planet"]
+      "prereq_tech": [
+        "tech_hydroponics_1"
+      ],
+      "build": {
+        "time_ticks": 5,
+        "cost": {
+          "metal": 240,
+          "crystal": 140,
+          "energy": 20
+        }
+      },
+      "effects": {
+        "production_per_tick_add": {
+          "food": 3
+        }
+      },
+      "build_on_terrain": [
+        "planet"
+      ]
     },
     {
       "id": "atmospheric_reclaim_t1",
@@ -168,10 +364,25 @@
       "tier": 1,
       "build_zone_radius_required": 3,
       "max_per_planet": 4,
-      "prereq_tech": ["tech_atmospheric_water_1"],
-      "build": { "time_ticks": 5, "cost": { "metal": 200, "crystal": 180, "energy": 25 } },
-      "effects": { "production_per_tick_add": { "water": 3 } },
-      "build_on_terrain": ["planet"]
+      "prereq_tech": [
+        "tech_atmospheric_water_1"
+      ],
+      "build": {
+        "time_ticks": 5,
+        "cost": {
+          "metal": 200,
+          "crystal": 180,
+          "energy": 25
+        }
+      },
+      "effects": {
+        "production_per_tick_add": {
+          "water": 3
+        }
+      },
+      "build_on_terrain": [
+        "planet"
+      ]
     },
     {
       "id": "logistics_center_t1",
@@ -179,10 +390,130 @@
       "tier": 2,
       "build_zone_radius_required": 3,
       "max_per_planet": 2,
-      "prereq_tech": ["tech_supply_networks_1"],
-      "build": { "time_ticks": 7, "cost": { "metal": 360, "crystal": 260, "energy": 40 } },
-      "effects": { "supply_base_add": 1, "supply_per_supplier_add": 1 },
-      "build_on_terrain": ["planet"]
+      "prereq_tech": [
+        "tech_supply_networks_1"
+      ],
+      "build": {
+        "time_ticks": 7,
+        "cost": {
+          "metal": 360,
+          "crystal": 260,
+          "energy": 40
+        }
+      },
+      "effects": {
+        "supply_base_add": 1,
+        "supply_per_supplier_add": 1
+      },
+      "build_on_terrain": [
+        "planet"
+      ]
+    },
+    {
+      "id": "foundry_t2",
+      "name": "Планетарная литейная II",
+      "tier": 2,
+      "build_zone_radius_required": 3,
+      "max_per_planet": 3,
+      "prereq_tech": [
+        "tech_industry_2"
+      ],
+      "build": {
+        "time_ticks": 6,
+        "cost": {
+          "metal": 320,
+          "crystal": 180,
+          "energy": 30
+        }
+      },
+      "effects": {
+        "production_per_tick_add": {
+          "metal": 4
+        }
+      },
+      "build_on_terrain": [
+        "asteroids",
+        "ruins"
+      ]
+    },
+    {
+      "id": "fusion_reactor_t2",
+      "name": "Термоядерный реактор II",
+      "tier": 2,
+      "build_zone_radius_required": 3,
+      "max_per_planet": 4,
+      "prereq_tech": [
+        "tech_energy_grid_1"
+      ],
+      "build": {
+        "time_ticks": 6,
+        "cost": {
+          "metal": 340,
+          "crystal": 160,
+          "fuel": 20
+        }
+      },
+      "effects": {
+        "production_per_tick_add": {
+          "energy": 5
+        }
+      },
+      "build_on_terrain": [
+        "empty",
+        "asteroids"
+      ]
+    },
+    {
+      "id": "orbital_greenhouse_t2",
+      "name": "Орбитальная теплица II",
+      "tier": 2,
+      "build_zone_radius_required": 3,
+      "max_per_planet": 4,
+      "prereq_tech": [
+        "tech_hydroponics_2"
+      ],
+      "build": {
+        "time_ticks": 6,
+        "cost": {
+          "metal": 260,
+          "crystal": 220,
+          "energy": 30
+        }
+      },
+      "effects": {
+        "production_per_tick_add": {
+          "food": 4
+        }
+      },
+      "build_on_terrain": [
+        "planet"
+      ]
+    },
+    {
+      "id": "water_synth_t2",
+      "name": "Синтезатор воды II",
+      "tier": 2,
+      "build_zone_radius_required": 3,
+      "max_per_planet": 4,
+      "prereq_tech": [
+        "tech_atmospheric_water_2"
+      ],
+      "build": {
+        "time_ticks": 6,
+        "cost": {
+          "metal": 250,
+          "crystal": 230,
+          "energy": 30
+        }
+      },
+      "effects": {
+        "production_per_tick_add": {
+          "water": 4
+        }
+      },
+      "build_on_terrain": [
+        "planet"
+      ]
     }
   ]
 }
