@@ -5,17 +5,6 @@
       <h2 style="margin: 0;">GuardStar</h2>
       <div class="muted">Пилот: <b id="pilot-name">{{ data.display_name }}</b></div>
     </div>
-    <div id="api-version-chip" class="status-chip">
-      <span class="status-dot"></span>
-      <span>API: проверка…</span>
-    </div>
-    <div class="status-chip" id="autotick-chip">
-      <span class="status-dot"></span>
-      <label style="display:flex;gap:8px;align-items:center;cursor:pointer;">
-        <input id="autotick-toggle" type="checkbox" style="width:auto;margin:0;" />
-        <span id="autotick-text">Автосол: —</span>
-      </label>
-    </div>
     <div class="status-chip" id="resources-chip">
       <span class="muted">⛏</span><span id="top-metal">—</span>
       <span class="muted">💎</span><span id="top-crystal">—</span>
@@ -23,10 +12,10 @@
       <span class="muted">⛽</span><span id="top-fuel">—</span>
       <span class="muted">🍲</span><span id="top-food">—</span>
       <span class="muted">💧</span><span id="top-water">—</span>
-      <span class="muted" id="top-delta">(+—/10t)</span>
     </div>
     <button type="button" id="manual-tick-btn" title="Провести один игровой сол">Сол</button>
     <button type="button" id="tech-modal-open" class="status-chip" style="width:auto;">Исследования</button>
+    <button type="button" id="economy-modal-open" class="status-chip" style="width:auto;">Империя</button>
     <button type="button" id="ui-settings-btn" class="status-chip" style="width:auto;">Настройки UI</button>
     <a href="{{ url_for('web.account') }}" class="status-chip" style="text-decoration:none;">Аккаунт</a>
     <form method="post" action="{{ url_for('web.logout') }}">
@@ -38,7 +27,6 @@
     <div class="page-grid">
       <section class="card">
         <h3 style="margin-top: 0;">Карта сектора</h3>
-        <div class="muted">Клик по клетке: выбор сектора; разведка — отдельной командой. Слой z=0.</div>
         <div class="map-wrap">
           <div class="map-layer">
             <div id="map-grid" class="map-grid"></div>
@@ -88,7 +76,7 @@
             <div>Координаты: <b id="sel-coord">—</b></div>
             <div>Ландшафт: <b id="sel-terrain">—</b> • Маркер: <b id="sel-glyph">—</b></div>
             <div>Объекты: <b id="sel-objects">—</b></div>
-            <div>Влияние (видимая клетка): <b id="sel-influence">—</b></div>
+            <div>Контроль (видимая клетка): <b id="sel-influence">—</b></div>
             <div>Снабжение: <b id="sel-supply">—</b></div>
             <div>Расстояние (клеток): <b id="sel-distance">—</b></div>
             <div>Время полёта: <b id="sel-travel">—</b> • Прибытие: <b id="sel-arrive">—</b></div>
@@ -96,6 +84,7 @@
           <div class="row" style="margin-top:8px;">
             <button type="button" id="fly-btn" disabled>Лететь</button>
             <button type="button" id="build-btn" disabled>Строительство</button>
+            <button type="button" id="discovery-resolve-btn" class="hidden" title="Исследовать руины или аномалию">Исследовать</button>
             <button type="button" id="clear-sel-btn">Снять выбор</button>
           </div>
         </div>
@@ -132,6 +121,16 @@
           <button type="button" id="planet-modal-close" class="planet-modal-close" aria-label="Закрыть">×</button>
         </div>
         <div id="planet-modal-body" class="planet-modal-body muted">Загрузка…</div>
+      </div>
+    </div>
+
+    <div id="economy-modal-overlay" class="overlay hidden" role="dialog" aria-modal="true">
+      <div class="overlay-card card tech-modal-card">
+        <div class="planet-modal-head">
+          <h3 style="margin:0;">Статистика империи</h3>
+          <button type="button" id="economy-modal-close" class="planet-modal-close" aria-label="Закрыть">×</button>
+        </div>
+        <div id="economy-modal-body" class="planet-modal-body muted">Загрузка…</div>
       </div>
     </div>
 

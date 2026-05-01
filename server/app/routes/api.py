@@ -1,13 +1,23 @@
 from flask import Blueprint, current_app, jsonify, request, session
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from app.build_info import BUILD_ID, GAME_VERSION
 from app.db.engine import db_session, get_engine
 from app.services.auth_service import AuthService
+from app.services.player_research_effects import (
+    adjusted_research_duration_ticks,
+    consume_field_data,
+    consume_blueprint_cache,
+    count_field_data,
+    get_research_time_multiplier,
+    list_active_player_effects,
+)
 from app.services.world_service import WorldService
+from app.services.feedback_playtest_audit import register_playtest_audit_hooks
 from app.services.auto_tick import start_auto_tick, stop_auto_tick
 from app.db.models.world_state import WorldState
 from app.db.models.player_tech import PlayerTech
+from app.db.models.player import Player
 
 api_bp = Blueprint("api", __name__)
 
@@ -159,6 +169,33 @@ def api_world_sector():
         balance = current_app.extensions.get("balance_service")
         world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
         return jsonify(world.get_sector_stub(s, x=x, y=y, z=z, player_id=player_id))
+
+
+@api_bp.post("/discovery/resolve")
+def api_discovery_resolve():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    x = payload.get("x")
+    y = payload.get("y")
+    z = payload.get("z", 0)
+    if not isinstance(x, int) or not isinstance(y, int) or not isinstance(z, int):
+        return jsonify({"ok": False, "error": "invalid_payload"}), 400
+    z = max(-10, min(z, 10))
+
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.resolve_discovery_at_cell(s, player_id=player_id, x=x, y=y, z=z)
+        if not result.get("ok"):
+            code = 400
+            if result.get("error") == "sector_not_visible":
+                code = 403
+            return jsonify(result), code
+        s.commit()
+        return jsonify(result)
 
 
 @api_bp.get("/world/window")
@@ -484,6 +521,27 @@ def api_buildings_dismantle():
         balance = current_app.extensions.get("balance_service")
         world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
         result = world.dismantle_building(s, player_id=player_id, building_id=building_id)
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+        return jsonify(result)
+
+
+@api_bp.post("/buildings/upgrade")
+def api_buildings_upgrade():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    building_id = payload.get("building_id")
+    if not isinstance(building_id, str):
+        return jsonify({"error": "invalid_payload"}), 400
+
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.upgrade_building(s, player_id=player_id, building_id=building_id)
         if not result.get("ok"):
             return jsonify(result), 400
         s.commit()
@@ -836,6 +894,8 @@ def api_tech_state():
         )
         ws = s.get(WorldState, 1)
         current_tick = int(ws.current_tick) if ws else 0
+        pl = s.get(Player, pid)
+        rp_bal = float(getattr(pl, "research_points", 0) or 0) if pl else 0.0
         payload = []
         for r in rows:
             remaining = None
@@ -853,7 +913,44 @@ def api_tech_state():
                     "remaining_sols": remaining,
                 }
             )
-        return jsonify({"ok": True, "current_tick": current_tick, "current_sol": current_tick, "techs": payload})
+        return jsonify(
+            {
+                "ok": True,
+                "current_tick": current_tick,
+                "current_sol": current_tick,
+                "research_points": round(rp_bal, 4),
+                "techs": payload,
+            }
+        )
+
+
+@api_bp.get("/effects/active")
+def api_effects_active():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    pid = __import__("uuid").UUID(player_id)
+
+    with db_session() as s:
+        ws = s.get(WorldState, 1)
+        current_tick = int(ws.current_tick) if ws else 0
+        effects = list_active_player_effects(s, player_id=pid, tick=current_tick)
+        return jsonify({"ok": True, "current_tick": current_tick, "effects": effects})
+
+
+@api_bp.get("/economy/summary")
+def api_economy_summary():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    include_external = request.args.get("include_external_buildings", default=1, type=int)
+    include_external = 1 if int(include_external or 0) != 0 else 0
+
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        result = world.get_economy_summary(s, player_id=player_id, include_external_buildings=bool(include_external))
+        return jsonify(result)
 
 
 @api_bp.post("/tech/start")
@@ -887,6 +984,17 @@ def api_tech_start():
         ws = s.get(WorldState, 1) or WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance).get_or_create_world_state(s)
         now = int(ws.current_tick)
 
+        # Research slots: MVP = 1 активное исследование одновременно.
+        # В будущем можно расширять слотами от техов/построек/расы.
+        active_slots_total = 1
+        active_now = int(
+            s.execute(select(func.count(PlayerTech.id)).where(PlayerTech.player_id == pid, PlayerTech.status == "in_progress"))
+            .scalar()
+            or 0
+        )
+        if active_now >= active_slots_total:
+            return jsonify({"ok": False, "error": "tech_queue_full", "active": active_now, "slots": active_slots_total}), 400
+
         existing = (
             s.execute(select(PlayerTech).where(PlayerTech.player_id == pid, PlayerTech.tech_id == tech_id))
             .scalars()
@@ -911,9 +1019,77 @@ def api_tech_start():
             if missing:
                 return jsonify({"ok": False, "error": "tech_prereq_missing", "missing": missing}), 400
 
+        req_fd = tech.get("field_data_requirements")
+        if req_fd is None:
+            req_fd = []
+        if not isinstance(req_fd, list):
+            return jsonify({"ok": False, "error": "tech_bad_field_data_requirements"}), 400
+        req_fd = [str(x) for x in req_fd if isinstance(x, str) and x.strip()]
+        if req_fd:
+            missing_fd = []
+            for k in req_fd:
+                if count_field_data(s, player_id=pid, tick=now, kind=k) < 1:
+                    missing_fd.append(k)
+            if missing_fd:
+                return jsonify({"ok": False, "error": "tech_field_data_missing", "missing": missing_fd}), 400
+
         time_ticks = int(tech.get("time_ticks", 0))
         time_ticks = max(1, time_ticks)
-        row = PlayerTech(player_id=pid, tech_id=tech_id, status="in_progress", started_tick=now + 1, finish_tick=now + time_ticks)
+        residual = int(tech.get("residual_time_ticks", 0) or 0)
+        if residual <= 0:
+            residual = max(3, min(time_ticks, int(round(time_ticks * 0.45)) or 3))
+        residual = max(1, residual)
+
+        rp_need = float(tech.get("research_points_cost", 0) or 0)
+        if rp_need < 0:
+            rp_need = 0.0
+        player_row = s.get(Player, pid)
+        if not player_row:
+            return jsonify({"ok": False, "error": "player_not_found"}), 400
+        cur_rp = float(getattr(player_row, "research_points", 0) or 0)
+        if rp_need > 1e-9:
+            if cur_rp + 1e-9 < rp_need:
+                return (
+                    jsonify({"ok": False, "error": "not_enough_research_points", "need": rp_need, "have": cur_rp}),
+                    400,
+                )
+            player_row.research_points = cur_rp - rp_need
+
+        world_svc = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        time_mult = get_research_time_multiplier(s, player_id=pid, tick=now)
+        adj_ticks = adjusted_research_duration_ticks(base_ticks=residual, time_multiplier=time_mult)
+        blueprint_discount = consume_blueprint_cache(s, player_id=pid, tick=now)
+        consumed_fd: list[str] = []
+        for k in req_fd:
+            if consume_field_data(s, player_id=pid, tick=now, kind=k, qty=1):
+                consumed_fd.append(k)
+
+        if time_mult < 0.9999:
+            world_svc._emit_event(
+                s,
+                tick=now,
+                type="tech_start_research_boost",
+                message=f"Ускорение исследования (×{time_mult:g}) применено к «{tech_id}».",
+                payload={
+                    "tech_id": tech_id,
+                    "time_multiplier": time_mult,
+                    "legacy_time_ticks_ref": time_ticks,
+                    "residual_ticks_base": residual,
+                    "adjusted_ticks": adj_ticks,
+                },
+                player_id=pid,
+            )
+        if blueprint_discount:
+            world_svc._emit_event(
+                s,
+                tick=now,
+                type="tech_start_blueprint_cache",
+                message="Кэш чертежей применён к стоимости исследования (скидка по металлу/кристаллам).",
+                payload={"tech_id": tech_id, "discount": blueprint_discount},
+                player_id=pid,
+            )
+
+        row = PlayerTech(player_id=pid, tech_id=tech_id, status="in_progress", started_tick=now + 1, finish_tick=now + adj_ticks)
         s.add(row)
         s.commit()
         return jsonify(
@@ -925,5 +1101,18 @@ def api_tech_start():
                 "started_sol": int(row.started_tick),
                 "finish_tick": row.finish_tick,
                 "finish_sol": int(row.finish_tick),
+                "research_time_multiplier": time_mult,
+                "research_ticks_base": time_ticks,
+                "residual_time_ticks": residual,
+                "research_ticks_adjusted": adj_ticks,
+                "research_points_spent": rp_need,
+                "research_points_after": float(getattr(player_row, "research_points", 0) or 0),
+                "blueprint_cache_consumed": bool(blueprint_discount),
+                "blueprint_discount": blueprint_discount,
+                "field_data_required": req_fd,
+                "field_data_consumed": consumed_fd,
             }
         )
+
+
+register_playtest_audit_hooks(api_bp)

@@ -51,6 +51,56 @@
       "build_on_terrain": ["planet"]
     },
     {
+      "id": "basic_farm_t0",
+      "name": "Полевой пайок (без тех)",
+      "tier": 0,
+      "build_zone_radius_required": 3,
+      "max_per_planet": 6,
+      "build": { "time_ticks": 2, "cost": { "metal": 80, "crystal": 40 } },
+      "effects": { "production_per_tick_add": { "food": 1 } },
+      "build_on_terrain": ["planet"],
+      "upgrade": {
+        "to": "starter_farm",
+        "cost": { "metal": 140, "crystal": 70, "energy": 0, "fuel": 0 },
+        "prereq_tech": []
+      }
+    },
+    {
+      "id": "basic_water_t0",
+      "name": "Простой опреснитель (без тех)",
+      "tier": 0,
+      "build_zone_radius_required": 3,
+      "max_per_planet": 6,
+      "build": { "time_ticks": 2, "cost": { "metal": 70, "crystal": 50 } },
+      "effects": { "production_per_tick_add": { "water": 1 } },
+      "build_on_terrain": ["planet"],
+      "upgrade": {
+        "to": "starter_water",
+        "cost": { "metal": 120, "crystal": 80, "energy": 0, "fuel": 0 },
+        "prereq_tech": []
+      }
+    },
+    {
+      "id": "starter_farm_t1",
+      "name": "Агроблок улучшенный",
+      "tier": 1,
+      "build_zone_radius_required": 3,
+      "max_per_planet": 6,
+      "build": { "time_ticks": 2, "cost": { "metal": 140, "crystal": 70 } },
+      "effects": { "production_per_tick_add": { "food": 2 } },
+      "build_on_terrain": ["planet"]
+    },
+    {
+      "id": "starter_water_t1",
+      "name": "Опреснитель улучшенный",
+      "tier": 1,
+      "build_zone_radius_required": 3,
+      "max_per_planet": 6,
+      "build": { "time_ticks": 2, "cost": { "metal": 120, "crystal": 80 } },
+      "effects": { "production_per_tick_add": { "water": 2 } },
+      "build_on_terrain": ["planet"]
+    },
+    {
       "id": "research_lab_t1",
       "name": "Лаборатория I",
       "tier": 1,

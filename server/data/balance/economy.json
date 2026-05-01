@@ -1,5 +1,5 @@
 {
-  "base_planet_production": { "metal": 6, "crystal": 3, "energy": 2, "fuel": 2, "food": 1, "water": 1 },
+  "base_planet_production": { "metal": 6, "crystal": 3, "energy": 2, "fuel": 2, "food": 5, "water": 5 },
   "population_maintenance": {
     "food_per_1000_pop_per_tick": 3,
     "water_per_1000_pop_per_tick": 3
@@ -16,6 +16,23 @@
     "metal_per_sol_per_ship": 0,
     "crystal_per_sol_per_ship": 0,
     "energy_penalty_on_unpaid": 25
+  },
+  "research_points": {
+    "home_capital_per_sol": 0.1,
+    "research_lab_t1_per_sol": 0.1
+  },
+  "research_lab": {
+    "upkeep_crystal_per_sol": 1,
+    "strain_event_chance_per_lab_per_sol": 0.02,
+    "strain_event_crystal_cost": 4
+  },
+  "npc_transit": {
+    "enabled": true,
+    "spawn_every_n_ticks": 5,
+    "max_active_convoys": 5,
+    "min_route_manhattan": 10,
+    "max_route_manhattan": 36,
+    "spawn_attempts": 48
   }
 }
 

@@ -21,10 +21,23 @@
 
     <div class="row">
       <div class="card">
-        <h3>Персистентные настройки</h3>
-        <p>Текущий сол (current_tick): <code>{{ data.current_tick }}</code></p>
-        <p>Автосол включён: <code>{{ 'true' if data.auto_tick_enabled else 'false' }}</code></p>
+        <h3>Версия API и билда</h3>
+        <p>Приложение: <code>{{ data.api_app }}</code> · игра: <code>{{ data.game_version }}</code></p>
+        <p><code>BUILD_ID</code> (перезапуск): <code>{{ data.build_id }}</code></p>
+        {% if data.balance_schema_version %}
+        <p>Схема баланса: <code>{{ data.balance_schema_version }}</code></p>
+        {% endif %}
+        <p class="muted">В игровом UI эти поля не показываются — только здесь.</p>
+      </div>
+
+      <div class="card">
+        <h3>Автосол</h3>
+        <p>Текущий сол: <code>{{ data.current_tick }}</code></p>
+        <p>Включён: <code>{{ 'да' if data.auto_tick_enabled else 'нет' }}</code></p>
         <p>Интервал (сек): <code>{{ '%.1f'|format(data.auto_tick_interval_seconds) }}</code></p>
+        <p>Статус воркера: <code>{{ 'работает' if data.runtime.auto_tick_running else 'остановлен' }}</code></p>
+        <p>Последний запуск: <code>{{ data.runtime.auto_tick_last_run_at or '—' }}</code> · последний сол: <code>{{ data.runtime.auto_tick_last_tick or '—' }}</code></p>
+        <p>Ошибка планировщика: <code>{{ data.runtime.auto_tick_error or '—' }}</code></p>
 
         <form method="post" action="{{ url_for('web.admin_world_autotick', token=token) }}">
           <label>
@@ -40,11 +53,18 @@
       </div>
 
       <div class="card">
-        <h3>Runtime-диагностика</h3>
-        <p>Scheduler running: <code>{{ 'true' if data.runtime.auto_tick_running else 'false' }}</code></p>
-        <p>Последний запуск: <code>{{ data.runtime.auto_tick_last_run_at or '—' }}</code></p>
-        <p>Последний сол: <code>{{ data.runtime.auto_tick_last_tick or '—' }}</code></p>
-        <p>Ошибка: <code>{{ data.runtime.auto_tick_error or '—' }}</code></p>
+        <h3>Спавн новых игроков</h3>
+        <p class="muted">Минимальное расстояние Манхэттена от любой существующей планеты до новой домашней при регистрации. Не перемещает уже созданных игроков.</p>
+        <p>Планет в мире сейчас: <code>{{ data.planets_registered }}</code></p>
+        <p>Текущее значение: <code>{{ data.player_spawn_min_manhattan }}</code> клеток</p>
+
+        <form method="post" action="{{ url_for('web.admin_world_spawn_settings', token=token) }}">
+          <label>
+            Новый минимум (0–500):
+            <input type="number" min="0" max="500" step="1" name="player_spawn_min_manhattan" value="{{ data.player_spawn_min_manhattan }}" />
+          </label>
+          <button type="submit">Сохранить</button>
+        </form>
       </div>
     </div>
   </body>

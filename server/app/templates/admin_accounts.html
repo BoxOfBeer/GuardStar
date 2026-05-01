@@ -19,8 +19,17 @@
             <div><b>{{ p.display_name }}</b> <span class="muted">({{ p.id }})</span></div>
             <div class="muted">создан: {{ p.created_at.isoformat() }}{% if p.last_login_at %} • вход: {{ p.last_login_at.isoformat() }}{% endif %}</div>
           </div>
-          <div class="muted">key_hash: {{ p.access_code_hash[:12] }}… • планет: {{ p.planets_count }} • флотов: {{ p.fleets_count }}</div>
+          <div class="muted">key_hash: {{ p.access_code_hash[:12] }}… • планет: {{ p.planets_count }} • флотов: {{ p.fleets_count }} • аудит действий API: {% if p.feedback_audited %}<b>вкл.</b>{% else %}выкл.{% endif %}</div>
           <div class="row" style="gap:8px;flex-wrap:wrap;">
+            <form method="post" action="{{ url_for('web.admin_toggle_playtest_audit', player_id=p.id) }}?token={{ token }}" style="display:flex;gap:6px;align-items:center;">
+              {% if p.feedback_audited %}
+                <input type="hidden" name="enabled" value="0" />
+                <button type="submit">Отключить лог действий</button>
+              {% else %}
+                <input type="hidden" name="enabled" value="1" />
+                <button type="submit" title="POST/PUT/PATCH/DELETE в отдельную таблицу">Включить лог действий</button>
+              {% endif %}
+            </form>
             <form method="post" action="{{ url_for('web.admin_regenerate_player_access_code', player_id=p.id) }}?token={{ token }}" onsubmit="return confirm('Сбросить ключ доступа для {{ p.display_name }}?');">
               <button type="submit">Сбросить ключ</button>
             </form>

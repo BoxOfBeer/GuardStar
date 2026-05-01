@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,6 +23,9 @@ class ExploredSector(Base):
 
     first_seen_tick: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_seen_tick: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
+
+    discovery_done: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    discovery_seen_tick: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 

@@ -9,6 +9,8 @@
       "prereq": [],
       "cost": { "metal": 200, "crystal": 120 },
       "time_ticks": 10,
+      "research_points_cost": 24,
+      "residual_time_ticks": 6,
       "effects": {
         "travel_fuel_multiplier": 0.9
       }
@@ -22,6 +24,8 @@
       "prereq": ["tech_logistics_1"],
       "cost": { "metal": 160, "crystal": 100 },
       "time_ticks": 8,
+      "research_points_cost": 28,
+      "residual_time_ticks": 5,
       "effects": {
         "production_multiplier": { "food": 1.08 }
       }
@@ -35,6 +39,8 @@
       "prereq": ["tech_logistics_1"],
       "cost": { "metal": 140, "crystal": 120 },
       "time_ticks": 8,
+      "research_points_cost": 28,
+      "residual_time_ticks": 5,
       "effects": {
         "production_multiplier": { "water": 1.08 }
       }
@@ -48,6 +54,8 @@
       "prereq": [],
       "cost": { "metal": 200, "crystal": 80 },
       "time_ticks": 10,
+      "research_points_cost": 26,
+      "residual_time_ticks": 6,
       "effects": {
         "production_multiplier": { "metal": 1.1 }
       }
@@ -61,6 +69,8 @@
       "prereq": ["tech_industry_1"],
       "cost": { "metal": 280, "crystal": 160 },
       "time_ticks": 14,
+      "research_points_cost": 36,
+      "residual_time_ticks": 7,
       "effects": {
         "combat_damage_multiplier": 1.12
       }
@@ -74,6 +84,8 @@
       "prereq": ["tech_logistics_1"],
       "cost": { "metal": 220, "crystal": 200 },
       "time_ticks": 12,
+      "research_points_cost": 34,
+      "residual_time_ticks": 6,
       "effects": {
         "combat_hp_multiplier": 1.1
       }
@@ -87,6 +99,8 @@
       "prereq": ["tech_industry_1", "tech_logistics_1"],
       "cost": { "metal": 320, "crystal": 220 },
       "time_ticks": 14,
+      "research_points_cost": 58,
+      "residual_time_ticks": 8,
       "effects": {}
     },
     {
@@ -96,11 +110,27 @@
       "tier": 2,
       "enabled": true,
       "prereq": ["tech_logistics_1", "tech_industry_1"],
+      "field_data_requirements": ["research_fragments"],
       "cost": { "metal": 340, "crystal": 240 },
       "time_ticks": 14,
+      "research_points_cost": 62,
+      "residual_time_ticks": 8,
       "effects": {
         "supply_base_add": 1
       }
+    },
+    {
+      "id": "tech_deep_scan_1",
+      "name": "Глубинное сканирование I",
+      "description": "Улучшенные сенсорные пакеты: открывает корвет с усиленной разведкой.",
+      "tier": 2,
+      "enabled": true,
+      "prereq": ["tech_logistics_1", "tech_hull_1"],
+      "cost": { "metal": 300, "crystal": 260 },
+      "time_ticks": 16,
+      "research_points_cost": 54,
+      "residual_time_ticks": 7,
+      "effects": {}
     },
     {
       "id": "tech_territory_3",
@@ -109,8 +139,11 @@
       "tier": 3,
       "enabled": true,
       "prereq": ["tech_territory_2", "tech_hull_1", "tech_supply_networks_1"],
+      "field_data_requirements": ["ruin_archives"],
       "cost": { "metal": 480, "crystal": 340 },
       "time_ticks": 18,
+      "research_points_cost": 102,
+      "residual_time_ticks": 10,
       "effects": {}
     }
   ]

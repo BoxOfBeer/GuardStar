@@ -4,6 +4,7 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
+from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
 from app.db.models import Base
@@ -13,6 +14,9 @@ from app.db.models.resource import Resource  # noqa: F401
 from app.db.models.unit import Unit  # noqa: F401
 
 config = context.config
+
+# Поддержка локального `.env`, чтобы `alembic` работал так же, как `create_app()`.
+load_dotenv()
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

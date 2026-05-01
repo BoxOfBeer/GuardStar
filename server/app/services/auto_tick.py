@@ -23,7 +23,8 @@ def start_auto_tick(app: Flask) -> None:
             try:
                 with app.app_context():
                     with db_session() as s:
-                        world = WorldService(world_seed=app.config["SERVER_SALT"])
+                        balance = app.extensions.get("balance_service")
+                        world = WorldService(world_seed=app.config["SERVER_SALT"], balance=balance)
                         result = world.process_next_tick(s)
                         s.commit()
                 app.extensions["auto_tick_last_tick"] = int(result.get("current_tick", 0))

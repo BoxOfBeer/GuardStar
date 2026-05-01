@@ -15,6 +15,12 @@ from app.db.models.resource import Resource  # noqa: F401
 from app.db.models.resource_tick import ResourceTick  # noqa: F401
 from app.db.models.unit import Unit  # noqa: F401
 from app.db.models.unit_order import UnitOrder  # noqa: F401
+from app.db.models.explored_sector import ExploredSector  # noqa: F401
+from app.db.models.player_effect import PlayerEffect  # noqa: F401
+from app.db.models.player_tech import PlayerTech  # noqa: F401
+from app.db.models.world_state import WorldState  # noqa: F401
+from app.db.models.event import Event  # noqa: F401
+from app.db.models.fleet_ship import FleetShip  # noqa: F401
 
 
 @pytest.fixture(scope="session")

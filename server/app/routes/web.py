@@ -2,17 +2,25 @@ from flask import Blueprint, current_app, redirect, render_template, request, se
 
 from app.db.engine import db_session
 from app.services.auth_service import AuthService
+from app.services.feedback_playtest_audit import invalidate_feedback_audited_cache
 from app.services.world_service import WorldService
 from app.db.models.player import Player
 from app.db.models.event import Event
 from app.db.models.planet import Planet
 from app.db.models.fleet import Fleet
 from app.db.models.admin_config import AdminConfig
-from app.services.auth_service import AuthService
 from sqlalchemy import delete, func, select
 import uuid
 
+from app.build_info import BUILD_ID, GAME_VERSION
+
 web_bp = Blueprint("web", __name__)
+
+
+@web_bp.get("/favicon.ico")
+def favicon():
+    # MVP: иконка не обязательна, но убираем 404 в консоли браузера.
+    return ("", 204)
 
 
 def _require_login() -> str | None:
@@ -218,6 +226,7 @@ def admin_accounts():
                     "last_login_at": p.last_login_at,
                     "planets_count": int(planets_by_owner.get(p.id, 0)),
                     "fleets_count": int(fleets_by_owner.get(p.id, 0)),
+                    "feedback_audited": bool(getattr(p, "feedback_audited", False)),
                 }
             )
 
@@ -238,11 +247,21 @@ def admin_world():
             "auto_tick_last_tick": current_app.extensions.get("auto_tick_last_tick"),
             "auto_tick_error": current_app.extensions.get("auto_tick_error"),
         }
+        spawn_min = max(0, int(getattr(ws, "player_spawn_min_manhattan", 25) or 25))
+
+        planets_n = int(s.execute(select(func.count()).select_from(Planet)).scalar_one())
+
         data = {
             "auto_tick_enabled": bool(ws.auto_tick_enabled),
             "auto_tick_interval_seconds": float(ws.auto_tick_interval_seconds),
             "current_tick": int(ws.current_tick),
+            "player_spawn_min_manhattan": spawn_min,
+            "planets_registered": planets_n,
             "runtime": runtime,
+            "api_app": "guardstar",
+            "game_version": GAME_VERSION,
+            "build_id": BUILD_ID,
+            "balance_schema_version": balance.balance_schema_version() if balance else None,
         }
     return render_template("admin_world.html", token=token, data=data)
 
@@ -284,6 +303,47 @@ def admin_world_autotick():
         current_app.extensions["auto_tick_error"] = repr(e)
 
     return redirect(url_for("web.admin_world", token=token))
+
+
+@web_bp.post("/admin/world/spawn")
+def admin_world_spawn_settings():
+    token = _require_admin_token()
+    raw = (request.form.get("player_spawn_min_manhattan") or "").strip()
+    try:
+        v = int(raw)
+    except ValueError:
+        v = 25
+    # 0 = без требования к дистанции (локальные тесты); верхний предохранитель против опечаток.
+    v = max(0, min(v, 500))
+
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(world_seed=current_app.config["SERVER_SALT"], balance=balance)
+        ws = world.get_or_create_world_state(s)
+        ws.player_spawn_min_manhattan = int(v)
+        s.commit()
+
+    return redirect(url_for("web.admin_world", token=token))
+
+
+@web_bp.post("/admin/accounts/<player_id>/playtest-audit")
+def admin_toggle_playtest_audit(player_id: str):
+    token = _require_admin_token()
+    on = request.form.get("enabled", "").strip().lower() in ("1", "true", "yes", "on")
+    pid_s = player_id.strip()
+    with db_session() as s:
+        try:
+            pid = uuid.UUID(pid_s)
+        except ValueError:
+            abort(404)
+        player = s.execute(select(Player).where(Player.id == pid)).scalar_one_or_none()
+        if not player:
+            abort(404)
+        player.feedback_audited = bool(on)
+        s.commit()
+
+    invalidate_feedback_audited_cache(pid_s)
+    return redirect(url_for("web.admin_accounts", token=token))
 
 
 @web_bp.post("/admin/accounts/<player_id>/delete")

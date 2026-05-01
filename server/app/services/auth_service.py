@@ -34,7 +34,7 @@ class AuthService:
             if existing:
                 continue
 
-            player = Player(display_name=display_name, access_code_hash=access_code_hash)
+            player = Player(display_name=display_name, access_code_hash=access_code_hash, race_id="human")
             s.add(player)
             s.flush()
             return player, access_code

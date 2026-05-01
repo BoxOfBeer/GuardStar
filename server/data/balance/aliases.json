@@ -6,7 +6,9 @@
 
     "fighter": "fighter_t1",
 
-    "engineer": "engineer_t1"
+    "engineer": "engineer_t1",
+
+    "corvette": "corvette_t1"
 
   },
 
@@ -34,8 +36,16 @@
 
     "hydro_farm": "hydro_farm_t1",
 
-    "atmospheric_reclaim": "atmospheric_reclaim_t1"
-    ,
+    "atmospheric_reclaim": "atmospheric_reclaim_t1",
+
+    "basic_farm": "basic_farm_t0",
+
+    "basic_water": "basic_water_t0",
+
+    "starter_farm": "starter_farm_t1",
+
+    "starter_water": "starter_water_t1",
+
     "logistics_center": "logistics_center_t1"
 
   }

@@ -38,7 +38,9 @@ def create_app() -> Flask:
     from app.db.models.outpost import Outpost  # noqa: F401
     from app.db.models.outpost_module import OutpostModule  # noqa: F401
     from app.db.models.player_tech import PlayerTech  # noqa: F401
+    from app.db.models.player_effect import PlayerEffect  # noqa: F401
     from app.db.models.fleet_ship import FleetShip  # noqa: F401
+    from app.db.models.feedback_playtest_api_log import FeedbackPlaytestApiLog  # noqa: F401
 
     Base.metadata.create_all(get_engine())
     # MVP safety net: create_all() не делает ALTER TABLE.
@@ -268,6 +270,10 @@ def create_app() -> Flask:
             with engine.begin() as conn:
                 if "fuel" not in cols:
                     conn.execute(text("ALTER TABLE resources ADD COLUMN IF NOT EXISTS fuel INTEGER NOT NULL DEFAULT 0"))
+                if "food" not in cols:
+                    conn.execute(text("ALTER TABLE resources ADD COLUMN IF NOT EXISTS food INTEGER NOT NULL DEFAULT 0"))
+                if "water" not in cols:
+                    conn.execute(text("ALTER TABLE resources ADD COLUMN IF NOT EXISTS water INTEGER NOT NULL DEFAULT 0"))
 
         if "world_state" not in insp.get_table_names():
             with engine.begin() as conn:
@@ -279,13 +285,24 @@ def create_app() -> Flask:
                           current_tick INTEGER NOT NULL DEFAULT 0,
                           updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                           auto_tick_enabled BOOLEAN NOT NULL DEFAULT false,
-                          auto_tick_interval_seconds DOUBLE PRECISION NOT NULL DEFAULT 5.0
+                          auto_tick_interval_seconds DOUBLE PRECISION NOT NULL DEFAULT 5.0,
+                          player_spawn_min_manhattan INTEGER NOT NULL DEFAULT 25
                         );
                         """
                     )
                 )
                 # singleton row
                 conn.execute(text("INSERT INTO world_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING"))
+
+        if "world_state" in insp.get_table_names():
+            ws_cols = {c["name"] for c in insp.get_columns("world_state")}
+            with engine.begin() as conn:
+                if "player_spawn_min_manhattan" not in ws_cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS player_spawn_min_manhattan INTEGER NOT NULL DEFAULT 25"
+                        )
+                    )
 
         if "admin_config" not in insp.get_table_names():
             with engine.begin() as conn:
@@ -329,6 +346,21 @@ def create_app() -> Flask:
                 if "race_id" not in cols:
                     conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS race_id VARCHAR(32) NULL"))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_players_race_id ON players (race_id)"))
+                if "feedback_audited" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE players ADD COLUMN IF NOT EXISTS feedback_audited BOOLEAN NOT NULL DEFAULT false"
+                        )
+                    )
+                    conn.execute(
+                        text("CREATE INDEX IF NOT EXISTS ix_players_feedback_audited ON players (feedback_audited)")
+                    )
+                if "research_points" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE players ADD COLUMN IF NOT EXISTS research_points NUMERIC(16,6) NOT NULL DEFAULT 0"
+                        )
+                    )
 
         if "planets" in insp.get_table_names():
             cols = {c["name"] for c in insp.get_columns("planets")}
@@ -416,11 +448,92 @@ def create_app() -> Flask:
                 conn.execute(text("CREATE INDEX IF NOT EXISTS ix_player_techs_player_id ON player_techs (player_id)"))
                 conn.execute(text("CREATE INDEX IF NOT EXISTS ix_player_techs_tech_id ON player_techs (tech_id)"))
                 conn.execute(text("CREATE INDEX IF NOT EXISTS ix_player_techs_status ON player_techs (status)"))
+
+        if "explored_sectors" in insp.get_table_names():
+            es_cols = {c["name"] for c in insp.get_columns("explored_sectors")}
+            with engine.begin() as conn:
+                if "discovery_done" not in es_cols:
+                    conn.execute(text("ALTER TABLE explored_sectors ADD COLUMN IF NOT EXISTS discovery_done BOOLEAN NOT NULL DEFAULT false"))
+                if "discovery_seen_tick" not in es_cols:
+                    conn.execute(text("ALTER TABLE explored_sectors ADD COLUMN IF NOT EXISTS discovery_seen_tick INTEGER NULL"))
+
+        if "player_effects" not in insp.get_table_names():
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS player_effects (
+                          id SERIAL PRIMARY KEY,
+                          player_id UUID NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+                          effect_type VARCHAR(64) NOT NULL,
+                          source_type VARCHAR(32) NOT NULL DEFAULT 'unknown',
+                          source_ref VARCHAR(128) NOT NULL DEFAULT '',
+                          payload_json TEXT NULL,
+                          created_tick INTEGER NOT NULL DEFAULT 0,
+                          expires_tick INTEGER NULL,
+                          used_at_tick INTEGER NULL,
+                          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                        );
+                        """
+                    )
+                )
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_player_effects_player_id ON player_effects (player_id)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_player_effects_effect_type ON player_effects (effect_type)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_player_effects_created_tick ON player_effects (created_tick)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_player_effects_expires_tick ON player_effects (expires_tick)"))
+
+        if "feedback_playtest_api_logs" not in insp.get_table_names():
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS feedback_playtest_api_logs (
+                          id SERIAL PRIMARY KEY,
+                          player_id UUID NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+                          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                          method VARCHAR(8) NOT NULL,
+                          path VARCHAR(512) NOT NULL,
+                          query_string VARCHAR(512) NOT NULL DEFAULT '',
+                          body_preview TEXT NULL,
+                          status_code SMALLINT NOT NULL,
+                          duration_ms INTEGER NOT NULL DEFAULT 0
+                        );
+                        """
+                    )
+                )
+                conn.execute(
+                    text("CREATE INDEX IF NOT EXISTS ix_feedback_playtest_api_logs_player_id ON feedback_playtest_api_logs (player_id)")
+                )
+                conn.execute(
+                    text("CREATE INDEX IF NOT EXISTS ix_feedback_playtest_api_logs_created_at ON feedback_playtest_api_logs (created_at)")
+                )
     except Exception:
         pass
 
     app.register_blueprint(web_bp)
     app.register_blueprint(api_bp, url_prefix="/api")
+
+    # Если задан ADMIN_TOKEN и в admin_config ещё пустой хэш — записать хэш (удобный локальный сценарий).
+    try:
+        from sqlalchemy import select
+
+        from app.db.engine import db_session
+        from app.db.models.admin_config import AdminConfig
+        from app.services.auth_service import AuthService
+
+        env_tok = (str(app.config.get("ADMIN_TOKEN") or "")).strip()
+        if env_tok:
+            auth_svc = AuthService(server_salt=app.config["SERVER_SALT"])
+            h = auth_svc.hash_access_code(env_tok)
+            with db_session() as s:
+                cfg = s.execute(select(AdminConfig).where(AdminConfig.id == 1)).scalar_one_or_none()
+                if cfg is None:
+                    s.add(AdminConfig(id=1, admin_token_hash=h))
+                elif not (cfg.admin_token_hash or "").strip():
+                    cfg.admin_token_hash = h
+                s.commit()
+    except Exception:
+        pass
 
     # Загружаем баланс (JSON) один раз на старте (in-memory).
     try:

@@ -30,9 +30,22 @@ from app.db.models.unit import Unit
 from app.db.models.unit_order import UnitOrder
 from app.db.models.player import Player
 from app.db.models.player_tech import PlayerTech
+from app.services.player_research_effects import (
+    EFFECT_ANOMALY_DATA,
+    EFFECT_RESEARCH_FRAGMENTS,
+    EFFECT_RUIN_ARCHIVES,
+    count_field_data,
+)
+from app.services.discovery_service import try_resolve_ruins_anomaly_for_sector
+from app.services.outpost_service import OutpostService
+from app.services.player_research_effects import cleanup_expired_player_effects
+from app.services.supply_service import SupplyService
 
 # Фиксированный «NPC» для вражеских засад в MVP (не логинится).
 BANDIT_PLAYER_ID = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+# Нейтральные транзитные конвои (не логинятся).
+CIVILIAN_NPC_PLAYER_ID = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+NPC_FLEET_PLAYER_IDS = frozenset({BANDIT_PLAYER_ID, CIVILIAN_NPC_PLAYER_ID})
 
 # Территориальное влияние:
 # - в гарант-радиусе сила источника постоянная;
@@ -46,6 +59,9 @@ INFLUENCE_MIN_DOMINANT_SCORE = 0.1
 INFLUENCE_CONTEST_RATIO = 0.68
 INFLUENCE_CAPTURE_THRESHOLD = 1.0
 INFLUENCE_NATURAL_DECAY_PER_TICK = 0.1
+# MVP: control_value накапливается тиками и без ограничений быстро уходит в сотни/тысячи.
+# Это не добавляет геймплейной информации (порог захвата уже 1.0), но ломает читаемость.
+INFLUENCE_CONTROL_VALUE_CAP = 5.0
 INFLUENCE_BUILDING_TYPES = {"outpost", "fortified_outpost", "command_post"}
 
 # Склад планеты и производство за игровой сол (металл…вода).
@@ -79,9 +95,16 @@ class WorldService:
         self._world_seed = world_seed or "guardstar"
         # BalanceService (DI). Не зависит от Flask context.
         self._balance = balance
+        self._supply = SupplyService(balance=balance)
+        self._outposts = OutpostService(
+            balance=balance,
+            supply=self._supply,
+            emit_event=self._emit_event,
+            outpost_definition=self._outpost_definition,
+            cell_is_owned_planet_tile=self._cell_is_owned_planet_tile,
+        )
 
     def _get_player_race_id(self, s: Session, *, player_id: uuid.UUID) -> str | None:
-        # race_id появится как поле Player позже. Пока — None.
         _p = s.execute(select(Player).where(Player.id == player_id)).scalar_one_or_none()
         if not _p:
             return None
@@ -96,6 +119,9 @@ class WorldService:
                 "build_time_multiplier": 1.0,
                 "upkeep_energy_multiplier": 1.0,
                 "travel_fuel_multiplier": 1.0,
+                "influence_multiplier": 1.0,
+                "supply_route_upkeep_multiplier": 1.0,
+                "fleet_unsupplied_energy_decay_multiplier": 1.0,
                 "production_multiplier": {
                     "metal": 1.0,
                     "crystal": 1.0,
@@ -112,6 +138,9 @@ class WorldService:
             "build_time_multiplier": float(mods.get("build_time_multiplier", 1.0)),
             "upkeep_energy_multiplier": float(mods.get("upkeep_energy_multiplier", 1.0)),
             "travel_fuel_multiplier": float(mods.get("travel_fuel_multiplier", 1.0)),
+            "influence_multiplier": float(mods.get("influence_multiplier", mods.get("influence_strength_multiplier", 1.0))),
+            "supply_route_upkeep_multiplier": float(mods.get("supply_route_upkeep_multiplier", 1.0)),
+            "fleet_unsupplied_energy_decay_multiplier": float(mods.get("fleet_unsupplied_energy_decay_multiplier", 1.0)),
             "production_multiplier": {
                 "metal": float(prod_mul.get("metal", 1.0)),
                 "crystal": float(prod_mul.get("crystal", 1.0)),
@@ -477,6 +506,8 @@ class WorldService:
 
             in_range: list[Fleet] = []
             for f in fleets:
+                if f.owner_player_id in NPC_FLEET_PLAYER_IDS:
+                    continue
                 if f.owner_player_id == op.owner_player_id:
                     continue
                 if int(f.pos_z) != int(op.z):
@@ -516,87 +547,6 @@ class WorldService:
                 },
                 player_id=target.owner_player_id,
             )
-
-    def _apply_outpost_upkeep_tick(self, s: Session, *, tick: int) -> None:
-        """Содержание форпостов. При нехватке ресурсов — форпост уходит в offline и перестаёт давать эффект."""
-        outposts = s.execute(select(Outpost).where(Outpost.status.in_(["active", "offline"]))).scalars().all()
-        if not outposts:
-            return
-
-        # Ресурсы берём с домашней планеты владельца (пока "имперский склад").
-        home_by_owner: dict[uuid.UUID, Planet] = {}
-        res_by_owner: dict[uuid.UUID, Resource] = {}
-        for pid in {op.owner_player_id for op in outposts}:
-            home = s.execute(select(Planet).where(Planet.owner_player_id == pid).order_by(Planet.created_at.asc())).scalar_one_or_none()
-            if not home:
-                continue
-            res = s.execute(select(Resource).where(Resource.planet_id == home.id)).scalar_one_or_none()
-            if not res:
-                continue
-            home_by_owner[pid] = home
-            res_by_owner[pid] = res
-
-        for op in outposts:
-            res = res_by_owner.get(op.owner_player_id)
-            if not res:
-                continue
-            # Вне снабжения форпост выключается (не даёт эффект, пока не снабжён).
-            if not self._is_cell_supplied(s, owner_id=op.owner_player_id, x=int(op.x), y=int(op.y), z=int(op.z)):
-                if op.status != "offline":
-                    op.status = "offline"
-                    op.updated_at = datetime.utcnow()
-                    self._emit_event(
-                        s,
-                        tick=tick,
-                        type="outpost_offline",
-                        message="Форпост отключён (нет снабжения)",
-                        payload={"outpost_id": str(op.id), "reason": "no_supply"},
-                        player_id=op.owner_player_id,
-                    )
-                continue
-            od = self._outpost_definition(op.outpost_type)
-            upkeep = od.get("upkeep_per_tick") if isinstance(od.get("upkeep_per_tick"), dict) else {}
-            need = {k: int(upkeep.get(k, 0) or 0) for k in ("metal", "crystal", "energy", "fuel")}
-            if all(v <= 0 for v in need.values()):
-                continue
-
-            can = (
-                int(getattr(res, "metal", 0)) >= need["metal"]
-                and int(getattr(res, "crystal", 0)) >= need["crystal"]
-                and int(getattr(res, "energy", 0)) >= need["energy"]
-                and int(getattr(res, "fuel", 0)) >= need["fuel"]
-            )
-            if not can:
-                if op.status != "offline":
-                    op.status = "offline"
-                    op.updated_at = datetime.utcnow()
-                    self._emit_event(
-                        s,
-                        tick=tick,
-                        type="outpost_offline",
-                        message=f"Форпост отключён (не хватает ресурсов на содержание)",
-                        payload={"outpost_id": str(op.id), "need": need},
-                        player_id=op.owner_player_id,
-                    )
-                continue
-
-            # списываем и (если был offline) включаем
-            res.metal = int(getattr(res, "metal", 0)) - need["metal"]
-            res.crystal = int(getattr(res, "crystal", 0)) - need["crystal"]
-            res.energy = int(getattr(res, "energy", 0)) - need["energy"]
-            if hasattr(res, "fuel"):
-                res.fuel = int(getattr(res, "fuel", 0)) - need["fuel"]
-            if op.status == "offline":
-                op.status = "active"
-                op.updated_at = datetime.utcnow()
-                self._emit_event(
-                    s,
-                    tick=tick,
-                    type="outpost_online",
-                    message=f"Форпост снова активен (содержание оплачено)",
-                    payload={"outpost_id": str(op.id), "paid": need},
-                    player_id=op.owner_player_id,
-                )
 
     def _effective_max_population(self, s: Session, planet: Planet) -> int:
         base = int(getattr(planet, "max_population", 5000) or 5000)
@@ -643,123 +593,42 @@ class WorldService:
             return set(ua.keys()) if isinstance(ua, dict) else set()
         return {"scout", "fighter", "engineer"}
 
+    def _unit_required_techs(self, logical_alias: str) -> list[str]:
+        if not self._balance:
+            return []
+        try:
+            u = self._balance.get_unit(str(logical_alias).strip().lower())
+        except Exception:
+            return []
+        req = u.get("prereq_tech") if isinstance(u, dict) else None
+        if not isinstance(req, list):
+            return []
+        return [str(x) for x in req if isinstance(x, str) and x.strip()]
+
     # Фаза A снабжения: только счётчик на планете (не юнит на карте).
     SUPPLY_BASE_RADIUS = 5
     SUPPLY_PER_SUPPLIER = 3
 
-    def _supply_radius_modifiers_for_player(self, s: Session, *, player_id: uuid.UUID) -> tuple[int, int]:
-        """(base_add, per_supplier_add) из завершённых технологий."""
-        if not self._balance:
-            return (0, 0)
-        base_add = 0
-        per_add = 0
-        for tid in self._get_player_done_techs(s, player_id=player_id):
-            t = self._balance.pack.tech_by_id.get(tid)
-            if not isinstance(t, dict):
-                continue
-            eff = t.get("effects") if isinstance(t.get("effects"), dict) else {}
-            v = eff.get("supply_base_add")
-            if isinstance(v, (int, float)):
-                base_add += int(v)
-            v2 = eff.get("supply_per_supplier_add")
-            if isinstance(v2, (int, float)):
-                per_add += int(v2)
-        return (base_add, per_add)
-
-    def _supply_radius_modifiers_for_planet_buildings(self, s: Session, *, planet_id: uuid.UUID) -> tuple[int, int]:
-        """(base_add, per_supplier_add) из построек на планете."""
-        if not self._balance:
-            return (0, 0)
-        base_add = 0
-        per_add = 0
-        rows = (
-            s.execute(
-                select(Building.building_type, func.count(Building.id))
-                .where(Building.planet_id == planet_id)
-                .group_by(Building.building_type)
-            )
-            .all()
-        )
-        for bt, cnt in rows:
-            try:
-                bd = self._balance.get_building(str(bt))
-            except Exception:
-                bd = {}
-            eff = bd.get("effects") if isinstance(bd, dict) else {}
-            if not isinstance(eff, dict):
-                continue
-            n = max(0, int(cnt))
-            v = eff.get("supply_base_add")
-            if isinstance(v, (int, float)):
-                base_add += int(v) * n
-            v2 = eff.get("supply_per_supplier_add")
-            if isinstance(v2, (int, float)):
-                per_add += int(v2) * n
-        return (base_add, per_add)
-
     def _planet_supply_radius(self, s: Session, *, planet: Planet) -> int:
-        n = int(getattr(planet, "supplier_count", 0) or 0)
-        base_add_t, per_add_t = self._supply_radius_modifiers_for_player(s, player_id=planet.owner_player_id)
-        base_add_b, per_add_b = self._supply_radius_modifiers_for_planet_buildings(s, planet_id=planet.id)
-        base = int(self.SUPPLY_BASE_RADIUS) + int(base_add_t) + int(base_add_b)
-        per = int(self.SUPPLY_PER_SUPPLIER) + int(per_add_t) + int(per_add_b)
-        return max(0, int(base + per * n))
+        r, _b, _ps = self._supply.planet_supply_radius(s, planet=planet)
+        return int(r)
 
     @staticmethod
     def _manhattan_l_path_cells(px: int, py: int, tx: int, ty: int) -> list[tuple[int, int]]:
-        """Клетки пути от (px,py) до (tx,ty) без стартовой клетки: сначала X, затем Y (логистика «как»)."""
-        cells: list[tuple[int, int]] = []
-        cx, cy = int(px), int(py)
-        tx, ty = int(tx), int(ty)
-        while cx != tx:
-            cx += 1 if tx > cx else -1
-            cells.append((cx, cy))
-        while cy != ty:
-            cy += 1 if ty > cy else -1
-            cells.append((cx, cy))
-        return cells
+        return SupplyService.manhattan_l_path_cells(px, py, tx, ty)
 
     def _supply_route_block_cell(
         self, s: Session, *, owner_id: uuid.UUID, path_cells: list[tuple[int, int]]
     ) -> tuple[int, int] | None:
-        """Первая клетка пути с чужим флотом — обрыв линии снабжения."""
-        for cx, cy in path_cells:
-            hit = (
-                s.execute(
-                    select(Fleet.id).where(
-                        Fleet.pos_x == int(cx),
-                        Fleet.pos_y == int(cy),
-                        Fleet.pos_z == 0,
-                        Fleet.owner_player_id != owner_id,
-                        Fleet.qty > 0,
-                    )
-                )
-                .first()
-            )
-            if hit:
-                return (int(cx), int(cy))
-        return None
+        return self._supply.supply_route_block_cell(s, owner_id=owner_id, path_cells=path_cells)
 
     def _planet_supply_candidates(self, s: Session, *, owner_id: uuid.UUID, x: int, y: int) -> list[tuple[Planet, int, int]]:
-        planets = s.execute(select(Planet).where(Planet.owner_player_id == owner_id)).scalars().all()
-        rows: list[tuple[Planet, int, int]] = []
-        for p in planets:
-            r = self._planet_supply_radius(s, planet=p)
-            d = abs(int(p.pos_x) - int(x)) + abs(int(p.pos_y) - int(y))
-            rows.append((p, r, d))
-        return rows
+        # Back-compat wrapper: SupplyService возвращает расширенную структуру.
+        rows = self._supply.planet_supply_candidates(s, owner_id=owner_id, x=int(x), y=int(y))
+        return [(p, int(r), int(d)) for (p, r, d, _b, _ps) in rows]
 
     def _supply_hub_planet_for_cell(self, s: Session, *, owner_id: uuid.UUID, x: int, y: int, z: int) -> Planet | None:
-        """Планета-хаб, через которую клетка в снабжении (радиус + чистый L-путь)."""
-        if int(z) != 0:
-            return None
-        rows = self._planet_supply_candidates(s, owner_id=owner_id, x=int(x), y=int(y))
-        in_range = [(p, r, d) for p, r, d in rows if r > 0 and d <= r]
-        for p, _r, _d in sorted(in_range, key=lambda t: t[2]):
-            path = self._manhattan_l_path_cells(int(p.pos_x), int(p.pos_y), int(x), int(y))
-            if self._supply_route_block_cell(s, owner_id=owner_id, path_cells=path) is None:
-                return p
-        return None
+        return self._supply.supply_hub_planet_for_cell(s, owner_id=owner_id, x=int(x), y=int(y), z=int(z))
 
     def _cell_is_owned_planet_tile(self, s: Session, *, owner_id: uuid.UUID, x: int, y: int, z: int) -> bool:
         if int(z) != 0:
@@ -776,162 +645,16 @@ class WorldService:
         )
 
     def _supply_route_logistics_costs(self, *, hub: Planet, ox: int, oy: int) -> tuple[int, int]:
-        """Еда/вода с хаба за содержание линии к форпосту за один сол (balance supply_route_upkeep)."""
-        food, water = 2, 2
-        extra_f, extra_w = 0, 0
-        if self._balance and isinstance(self._balance.pack.economy, dict):
-            sr = self._balance.pack.economy.get("supply_route_upkeep")
-            if isinstance(sr, dict):
-                v = sr.get("food_per_sol_per_outpost")
-                if isinstance(v, (int, float)):
-                    food = int(v)
-                v2 = sr.get("water_per_sol_per_outpost")
-                if isinstance(v2, (int, float)):
-                    water = int(v2)
-                d = abs(int(hub.pos_x) - int(ox)) + abs(int(hub.pos_y) - int(oy))
-                cf = sr.get("food_per_manhattan_from_hub")
-                if isinstance(cf, (int, float)):
-                    extra_f = int(cf) * max(0, d)
-                cw = sr.get("water_per_manhattan_from_hub")
-                if isinstance(cw, (int, float)):
-                    extra_w = int(cw) * max(0, d)
-        return max(0, food + extra_f), max(0, water + extra_w)
+        return self._outposts.supply_route_logistics_costs(hub=hub, ox=int(ox), oy=int(oy))
 
     def _apply_supply_route_logistics_tick(self, s: Session, *, tick: int) -> None:
-        """После выработки на планетах: логистика линий к форпостам (еда/вода с хаба)."""
-        outposts = s.execute(select(Outpost).where(Outpost.status == "active")).scalars().all()
-        if not outposts:
-            return
-        for op in outposts:
-            if int(getattr(op, "z", 0) or 0) != 0:
-                continue
-            if self._cell_is_owned_planet_tile(s, owner_id=op.owner_player_id, x=int(op.x), y=int(op.y), z=0):
-                continue
-            if not self._is_cell_supplied(s, owner_id=op.owner_player_id, x=int(op.x), y=int(op.y), z=int(op.z)):
-                continue
-            hub = self._supply_hub_planet_for_cell(s, owner_id=op.owner_player_id, x=int(op.x), y=int(op.y), z=int(op.z))
-            if not hub:
-                continue
-            need_f, need_w = self._supply_route_logistics_costs(hub=hub, ox=int(op.x), oy=int(op.y))
-            if need_f <= 0 and need_w <= 0:
-                continue
-            res = s.execute(select(Resource).where(Resource.planet_id == hub.id)).scalar_one_or_none()
-            if not res:
-                continue
-            if int(getattr(res, "food", 0) or 0) >= need_f and int(getattr(res, "water", 0) or 0) >= need_w:
-                res.food = int(getattr(res, "food", 0) or 0) - need_f
-                res.water = int(getattr(res, "water", 0) or 0) - need_w
-                continue
-            op.status = "offline"
-            op.updated_at = datetime.utcnow()
-            self._emit_event(
-                s,
-                tick=tick,
-                type="outpost_offline",
-                message="Форпост отключён: не хватило еды/воды на логистику снабжения",
-                payload={
-                    "outpost_id": str(op.id),
-                    "reason": "supply_logistics_unpaid",
-                    "hub_planet_id": str(hub.id),
-                    "need": {"food": need_f, "water": need_w},
-                    "have": {"food": int(getattr(res, "food", 0) or 0), "water": int(getattr(res, "water", 0) or 0)},
-                },
-                player_id=op.owner_player_id,
-            )
+        return self._outposts.apply_supply_route_logistics_tick(s, tick=tick)
+
+    def _apply_outpost_upkeep_tick(self, s: Session, *, tick: int) -> None:
+        return self._outposts.apply_outpost_upkeep_tick(s, tick=tick)
 
     def get_supply_state(self, s: Session, *, player_id: str, x: int, y: int, z: int = 0) -> dict:
-        """Снабжение: радиус хаба + непрерывный L-маршрут без чужих флотов на пути (фаза «как»)."""
-        pid = uuid.UUID(player_id)
-        base_tail = {"supply_base": self.SUPPLY_BASE_RADIUS, "supply_per_supplier": self.SUPPLY_PER_SUPPLIER}
-        if int(z) != 0:
-            return {
-                "ok": True,
-                "in_supply": False,
-                "nearest_hub": None,
-                "supply_radius": 0,
-                "distance": None,
-                "route_clear": False,
-                "route_blocked_at": None,
-                "supply_path": "manhattan_L",
-                **base_tail,
-            }
-        rows = self._planet_supply_candidates(s, owner_id=pid, x=int(x), y=int(y))
-        if not rows:
-            return {
-                "ok": True,
-                "in_supply": False,
-                "nearest_hub": None,
-                "supply_radius": 0,
-                "distance": None,
-                "route_clear": False,
-                "route_blocked_at": None,
-                "supply_path": "manhattan_L",
-                **base_tail,
-            }
-        in_range = [(p, r, d) for p, r, d in rows if r > 0 and d <= r]
-        best_blocked: tuple[int, int] | None = None
-        best_tuple: tuple[Planet, int, int] | None = None
-        if in_range:
-            for p, r, d in sorted(in_range, key=lambda t: t[2]):
-                path = self._manhattan_l_path_cells(int(p.pos_x), int(p.pos_y), int(x), int(y))
-                blk = self._supply_route_block_cell(s, owner_id=pid, path_cells=path)
-                base_add_t, per_add_t = self._supply_radius_modifiers_for_player(s, player_id=p.owner_player_id)
-                base_add_b, per_add_b = self._supply_radius_modifiers_for_planet_buildings(s, planet_id=p.id)
-                eff_base = int(self.SUPPLY_BASE_RADIUS) + int(base_add_t) + int(base_add_b)
-                eff_per = int(self.SUPPLY_PER_SUPPLIER) + int(per_add_t) + int(per_add_b)
-                if blk is None:
-                    return {
-                        "ok": True,
-                        "in_supply": True,
-                        "nearest_hub": {"type": "planet", "id": str(p.id), "x": int(p.pos_x), "y": int(p.pos_y), "z": 0},
-                        "supply_radius": int(r),
-                        "distance": int(d),
-                        "route_clear": True,
-                        "route_blocked_at": None,
-                        "supplier_count": int(getattr(p, "supplier_count", 0) or 0),
-                        "supply_path": "manhattan_L",
-                        "supply_base": eff_base,
-                        "supply_per_supplier": eff_per,
-                    }
-                if best_tuple is None:
-                    best_tuple = (p, r, d)
-                    best_blocked = blk
-            p, r, d = best_tuple if best_tuple else min(in_range, key=lambda t: t[2])
-            base_add_t, per_add_t = self._supply_radius_modifiers_for_player(s, player_id=p.owner_player_id)
-            base_add_b, per_add_b = self._supply_radius_modifiers_for_planet_buildings(s, planet_id=p.id)
-            eff_base = int(self.SUPPLY_BASE_RADIUS) + int(base_add_t) + int(base_add_b)
-            eff_per = int(self.SUPPLY_PER_SUPPLIER) + int(per_add_t) + int(per_add_b)
-            return {
-                "ok": True,
-                "in_supply": False,
-                "nearest_hub": {"type": "planet", "id": str(p.id), "x": int(p.pos_x), "y": int(p.pos_y), "z": 0},
-                "supply_radius": int(r),
-                "distance": int(d),
-                "route_clear": False,
-                "route_blocked_at": ({"x": best_blocked[0], "y": best_blocked[1]} if best_blocked else None),
-                "supplier_count": int(getattr(p, "supplier_count", 0) or 0),
-                "supply_path": "manhattan_L",
-                "supply_base": eff_base,
-                "supply_per_supplier": eff_per,
-            }
-        p, r, d = min(rows, key=lambda t: t[2])
-        base_add_t, per_add_t = self._supply_radius_modifiers_for_player(s, player_id=p.owner_player_id)
-        base_add_b, per_add_b = self._supply_radius_modifiers_for_planet_buildings(s, planet_id=p.id)
-        eff_base = int(self.SUPPLY_BASE_RADIUS) + int(base_add_t) + int(base_add_b)
-        eff_per = int(self.SUPPLY_PER_SUPPLIER) + int(per_add_t) + int(per_add_b)
-        return {
-            "ok": True,
-            "in_supply": False,
-            "nearest_hub": {"type": "planet", "id": str(p.id), "x": int(p.pos_x), "y": int(p.pos_y), "z": 0},
-            "supply_radius": int(r),
-            "distance": int(d),
-            "route_clear": False,
-            "route_blocked_at": None,
-            "supplier_count": int(getattr(p, "supplier_count", 0) or 0),
-            "supply_path": "manhattan_L",
-            "supply_base": eff_base,
-            "supply_per_supplier": eff_per,
-        }
+        return self._supply.get_supply_state(s, player_id=player_id, x=int(x), y=int(y), z=int(z))
 
     def hire_supplier(self, s: Session, *, player_id: str, planet_id: str | None = None) -> dict:
         pid = uuid.UUID(player_id)
@@ -1002,16 +725,7 @@ class WorldService:
         }
 
     def _is_cell_supplied(self, s: Session, *, owner_id: uuid.UUID, x: int, y: int, z: int) -> bool:
-        if int(z) != 0:
-            return False
-        rows = self._planet_supply_candidates(s, owner_id=owner_id, x=int(x), y=int(y))
-        for p, r, d in rows:
-            if r <= 0 or d > r:
-                continue
-            path = self._manhattan_l_path_cells(int(p.pos_x), int(p.pos_y), int(x), int(y))
-            if self._supply_route_block_cell(s, owner_id=owner_id, path_cells=path) is None:
-                return True
-        return False
+        return self._supply.is_cell_supplied(s, owner_id=owner_id, x=int(x), y=int(y), z=int(z))
 
     def _unit_build_cost_parts(self, logical_type: str) -> dict[str, int]:
         if not self._balance:
@@ -1027,9 +741,9 @@ class WorldService:
 
     def _pick_start_pos(self, s: Session) -> tuple[int, int]:
         # Спавним игроков на достаточном расстоянии (тихий старт / защита новичка).
-        # MVP: пытаемся найти точку, которая минимум в 25 клетках по манхэттену от любой другой планеты.
-        # Диапазон потом можно расширить до 100+.
-        min_dist = 25
+        # MVP: пытаемся найти точку, которая минимум в N клетках по манхэттену от любой другой планеты.
+        ws = self.get_or_create_world_state(s)
+        min_dist = max(0, int(getattr(ws, "player_spawn_min_manhattan", 25) or 25))
         attempts = 200
         bounds = 250
 
@@ -1211,6 +925,8 @@ class WorldService:
 
     def apply_fleet_upkeep_tick(self, s: Session, *, player_id: uuid.UUID, tick: int) -> None:
         # MVP: поддержание флота тратит ЛОКАЛЬНУЮ энергию флота (не энергию империи).
+        if player_id in NPC_FLEET_PLAYER_IDS:
+            return
         fleets = s.execute(select(Fleet).where(Fleet.owner_player_id == player_id)).scalars().all()
         if not fleets:
             return
@@ -1338,6 +1054,10 @@ class WorldService:
         if not fleets:
             return
         for f in fleets:
+            if f.owner_player_id in NPC_FLEET_PLAYER_IDS:
+                mx = int(getattr(f, "max_energy", 100) or 100)
+                f.energy = mx
+                continue
             mx = int(getattr(f, "max_energy", 100) or 100)
             cur = int(getattr(f, "energy", 0) or 0)
             # Хаб пополнения: на своей планете или у активного (и снабжённого) форпоста.
@@ -1367,11 +1087,17 @@ class WorldService:
                 f.energy = mx
                 continue
 
-            # Реген только в снабжении.
+            # Реген только в снабжении. Вне снабжения — лёгкая деградация энергии (стиль игры).
             if self._is_cell_supplied(
                 s, owner_id=f.owner_player_id, x=int(f.pos_x), y=int(f.pos_y), z=int(getattr(f, "pos_z", 0) or 0)
             ):
                 f.energy = min(mx, cur + 2)
+            else:
+                # Базовый расход 1/тик, раса может усиливать/ослаблять.
+                mul = float(self._race_modifiers(s, player_id=f.owner_player_id).get("fleet_unsupplied_energy_decay_multiplier", 1.0))
+                mul = 1.0 if mul <= 0 else mul
+                decay = max(1, int(round(1 * mul)))
+                f.energy = max(0, cur - decay)
         s.flush()
 
     def _nearest_return_hub(self, s: Session, *, owner_id: uuid.UUID, x: int, y: int, z: int) -> tuple[int, int, int] | None:
@@ -1452,6 +1178,8 @@ class WorldService:
             return
         ws = self.get_or_create_world_state(s)
         for f in fleets:
+            if f.owner_player_id in NPC_FLEET_PLAYER_IDS:
+                continue
             if int(getattr(f, "pos_z", 0) or 0) != 0:
                 continue
             if int(getattr(f, "energy", 0) or 0) > 0:
@@ -1667,10 +1395,12 @@ class WorldService:
             res.water = cur_w - take_w
             fed_full = (f_need == 0 or take_f >= f_need) and (w_need == 0 or take_w >= w_need)
             severe_short = (f_need > 0 and take_f * 2 < f_need) or (w_need > 0 and take_w * 2 < w_need)
-            if take_f == 0 and take_w == 0 and f_need + w_need > 0 and pop > 80:
-                planet.population = max(0, pop - max(1, pop // 100))
-            elif severe_short and pop > 150:
-                planet.population = max(0, pop - max(1, pop // 250))
+            # MVP: не даём планете "вымереть в ноль" от дефицита — оставляем минимальный порог населения.
+            POP_FLOOR = 80
+            if take_f == 0 and take_w == 0 and f_need + w_need > 0 and pop > POP_FLOOR:
+                planet.population = max(POP_FLOOR, pop - max(1, pop // 100))
+            elif severe_short and pop > max(POP_FLOOR, 150):
+                planet.population = max(POP_FLOOR, pop - max(1, pop // 250))
             pop = int(getattr(planet, "population", 0) or 0)
             pop = min(pop, mx)
             gap = mx - pop
@@ -1681,6 +1411,63 @@ class WorldService:
                 planet.population = mx
 
         return deltas
+
+    def _cell_visible_to_player(self, s: Session, *, player_id: uuid.UUID, x: int, y: int, z: int) -> bool:
+        for sx, sy, r in self._collect_visibility_sources_for_player(s, player_id=player_id, z=int(z)):
+            if abs(int(x) - int(sx)) + abs(int(y) - int(sy)) <= int(r):
+                return True
+        return False
+
+    def resolve_discovery_at_cell(self, s: Session, *, player_id: str, x: int, y: int, z: int) -> dict:
+        pid = uuid.UUID(player_id)
+        z = max(-10, min(int(z), 10))
+        if not self._cell_visible_to_player(s, player_id=pid, x=int(x), y=int(y), z=z):
+            return {"ok": False, "error": "sector_not_visible"}
+        cell_info = self.get_cell_terrain(x=int(x), y=int(y), z=z)
+        tk = str(cell_info.get("terrain", "") if isinstance(cell_info, dict) else cell_info or "")
+        if z == 0 and s.execute(select(Planet.id).where(Planet.pos_x == x, Planet.pos_y == y)).first():
+            return {"ok": False, "error": "discovery_not_applicable"}
+        if tk not in ("ruins", "anomaly"):
+            return {"ok": False, "error": "nothing_to_discover"}
+        explor = (
+            s.execute(
+                select(ExploredSector).where(
+                    ExploredSector.player_id == pid,
+                    ExploredSector.x == int(x),
+                    ExploredSector.y == int(y),
+                    ExploredSector.z == z,
+                )
+            )
+            .scalar_one_or_none()
+        )
+        ws = self.get_or_create_world_state(s)
+        now_tick = int(ws.current_tick)
+        if not explor:
+            explor = ExploredSector(
+                player_id=pid,
+                x=int(x),
+                y=int(y),
+                z=z,
+                first_seen_tick=now_tick,
+                last_seen_tick=now_tick,
+            )
+            s.add(explor)
+            s.flush()
+        if bool(explor.discovery_done):
+            return {"ok": True, "already_done": True}
+        try_resolve_ruins_anomaly_for_sector(
+            s,
+            self,
+            player_id=pid,
+            x=int(x),
+            y=int(y),
+            z=z,
+            terrain=tk,
+            now_tick=now_tick,
+            explored=explor,
+        )
+        s.flush()
+        return {"ok": True}
 
     def get_sector_stub(self, s: Session, *, x: int | None, y: int | None, z: int = 0, player_id: str | None) -> dict:
         sector = {"x": x, "y": y, "z": z, "objects": [], "cell": None}
@@ -1719,10 +1506,17 @@ class WorldService:
             .scalars()
             .all()
         )
+        buildings_in_cell = (
+            s.execute(select(Building).where(Building.x == x, Building.y == y, Building.z == z))
+            .scalars()
+            .all()
+        )
         for f in fleets_in_cell:
             owner_ids.add(f.owner_player_id)
         for op in outposts_in_cell:
             owner_ids.add(op.owner_player_id)
+        for b in buildings_in_cell:
+            owner_ids.add(b.owner_player_id)
         owners = {}
         if owner_ids:
             owners = {
@@ -1819,6 +1613,43 @@ class WorldService:
                     "name": st.get("name"),
                 }
             )
+        for b in buildings_in_cell:
+            sector["objects"].append(
+                {
+                    "type": "building",
+                    "id": str(b.id),
+                    "owner": str(b.owner_player_id),
+                    "owner_name": owners.get(str(b.owner_player_id)),
+                    "building_type": str(getattr(b, "building_type", "") or ""),
+                    "level": int(getattr(b, "level", 1) or 1),
+                }
+            )
+
+        tk = sector.get("cell")
+        tstr = tk.get("terrain", "") if isinstance(tk, dict) else str(tk or "")
+        if z == 0 and s.execute(select(Planet.id).where(Planet.pos_x == x, Planet.pos_y == y)).first():
+            tstr = "planet"
+        es_row = (
+            s.execute(
+                select(ExploredSector).where(
+                    ExploredSector.player_id == pid,
+                    ExploredSector.x == int(x),
+                    ExploredSector.y == int(y),
+                    ExploredSector.z == int(z),
+                )
+            )
+            .scalar_one_or_none()
+        )
+        vis_here = self._cell_visible_to_player(s, player_id=pid, x=int(x), y=int(y), z=int(z))
+        elig = tstr in ("ruins", "anomaly")
+        done_e = bool(es_row.discovery_done) if es_row else False
+        sector["discovery"] = {
+            "terrain": tstr,
+            "eligible": elig,
+            "done": done_e,
+            "visible_now": vis_here,
+            "can_resolve": bool(elig and vis_here and not done_e),
+        }
         return sector
 
     def get_player_map_window(
@@ -2079,10 +1910,45 @@ class WorldService:
                         terrain = {"terrain": "fog", "glyph": ""}
 
                 influence_payload = None
+                danger_level = None
+                danger_reasons: list[str] = []
                 if visible:
                     inc_scores = self._influence_scores_at(inf_sources, x, y, z)
                     ctl_scores = control_by_xy.get((x, y), {})
                     influence_payload = self._influence_cell_payload(inc_scores, pid, owners, ctl_scores)
+                    tk = str(terrain.get("terrain", "") if isinstance(terrain, dict) else terrain or "")
+
+                    # Командирская оценка опасности (эвристика).
+                    enemy_fleet_here = any(
+                        (o and o.get("type") == "fleet" and str(o.get("owner")) != str(pid) and int(o.get("qty") or 0) > 0)
+                        for o in (objects or [])
+                    )
+                    if enemy_fleet_here:
+                        danger_reasons.append("enemy_fleet")
+                    if tk == "anomaly":
+                        danger_reasons.append("anomaly")
+                    elif tk == "ruins":
+                        danger_reasons.append("ruins")
+                    supplied = self._is_cell_supplied(s, owner_id=pid, x=int(x), y=int(y), z=int(z))
+                    if not supplied:
+                        danger_reasons.append("unsupplied")
+
+                    # базовый уровень
+                    if enemy_fleet_here:
+                        danger_level = "high"
+                    elif tk == "anomaly":
+                        danger_level = "medium"
+                    elif tk == "ruins":
+                        danger_level = "low"
+                    else:
+                        danger_level = "low"
+
+                    # вне снабжения повышаем на 1 ступень
+                    if not supplied:
+                        if danger_level == "low":
+                            danger_level = "medium"
+                        elif danger_level == "medium":
+                            danger_level = "high"
 
                 row.append(
                     {
@@ -2099,6 +1965,8 @@ class WorldService:
                             "is_visible": visible,
                             "fog_state": fog_state,
                             "seen_age": age,
+                            "danger_level": danger_level,
+                            "danger_reasons": danger_reasons,
                             # зоны
                             "zone_vision_self": bool(visible),
                             "zone_build_self": bool((x, y) in build_self),
@@ -2132,19 +2000,41 @@ class WorldService:
                 .all()
             )
             nearest = None
+            nearest_op: Outpost | None = None
             for op in nearby:
                 d = abs(int(op.x) - int(x)) + abs(int(op.y) - int(y))
                 if nearest is None or d < nearest:
                     nearest = d
+                    nearest_op = op
             if nearest is not None and int(nearest) < int(min_dist):
-                return {"ok": False, "error": "outpost_too_close", "need_distance": int(min_dist), "nearest": int(nearest)}
+                return {
+                    "ok": False,
+                    "error": "outpost_too_close",
+                    "need_distance": int(min_dist),
+                    "nearest": int(nearest),
+                    "nearest_outpost": (
+                        {
+                            "id": str(nearest_op.id),
+                            "x": int(nearest_op.x),
+                            "y": int(nearest_op.y),
+                            "z": int(nearest_op.z),
+                            "status": str(getattr(nearest_op, "status", "") or ""),
+                            "outpost_type": str(getattr(nearest_op, "outpost_type", "") or ""),
+                        }
+                        if nearest_op
+                        else None
+                    ),
+                }
 
         gate = self._can_build_at(s, owner_id=pid, x=x, y=y, z=z, fleet_id=fleet_id)
         if not gate.get("ok"):
             return gate
+        # Форпост всегда требует инженера (MVP-правило).
         eng_fleet = self._owned_engineer_fleet_at(s, owner_id=pid, x=x, y=y, z=z, fleet_id=fleet_id)
-        if not eng_fleet or int(self._fleet_units_map(s, eng_fleet).get("engineer", 0)) <= 0:
+        if not eng_fleet:
             return {"ok": False, "error": "engineer_required"}
+        if int(self._fleet_units_map(s, eng_fleet).get("engineer", 0)) <= 0:
+            return {"ok": False, "error": "not_enough_engineers", "need_engineers": 1}
         if s.execute(select(Outpost.id).where(Outpost.x == x, Outpost.y == y, Outpost.z == z, Outpost.status == "active")).scalars().first():
             return {"ok": False, "error": "cell_already_has_outpost"}
         if s.execute(select(Building.id).where(Building.x == x, Building.y == y, Building.z == z)).scalars().first():
@@ -2488,13 +2378,16 @@ class WorldService:
                 "total": slots_total,
             }
 
-        exists = (
-            s.execute(select(Building).where(Building.x == x, Building.y == y, Building.z == z))
-            .scalars()
-            .first()
-        )
-        if exists:
-            return {"ok": False, "error": "cell_already_built"}
+        # На клетке планеты разрешаем несколько построек (слоты лимитируются по planet_id).
+        # На остальных клетках действует правило "1 постройка на клетку".
+        if not self._cell_has_planet(s, x=int(x), y=int(y), z=int(z)):
+            exists = (
+                s.execute(select(Building).where(Building.x == x, Building.y == y, Building.z == z))
+                .scalars()
+                .first()
+            )
+            if exists:
+                return {"ok": False, "error": "cell_already_built"}
 
         home = s.execute(select(Planet).where(Planet.owner_player_id == pid)).scalar_one_or_none()
         if not home:
@@ -2605,7 +2498,14 @@ class WorldService:
         eff = build_def.get("effects") if isinstance(build_def.get("effects"), dict) else {}
         prod = eff.get("production_per_tick_add") if isinstance(eff.get("production_per_tick_add"), dict) else {}
         parts: list[str] = []
-        for k, ru in (("metal", "металл"), ("crystal", "кристаллы"), ("energy", "энергия"), ("fuel", "топливо")):
+        for k, ru in (
+            ("metal", "металл"),
+            ("crystal", "кристаллы"),
+            ("energy", "энергия"),
+            ("fuel", "топливо"),
+            ("food", "еда"),
+            ("water", "вода"),
+        ):
             if isinstance(prod.get(k), (int, float)) and float(prod[k]) != 0:
                 v = int(prod[k])
                 sign = "+" if v > 0 else ""
@@ -2803,6 +2703,113 @@ class WorldService:
         )
         return {"ok": True, "refund": refund}
 
+    def upgrade_building(self, s: Session, *, player_id: str, building_id: str) -> dict:
+        pid = uuid.UUID(player_id)
+        try:
+            bid = uuid.UUID(building_id)
+        except Exception:
+            return {"ok": False, "error": "invalid_building_id"}
+        row = (
+            s.execute(select(Building).where(Building.id == bid, Building.owner_player_id == pid)).scalars().first()
+        )
+        if not row:
+            return {"ok": False, "error": "building_not_found"}
+        if not self._balance:
+            return {"ok": False, "error": "balance_unavailable"}
+
+        try:
+            bd = self._balance.get_building(row.building_type)
+        except Exception:
+            return {"ok": False, "error": "unknown_building"}
+        up = bd.get("upgrade") if isinstance(bd, dict) else None
+        if not isinstance(up, dict) or not str(up.get("to") or "").strip():
+            return {"ok": False, "error": "building_upgrade_unavailable"}
+        target_key = str(up["to"]).strip().lower()
+        try:
+            tdef = self._balance.get_building(target_key)
+        except Exception:
+            return {"ok": False, "error": "upgrade_target_unknown"}
+
+        req_techs = [str(x) for x in up.get("prereq_tech", []) if isinstance(x, str)]
+        if req_techs:
+            done = set(self._get_player_done_techs(s, player_id=pid))
+            missing = [tid for tid in req_techs if tid not in done]
+            if missing:
+                return {"ok": False, "error": "tech_required", "required_techs": req_techs, "missing_techs": missing}
+
+        gate = self._can_build_at(s, owner_id=pid, x=int(row.x), y=int(row.y), z=int(row.z), fleet_id=None)
+        if not gate.get("ok"):
+            return gate
+
+        planet = s.get(Planet, row.planet_id) if row.planet_id else None
+        if planet:
+            mx_tgt = self._max_per_planet_for_building(target_key)
+            if mx_tgt is not None:
+                ct = int(
+                    s.execute(
+                        select(func.count(Building.id)).where(
+                            Building.planet_id == planet.id,
+                            Building.owner_player_id == pid,
+                            Building.building_type == target_key,
+                            Building.id != row.id,
+                        )
+                    ).scalar()
+                    or 0
+                )
+                if ct + 1 > mx_tgt:
+                    return {"ok": False, "error": "planet_type_cap", "building_type": target_key, "max": mx_tgt}
+
+        home = s.execute(select(Planet).where(Planet.owner_player_id == pid).order_by(Planet.created_at.asc())).scalar_one_or_none()
+        res = s.execute(select(Resource).where(Resource.planet_id == home.id)).scalar_one_or_none() if home else None
+        if not home or not res:
+            return {"ok": False, "error": "no_resources"}
+
+        cost = up.get("cost") if isinstance(up.get("cost"), dict) else {}
+        need = {k: int(cost.get(k, 0)) for k in ("metal", "crystal", "energy", "fuel")}
+        if int(res.metal) < need["metal"] or int(res.crystal) < need["crystal"]:
+            return {"ok": False, "error": "not_enough_resources", "need": need}
+        if int(res.energy) < need["energy"] or int(getattr(res, "fuel", 0)) < need["fuel"]:
+            return {"ok": False, "error": "not_enough_resources", "need": need}
+
+        res.metal -= need["metal"]
+        res.crystal -= need["crystal"]
+        res.energy -= need["energy"]
+        if hasattr(res, "fuel"):
+            res.fuel = int(getattr(res, "fuel", 0)) - need["fuel"]
+
+        prev = row.building_type
+        tier = int(tdef.get("tier", row.level)) if isinstance(tdef, dict) else int(row.level)
+        row.building_type = target_key
+        row.level = max(1, tier)
+        s.flush()
+
+        ws = self.get_or_create_world_state(s)
+        self._emit_event(
+            s,
+            tick=ws.current_tick,
+            type="building_upgraded",
+            message=f"Постройка улучшена: {prev} → {target_key}",
+            payload={
+                "building_id": str(bid),
+                "from_type": prev,
+                "to_type": target_key,
+                "cost": need,
+                "pos": {"x": int(row.x), "y": int(row.y), "z": int(row.z)},
+            },
+            player_id=pid,
+        )
+        if planet:
+            curpop = getattr(planet, "population", 800)
+            mx = self._effective_max_population(s, planet)
+            if hasattr(planet, "population") and int(curpop) > int(mx):
+                planet.population = int(mx)
+
+        return {
+            "ok": True,
+            "building": {"id": str(row.id), "building_type": target_key, "level": int(row.level)},
+            "cost": need,
+        }
+
     def _fleet_active_order_payload(self, s: Session, ws: WorldState, fleet: Fleet) -> dict | None:
         ao = self._active_order_for_fleet(s, fleet_id=fleet.id)
         if not ao:
@@ -2872,6 +2879,15 @@ class WorldService:
                 return {"ok": False, "error": "negative_qty", "unit_type": k}
             if v == 0:
                 del newd[k]
+
+        done_tech = set(self._get_player_done_techs(s, player_id=pid))
+        for k, v in newd.items():
+            prev = int(cur.get(k, 0))
+            if int(v) <= prev:
+                continue
+            miss = [tid for tid in self._unit_required_techs(k) if tid not in done_tech]
+            if miss:
+                return {"ok": False, "error": "tech_required", "unit_type": k, "missing_techs": miss}
 
         total_new = sum(newd.values())
         if total_new <= 0:
@@ -3264,13 +3280,279 @@ class WorldService:
         if p:
             if str(p.display_name).strip() in ("ADM", "adm"):
                 p.display_name = "Корсары (ИИ)"
+            if getattr(p, "race_id", None) not in ("zenith",):
+                p.race_id = "zenith"
                 s.flush()
             return p
         h = hashlib.sha256(f"npc_bandit::{self._world_seed}".encode()).hexdigest()
-        p = Player(id=BANDIT_PLAYER_ID, display_name="Корсары (ИИ)", access_code_hash=h)
+        p = Player(id=BANDIT_PLAYER_ID, display_name="Корсары (ИИ)", access_code_hash=h, race_id="zenith")
         s.add(p)
         s.flush()
         return p
+
+    def _ensure_civilian_npc_player(self, s: Session) -> Player:
+        p = s.get(Player, CIVILIAN_NPC_PLAYER_ID)
+        if p:
+            if getattr(p, "race_id", None) not in ("human",):
+                p.race_id = "human"
+                s.flush()
+            return p
+        h = hashlib.sha256(f"npc_civilian_convoy::{self._world_seed}".encode()).hexdigest()
+        p = Player(id=CIVILIAN_NPC_PLAYER_ID, display_name="Гражданский транзит (ИИ)", access_code_hash=h, race_id="human")
+        s.add(p)
+        s.flush()
+        return p
+
+    def _human_player_ids(self, s: Session) -> list[uuid.UUID]:
+        out: list[uuid.UUID] = []
+        for row in s.execute(select(Player.id)).scalars():
+            if row in NPC_FLEET_PLAYER_IDS:
+                continue
+            out.append(row)
+        return out
+
+    def _cell_visible_to_any_human_player(self, s: Session, *, x: int, y: int, z: int) -> bool:
+        for pid in self._human_player_ids(s):
+            if self._cell_visible_to_player(s, player_id=pid, x=int(x), y=int(y), z=int(z)):
+                return True
+        return False
+
+    def _player_research_points_float(self, player: Player) -> float:
+        v = getattr(player, "research_points", 0)
+        try:
+            return float(v or 0)
+        except Exception:
+            return float(v)
+
+    def grant_player_research_points(
+        self,
+        s: Session,
+        *,
+        player_id: uuid.UUID,
+        amount: float,
+        tick: int,
+        reason: str,
+        message: str | None = None,
+        payload_extra: dict | None = None,
+    ) -> None:
+        amt = float(amount)
+        if amt <= 1e-12 or player_id in NPC_FLEET_PLAYER_IDS:
+            return
+        pl = s.get(Player, player_id)
+        if not pl:
+            return
+        cur = self._player_research_points_float(pl)
+        pl.research_points = cur + amt
+        pay = payload_extra.copy() if isinstance(payload_extra, dict) else {}
+        pay.update({"amount": amt, "reason": reason})
+        msg = message or (f"+{amt:g} очков исследования ({reason}).")
+        self._emit_event(
+            s,
+            tick=int(tick),
+            type="research_points_granted",
+            message=str(msg),
+            payload=pay,
+            player_id=player_id,
+        )
+
+    def _active_npc_transit_convoys_count(self, s: Session) -> int:
+        civ = self._ensure_civilian_npc_player(s)
+        return int(
+            s.execute(select(func.count(Fleet.id)).where(Fleet.owner_player_id == civ.id, Fleet.qty > 0)).scalar()
+            or 0
+        )
+
+    def _purge_fleet_row(self, s: Session, fleet: Fleet) -> None:
+        s.execute(delete(FleetShip).where(FleetShip.fleet_id == fleet.id))
+        s.execute(delete(FleetOrder).where(FleetOrder.fleet_id == fleet.id))
+        s.delete(fleet)
+
+    def _enqueue_npc_transit_move(
+        self,
+        s: Session,
+        *,
+        fleet: Fleet,
+        target_x: int,
+        target_y: int,
+        target_z: int,
+        start_after_tick: int,
+    ) -> None:
+        units_map = self._fleet_units_map(s, fleet)
+        dist = abs(int(target_x) - int(fleet.pos_x)) + abs(int(target_y) - int(fleet.pos_y))
+        travel_ticks = max(1, self._fleet_travel_ticks_for_distance(distance=dist, units=units_map))
+        order = FleetOrder(
+            fleet_id=fleet.id,
+            owner_player_id=fleet.owner_player_id,
+            order_type="npc_transit",
+            from_x=int(fleet.pos_x),
+            from_y=int(fleet.pos_y),
+            from_z=int(fleet.pos_z),
+            target_x=int(target_x),
+            target_y=int(target_y),
+            target_z=int(target_z),
+            qty=max(1, int(fleet.qty)),
+            status="queued",
+            start_tick=int(start_after_tick) + 1,
+            finish_tick=int(start_after_tick) + int(travel_ticks),
+            force_attack=False,
+            combat_prompt_expires_at=None,
+        )
+        s.add(order)
+        s.flush()
+
+    def _try_spawn_npc_transit_convoy(self, s: Session, *, current_tick: int) -> None:
+        if not self._balance or not isinstance(getattr(self._balance, "pack", None), object):
+            return
+        eco = self._balance.pack.economy if isinstance(self._balance.pack.economy, dict) else {}
+        blk = eco.get("npc_transit") if isinstance(eco.get("npc_transit"), dict) else {}
+        if not blk.get("enabled", True):
+            return
+        if not self._human_player_ids(s):
+            return
+        every = int(blk.get("spawn_every_n_ticks", 5) or 5)
+        if every <= 0 or int(current_tick) % every != 0:
+            return
+        max_active = int(blk.get("max_active_convoys", 5) or 5)
+        if self._active_npc_transit_convoys_count(s) >= max_active:
+            return
+        dmin = int(blk.get("min_route_manhattan", 10) or 10)
+        dmax = int(blk.get("max_route_manhattan", 36) or 36)
+        if dmax < dmin:
+            dmin, dmax = dmax, dmin
+        attempts = int(blk.get("spawn_attempts", 48) or 48)
+        civ = self._ensure_civilian_npc_player(s)
+        seed_i = int(hashlib.sha256(f"{self._world_seed}|npc_transit|{current_tick}".encode()).hexdigest()[:8], 16)
+        rng = random.Random(seed_i)
+
+        ax = ay = bx = by = None
+        for _ in range(max(12, attempts)):
+            sx = rng.randint(-120, 120)
+            sy = rng.randint(-120, 120)
+            if self._cell_blocked_for_fleet(s, sx, sy, 0):
+                continue
+            if self._cell_visible_to_any_human_player(s, x=sx, y=sy, z=0):
+                continue
+            dist = rng.randint(dmin, dmax)
+            dx_sign = rng.choice([-1, 1])
+            dy_sign = rng.choice([-1, 1])
+            split = rng.randint(0, dist)
+            tx = sx + dx_sign * split
+            ty = sy + dy_sign * (dist - split)
+            if self._cell_blocked_for_fleet(s, tx, ty, 0):
+                continue
+            if self._cell_visible_to_any_human_player(s, x=tx, y=ty, z=0):
+                continue
+            ax, ay, bx, by = sx, sy, tx, ty
+            break
+
+        if ax is None:
+            return
+        fleet = Fleet(
+            owner_player_id=civ.id,
+            unit_type="supplier",
+            qty=0,
+            pos_x=int(ax),
+            pos_y=int(ay),
+            pos_z=0,
+            name="Транзит",
+            energy=100,
+        )
+        s.add(fleet)
+        s.flush()
+        self._write_fleet_units(s, fleet, {"supplier": 2, "scout": 1})
+        s.flush()
+        self._enqueue_npc_transit_move(
+            s,
+            fleet=fleet,
+            target_x=int(bx),
+            target_y=int(by),
+            target_z=0,
+            start_after_tick=int(current_tick),
+        )
+
+    def _building_is_research_lab_t1(self, logical_type: str) -> bool:
+        if not self._balance:
+            return False
+        try:
+            bd = self._balance.get_building(str(logical_type))
+            return str(bd.get("id") or "") == "research_lab_t1"
+        except Exception:
+            return False
+
+    def _count_player_research_labs(self, s: Session, player_id: uuid.UUID) -> int:
+        n = 0
+        rows = (
+            s.execute(
+                select(Building.building_type)
+                .join(Planet, Building.planet_id == Planet.id)
+                .where(Planet.owner_player_id == player_id)
+            )
+            .scalars()
+            .all()
+        )
+        for bt in rows:
+            if self._building_is_research_lab_t1(str(bt or "")):
+                n += 1
+        return n
+
+    def _apply_research_economy_tick(self, s: Session, *, tick: int) -> None:
+        if not self._balance or not isinstance(getattr(self._balance, "pack", None), object):
+            return
+        eco = self._balance.pack.economy if isinstance(self._balance.pack.economy, dict) else {}
+        rp_cfg = eco.get("research_points") if isinstance(eco.get("research_points"), dict) else {}
+        lab_eco = eco.get("research_lab") if isinstance(eco.get("research_lab"), dict) else {}
+        base_home = float(rp_cfg.get("home_capital_per_sol", 0.1))
+        lab_rp = float(rp_cfg.get("research_lab_t1_per_sol", 0.1))
+        upcry = int(lab_eco.get("upkeep_crystal_per_sol", 0) or 0)
+        pch = float(lab_eco.get("strain_event_chance_per_lab_per_sol", 0) or 0)
+        pst = int(lab_eco.get("strain_event_crystal_cost", 0) or 0)
+        seed_mix = int(hashlib.sha256(self._world_seed.encode()).hexdigest()[:8], 16)
+        rng = random.Random((int(tick) ^ seed_mix) & 0xFFFFFFFF)
+
+        for pid in self._human_player_ids(s):
+            home = self._capital_planet_for_player(s, player_id=pid)
+            pl = s.get(Player, pid)
+            if not pl or not home:
+                continue
+            labs_n = self._count_player_research_labs(s, pid)
+            gain = base_home + float(labs_n) * lab_rp
+            if gain > 1e-9:
+                cur = self._player_research_points_float(pl)
+                pl.research_points = cur + gain
+
+            res = s.execute(select(Resource).where(Resource.planet_id == home.id)).scalar_one_or_none()
+            if labs_n > 0 and upcry > 0 and res:
+                need_c = upcry * labs_n
+                have_c = int(getattr(res, "crystal", 0) or 0)
+                if have_c >= need_c:
+                    res.crystal = have_c - need_c
+                else:
+                    self._emit_event(
+                        s,
+                        tick=tick,
+                        type="research_lab_underfunded",
+                        message="Нехватка кристаллов на содержание лабораторий.",
+                        payload={"need_crystal": need_c, "have_crystal": have_c},
+                        player_id=pid,
+                    )
+
+            if labs_n > 0 and pch > 0 and pst > 0 and res:
+                for _ in range(labs_n):
+                    if rng.random() >= pch:
+                        continue
+                    have_c = int(getattr(res, "crystal", 0) or 0)
+                    if have_c < pst:
+                        break
+                    res.crystal = have_c - pst
+                    self._emit_event(
+                        s,
+                        tick=tick,
+                        type="research_lab_strain_event",
+                        message="Лаборатория: калибровка датчиков стоила дополнительных кристаллов.",
+                        payload={"crystal": pst},
+                        player_id=pid,
+                    )
+        s.flush()
 
     def _cell_blocked_for_fleet(self, s: Session, x: int, y: int, z: int) -> bool:
         if (
@@ -3312,8 +3594,15 @@ class WorldService:
         mult_by_owner: dict[uuid.UUID, float] = {}
         for pid, pop in pop_by_owner.items():
             mult_by_owner[pid] = 1.0 + (max(0, int(pop)) / 100000.0) * 0.05
+        race_inf: dict[uuid.UUID, float] = {}
+
+        def _race_inf_mul(owner: uuid.UUID) -> float:
+            if owner not in race_inf:
+                race_inf[owner] = float(self._race_modifiers(s, player_id=owner).get("influence_multiplier", 1.0))
+            return race_inf[owner]
+
         for p in s.execute(select(Planet)).scalars().all():
-            mul = float(mult_by_owner.get(p.owner_player_id, 1.0))
+            mul = float(mult_by_owner.get(p.owner_player_id, 1.0)) * _race_inf_mul(p.owner_player_id)
             out.append(
                 {
                     "owner": p.owner_player_id,
@@ -3326,7 +3615,7 @@ class WorldService:
             )
         for op in s.execute(select(Outpost).where(Outpost.z == 0, Outpost.status == "active")).scalars().all():
             st = self._outpost_stats(s, op)
-            mul = float(mult_by_owner.get(op.owner_player_id, 1.0))
+            mul = float(mult_by_owner.get(op.owner_player_id, 1.0)) * _race_inf_mul(op.owner_player_id)
             out.append(
                 {
                     "owner": op.owner_player_id,
@@ -3412,7 +3701,7 @@ class WorldService:
     @staticmethod
     def _influence_next_control_value(current_value: float, own_strength: float, others_strength: float) -> float:
         net = float(own_strength) - float(others_strength) - INFLUENCE_NATURAL_DECAY_PER_TICK
-        return max(0.0, float(current_value) + net)
+        return max(0.0, min(INFLUENCE_CONTROL_VALUE_CAP, float(current_value) + net))
 
     def _apply_influence_control_tick(self, s: Session, *, tick: int, sources: list[dict]) -> None:
         claims = s.execute(select(InfluenceCell).where(InfluenceCell.control_value > 0)).scalars().all()
@@ -3599,9 +3888,26 @@ class WorldService:
                 lines.append({"tech_id": tid, "name": nm, "summary": "; ".join(parts)})
         return dmg, hp, lines
 
+    def _combat_race_multipliers(self, *, race_id: str | None) -> tuple[float, float]:
+        dmg = 1.0
+        hp = 1.0
+        if not race_id or not self._balance or not getattr(self._balance, "pack", None):
+            return dmg, hp
+        race = self._balance.pack.races_by_id.get(str(race_id))
+        if not isinstance(race, dict):
+            return dmg, hp
+        mods = race.get("modifiers") if isinstance(race.get("modifiers"), dict) else {}
+        if isinstance(mods.get("combat_damage_multiplier"), (int, float)):
+            dmg *= float(mods["combat_damage_multiplier"])
+        if isinstance(mods.get("combat_hp_multiplier"), (int, float)):
+            hp *= float(mods["combat_hp_multiplier"])
+        return dmg, hp
+
     def _combat_stat_multipliers_for_player(self, s: Session, *, player_id: uuid.UUID) -> tuple[float, float]:
-        d, h, _ = self._combat_tech_breakdown(s, player_id=player_id)
-        return d, h
+        d_tech, h_tech, _ = self._combat_tech_breakdown(s, player_id=player_id)
+        rid = self._get_player_race_id(s, player_id=player_id)
+        dr, hr = self._combat_race_multipliers(race_id=rid)
+        return d_tech * dr, h_tech * hr
 
     def _fleet_combat_score(self, s: Session, *, fleet: Fleet, player_id: uuid.UUID) -> int:
         um = self._fleet_units_map(s, fleet)
@@ -4622,6 +4928,8 @@ class WorldService:
         next_tick = ws.current_tick + 1
         events: list[dict] = []
 
+        cleanup_expired_player_effects(s, before_tick=next_tick)
+
         # 0) Tech completion
         ready_techs = (
             s.execute(
@@ -4670,6 +4978,49 @@ class WorldService:
             if not fleet or fleet.qty < 1:
                 order.status = "failed"
                 events.append({"type": "fleet_order_failed", "order_id": str(order.id), "reason": "fleet_unavailable"})
+                continue
+
+            if str(getattr(order, "order_type", "") or "") == "npc_transit":
+                tx, ty, tz = int(order.target_x), int(order.target_y), int(order.target_z)
+                occ = (
+                    s.execute(
+                        select(Fleet).where(
+                            Fleet.pos_x == tx,
+                            Fleet.pos_y == ty,
+                            Fleet.pos_z == tz,
+                            Fleet.id != fleet.id,
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+                if occ is not None:
+                    pair = self._nearest_cell_without_other_fleet(
+                        s,
+                        center_x=tx,
+                        center_y=ty,
+                        center_z=tz,
+                        exclude_fleet_id=fleet.id,
+                    )
+                    if pair:
+                        tx, ty = int(pair[0]), int(pair[1])
+                    else:
+                        order.status = "done"
+                        self._purge_fleet_row(s, fleet)
+                        events.append({"type": "fleet_order_failed", "order_id": str(order.id), "reason": "npc_transit_no_cell"})
+                        continue
+                fleet.pos_x, fleet.pos_y, fleet.pos_z = tx, ty, tz
+                order.status = "done"
+                events.append({"type": "fleet_order_done", "order_id": str(order.id), "fleet_id": str(fleet.id)})
+                self._emit_event(
+                    s,
+                    tick=next_tick,
+                    type="npc_transit_completed",
+                    message=f"Гражданский конвой прибыл в ({tx},{ty},{tz}) и покинул сектор.",
+                    payload={"fleet_id": str(fleet.id), "pos": {"x": tx, "y": ty, "z": tz}},
+                    player_id=fleet.owner_player_id,
+                )
+                self._purge_fleet_row(s, fleet)
                 continue
 
             occupant = (
@@ -4984,6 +5335,9 @@ class WorldService:
         for oid in owner_ids:
             self.apply_fleet_upkeep_tick(s, player_id=oid, tick=next_tick)
 
+        self._apply_research_economy_tick(s, tick=next_tick)
+        self._try_spawn_npc_transit_convoy(s, current_tick=int(next_tick))
+
         s.flush()
         return {"current_tick": ws.current_tick, "current_sol": int(ws.current_tick), "events": events}
 
@@ -5233,4 +5587,209 @@ class WorldService:
                 },
             },
             "pending_combat_prompts": self._pending_combat_prompts_payload(s, player_id=pid),
+        }
+
+    def get_economy_summary(self, s: Session, *, player_id: str, include_external_buildings: bool = True) -> dict:
+        """Сводка доходов/расходов по империи за один сол для UI."""
+        pid = uuid.UUID(player_id)
+        ws = self.get_or_create_world_state(s)
+        tick = int(ws.current_tick)
+
+        # Склад: ресурсы домашней (самой ранней) планеты + сумма по империи.
+        home = (
+            s.execute(select(Planet).where(Planet.owner_player_id == pid).order_by(Planet.created_at.asc()))
+            .scalar_one_or_none()
+        )
+        res = s.execute(select(Resource).where(Resource.planet_id == home.id)).scalar_one_or_none() if home else None
+        treasury_home = {
+            "metal": int(getattr(res, "metal", 0) or 0),
+            "crystal": int(getattr(res, "crystal", 0) or 0),
+            "energy": int(getattr(res, "energy", 0) or 0),
+            "fuel": int(getattr(res, "fuel", 0) or 0),
+            "food": int(getattr(res, "food", 0) or 0),
+            "water": int(getattr(res, "water", 0) or 0),
+        }
+
+        pl_acc = s.get(Player, pid)
+        research_points_bal = self._player_research_points_float(pl_acc) if pl_acc else 0.0
+        research_points_per_sol = 0.0
+        if self._balance and isinstance(getattr(self._balance, "pack", None), object):
+            eco_rp = self._balance.pack.economy if isinstance(self._balance.pack.economy, dict) else {}
+            rp_cfg = eco_rp.get("research_points") if isinstance(eco_rp.get("research_points"), dict) else {}
+            base_h = float(rp_cfg.get("home_capital_per_sol", 0.1))
+            lab_h = float(rp_cfg.get("research_lab_t1_per_sol", 0.1))
+            research_points_per_sol = base_h + float(self._count_player_research_labs(s, pid)) * lab_h
+
+        planets = s.execute(select(Planet).where(Planet.owner_player_id == pid)).scalars().all()
+        # Сумма ресурсов по всем планетам игрока (имперский итог; без автотрансфера).
+        treasury_empire = {"metal": 0, "crystal": 0, "energy": 0, "fuel": 0, "food": 0, "water": 0}
+        for p in planets:
+            rr = s.execute(select(Resource).where(Resource.planet_id == p.id)).scalar_one_or_none()
+            if not rr:
+                continue
+            treasury_empire["metal"] += int(getattr(rr, "metal", 0) or 0)
+            treasury_empire["crystal"] += int(getattr(rr, "crystal", 0) or 0)
+            treasury_empire["energy"] += int(getattr(rr, "energy", 0) or 0)
+            treasury_empire["fuel"] += int(getattr(rr, "fuel", 0) or 0)
+            treasury_empire["food"] += int(getattr(rr, "food", 0) or 0)
+            treasury_empire["water"] += int(getattr(rr, "water", 0) or 0)
+
+        outposts = s.execute(select(Outpost).where(Outpost.owner_player_id == pid)).scalars().all()
+        fleets = s.execute(select(Fleet).where(Fleet.owner_player_id == pid)).scalars().all()
+
+        inf_src = self._collect_influence_sources(s)
+
+        prod_sum = {k: 0 for k in PLANET_STORE_KEYS}
+        pop_need = {"food": 0, "water": 0}
+        planet_rows: list[dict] = []
+        for p in planets:
+            dlt = self._planet_production_deltas(s, planet=p, influence_sources=inf_src)
+            for k in PLANET_STORE_KEYS:
+                prod_sum[k] += int(dlt.get(k, 0) or 0)
+            pop = int(getattr(p, "population", 0) or 0)
+            pf, pw = self._population_vitals_upkeep_needs(population=pop)
+            pop_need["food"] += int(pf)
+            pop_need["water"] += int(pw)
+            planet_rows.append(
+                {
+                    "planet_id": str(p.id),
+                    "name": p.name,
+                    "pos": {"x": int(p.pos_x), "y": int(p.pos_y)},
+                    "population": pop,
+                    "production_per_sol": {k: int(dlt.get(k, 0) or 0) for k in PLANET_STORE_KEYS},
+                    "population_upkeep_per_sol": {"food": int(pf), "water": int(pw)},
+                }
+            )
+
+        # Логистика снабжения форпостов (еда/вода с хаба) — оценка за сол.
+        logistics = {"food": 0, "water": 0, "outposts_count": 0}
+        for op in outposts:
+            if int(getattr(op, "z", 0) or 0) != 0:
+                continue
+            if getattr(op, "status", "") != "active":
+                continue
+            # если форпост на клетке планеты — логистика не списывается
+            if self._cell_is_owned_planet_tile(s, owner_id=pid, x=int(op.x), y=int(op.y), z=0):
+                continue
+            if not self._is_cell_supplied(s, owner_id=pid, x=int(op.x), y=int(op.y), z=int(op.z)):
+                continue
+            hub = self._supply_hub_planet_for_cell(s, owner_id=pid, x=int(op.x), y=int(op.y), z=int(op.z))
+            if not hub:
+                continue
+            need_f, need_w = self._supply_route_logistics_costs(hub=hub, ox=int(op.x), oy=int(op.y))
+            logistics["food"] += int(need_f)
+            logistics["water"] += int(need_w)
+            logistics["outposts_count"] += 1
+
+        # Содержание форпостов (металл/кристалл/энергия/топливо) — оценка за сол.
+        outpost_upkeep = {"metal": 0, "crystal": 0, "energy": 0, "fuel": 0, "outposts_count": 0}
+        for op in outposts:
+            if getattr(op, "status", "") not in ("active", "offline"):
+                continue
+            try:
+                od = self._outpost_definition(str(getattr(op, "outpost_type", "") or ""))
+            except Exception:
+                od = {}
+            upkeep = od.get("upkeep_per_tick") if isinstance(od.get("upkeep_per_tick"), dict) else {}
+            for k in ("metal", "crystal", "energy", "fuel"):
+                outpost_upkeep[k] += int(upkeep.get(k, 0) or 0)
+            outpost_upkeep["outposts_count"] += 1
+
+        # Имперские расходы флотов (металл/кристалл) — оценка за сол.
+        fleet_count = 0
+        ships_total = 0
+        upkeep_energy = 0
+        for f in fleets:
+            if int(getattr(f, "qty", 0) or 0) <= 0:
+                continue
+            fleet_count += 1
+            um = self._fleet_units_map(s, f)
+            ships_total += sum(int(v) for v in um.values())
+            upkeep_energy += self._fleet_upkeep_energy_total(s, player_id=pid, units=um) if um else 0
+        empire_fleet_upkeep = self._fleet_empire_upkeep_costs(fleets=fleet_count, ships=ships_total)
+
+        # Внешние постройки (не на клетке planet) — для фильтра UI/статистики.
+        buildings = s.execute(select(Building).where(Building.owner_player_id == pid)).scalars().all()
+        ext_buildings = 0
+        planet_buildings = 0
+        for b in buildings:
+            cell = self.get_cell_terrain(x=int(b.x), y=int(b.y), z=int(b.z))
+            if cell.get("terrain") == "planet":
+                planet_buildings += 1
+            else:
+                ext_buildings += 1
+
+        # Итоги баланса за сол (приближённо): производство - расходы.
+        net = {k: int(prod_sum.get(k, 0) or 0) for k in PLANET_STORE_KEYS}
+        net["food"] -= int(pop_need["food"])
+        net["water"] -= int(pop_need["water"])
+        net["food"] -= int(logistics["food"])
+        net["water"] -= int(logistics["water"])
+        for k in ("metal", "crystal"):
+            net[k] -= int(empire_fleet_upkeep.get(k, 0) or 0)
+        net["energy"] -= int(upkeep_energy)
+        for k in ("metal", "crystal", "energy", "fuel"):
+            net[k] -= int(outpost_upkeep.get(k, 0) or 0)
+
+        # Баланс для домашней планеты отдельно (часто именно он воспринимается как "склад").
+        net_home = {"metal": 0, "crystal": 0, "energy": 0, "fuel": 0, "food": 0, "water": 0}
+        if home:
+            dlt_h = self._planet_production_deltas(s, planet=home, influence_sources=inf_src)
+            for k in PLANET_STORE_KEYS:
+                net_home[k] = int(dlt_h.get(k, 0) or 0)
+            pop_h = int(getattr(home, "population", 0) or 0)
+            pf_h, pw_h = self._population_vitals_upkeep_needs(population=pop_h)
+            net_home["food"] -= int(pf_h)
+            net_home["water"] -= int(pw_h)
+
+        # Фильтр: исключить внешние постройки только из "инфо", не из реальной экономики (иначе будет врать).
+        # Поэтому include_external_buildings влияет только на счетчики/списки зданий в UI.
+        buildings_info = {
+            "planet_buildings": planet_buildings,
+            "external_buildings": ext_buildings if include_external_buildings else 0,
+            "external_buildings_hidden": ext_buildings if not include_external_buildings else 0,
+        }
+
+        field_data = {
+            "ruin_archives": count_field_data(s, player_id=pid, tick=tick, kind=EFFECT_RUIN_ARCHIVES),
+            "anomaly_data": count_field_data(s, player_id=pid, tick=tick, kind=EFFECT_ANOMALY_DATA),
+            "research_fragments": count_field_data(s, player_id=pid, tick=tick, kind=EFFECT_RESEARCH_FRAGMENTS),
+        }
+
+        fleets_payload = []
+        for f in fleets:
+            if int(getattr(f, "qty", 0) or 0) <= 0:
+                continue
+            um = self._fleet_units_map(s, f)
+            fleets_payload.append(
+                {
+                    "id": str(f.id),
+                    "name": self._fleet_public_name(f),
+                    "pos": {"x": int(f.pos_x), "y": int(f.pos_y), "z": int(f.pos_z)},
+                    "ships": sum(int(v) for v in (um or {}).values()),
+                }
+            )
+
+        return {
+            "ok": True,
+            "current_tick": tick,
+            "current_sol": int(tick),
+            "research_points": round(float(research_points_bal), 4),
+            "research_points_per_sol": round(float(research_points_per_sol), 4),
+            "treasury_home": treasury_home,
+            "treasury_empire": treasury_empire,
+            "net_per_sol": net,
+            "net_home_per_sol": net_home,
+            "production_per_sol": prod_sum,
+            "costs_per_sol": {
+                "population_vitals": pop_need,
+                "outpost_supply_logistics": {"food": logistics["food"], "water": logistics["water"], "outposts": logistics["outposts_count"]},
+                "outpost_upkeep": outpost_upkeep,
+                "fleet_empire_upkeep": {"metal": empire_fleet_upkeep.get("metal", 0), "crystal": empire_fleet_upkeep.get("crystal", 0), "fleets": fleet_count, "ships": ships_total},
+                "fleet_energy_upkeep": {"energy": int(upkeep_energy), "fleets": fleet_count},
+            },
+            "planets": planet_rows,
+            "buildings": buildings_info,
+            "field_data": field_data,
+            "fleets": fleets_payload,
         }

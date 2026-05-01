@@ -50,6 +50,19 @@
       "travel_fuel_per_cell": 0,
       "build": { "time_ticks": 4, "cost": { "metal": 120, "crystal": 40 } },
       "flags": ["logistics_supply"]
+    },
+    {
+      "id": "corvette_t1",
+      "name": "Корвет I",
+      "tier": 2,
+      "role": "combat",
+      "hp": 18,
+      "damage": 4,
+      "speed_cells_per_tick": 1,
+      "upkeep": { "energy": 2 },
+      "travel_fuel_per_cell": 2,
+      "build": { "time_ticks": 6, "cost": { "metal": 160, "crystal": 70 } },
+      "prereq_tech": ["tech_deep_scan_1"]
     }
   ]
 }
