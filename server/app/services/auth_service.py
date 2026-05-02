@@ -56,6 +56,8 @@ class AuthService:
         ).scalar_one_or_none()
         if not player:
             return None
+        if bool(getattr(player, "account_disabled", False)):
+            return None
 
         player.last_login_at = datetime.utcnow()
         s.flush()

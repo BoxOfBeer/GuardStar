@@ -7,6 +7,8 @@
   let currentZ = Number.isInteger(initial.z) ? initial.z : 0;
   const home = initial.home || { x: 0, y: 0 };
   const playerId = initial.player || null;
+  let playerIsGameAdmin = Boolean(initial.is_game_admin);
+  let playerIsGameModerator = Boolean(initial.is_game_moderator);
   /** Резерв если баланс ещё не подгрузился. Реальный список типов берётся из `aliases.unit_aliases` в `/api/balance`. */
   const DEFAULT_FLEET_QTY_KEYS = ["scout", "fighter", "engineer"];
   const DEFAULT_FLEET_UNIT_LABELS = {
@@ -93,25 +95,44 @@
     if (z >= 2 && z <= 4) return "сола";
     return "солов";
   };
+  /** Полуразмер окна карты в клетках от центра; сторона квадрата = 2*r+1 → 13…25 при r=6…12. */
+  const MAP_WINDOW_RADIUS_MIN = 6;
+  const MAP_WINDOW_RADIUS_MAX = 12;
+  const clampMapWindowRadius = (r) => {
+    const x = Math.round(Number(r));
+    if (!Number.isFinite(x)) return MAP_WINDOW_RADIUS_MIN;
+    return Math.min(MAP_WINDOW_RADIUS_MAX, Math.max(MAP_WINDOW_RADIUS_MIN, x));
+  };
+  const mapWindowSideCells = (rad) => clampMapWindowRadius(rad) * 2 + 1;
+
   let viewCenter = (currentWindow && currentWindow.center) ? { ...currentWindow.center } : { ...home };
   const MAP_VIEW_RADIUS_KEY = "gs.map.viewRadius";
   const readSavedMapRadius = () => {
     try {
       const n = parseInt(String(localStorage.getItem(MAP_VIEW_RADIUS_KEY) || ""), 10);
-      if (n === 4 || n === 10) return n;
+      if (Number.isFinite(n) && n >= MAP_WINDOW_RADIUS_MIN && n <= MAP_WINDOW_RADIUS_MAX) return n;
+      if (n === 4) return MAP_WINDOW_RADIUS_MIN;
+      if (n === 10) return 8;
     } catch (_e) {
       /* ignore */
     }
     return null;
   };
-  let viewRadius =
+  let viewRadius = clampMapWindowRadius(
     readSavedMapRadius() ??
-    (currentWindow && Number.isInteger(currentWindow.radius) ? currentWindow.radius : 4); // 4 => 9×9, 10 => 21×21
+      (currentWindow && Number.isInteger(currentWindow.radius) ? currentWindow.radius : MAP_WINDOW_RADIUS_MIN)
+  );
   let lastTarget = null;
+  /** Двухшаговый клик по краю окна: 1-й — выбор клетки с объектом, 2-й — сдвиг карты. */
+  let lastEdgePanCellKey = null;
   let selectedCell = null;
   let worldState = { current_tick: 0, current_sol: 0, fleet: null, events: [], player_id: playerId };
   // Подсказка по линии снабжения для выбранной клетки (для подсветки "обрыва" на карте).
   let supplyHint = null; // { for:{x,y,z}, inSupply:boolean, routeClear:boolean, blockedAt:{x,y} | null }
+  /** Счётчик запросов `/api/world/sector` для панели discovery — отбрасываем устаревшие ответы (анти-мерцание). */
+  let discoverySectorFetchGen = 0;
+  /** Последняя клетка руин/аномалии в HUD — не сбрасываем кнопку при каждом poll, если координаты те же. */
+  let discoveryHudCellKey = null;
 
   const mapEl = document.getElementById("map-grid");
   const mapWrapEl = document.querySelector(".map-wrap");
@@ -131,15 +152,546 @@
   const selObjectsEl = document.getElementById("sel-objects");
   const selInfluenceEl = document.getElementById("sel-influence");
   const selSupplyEl = document.getElementById("sel-supply");
-  const hudInfluenceHomeEl = document.getElementById("hud-influence-home");
   const selDistanceEl = document.getElementById("sel-distance");
   const selTravelEl = document.getElementById("sel-travel");
   const selArriveEl = document.getElementById("sel-arrive");
   const flyBtn = document.getElementById("fly-btn");
   const buildBtn = document.getElementById("build-btn");
+  const buildBtnHelp = document.getElementById("build-btn-help");
   const discoveryResolveBtn = document.getElementById("discovery-resolve-btn");
+  const discoveryResolveLabel = document.getElementById("discovery-resolve-label");
+  const discoveryResolveHelp = document.getElementById("discovery-resolve-help");
   const clearSelBtn = document.getElementById("clear-sel-btn");
   const eventsEl = document.getElementById("events");
+  const commsPanel = document.getElementById("comms-panel");
+  const commsPanelTitleEl = document.getElementById("comms-panel-title");
+  const commsCollapseBtn = document.getElementById("comms-collapse-btn");
+  const commsOverlay = document.getElementById("comms-overlay");
+  const pageGridMmo = document.querySelector(".page-grid-mmo");
+  const mapSectorCard = document.querySelector(".map-sector-card");
+  const globalChatFeed = document.getElementById("global-chat-feed");
+  const globalChatForm = document.getElementById("global-chat-form");
+  const globalChatInput = document.getElementById("global-chat-input");
+  const privateThreadsEl = document.getElementById("private-threads");
+  const privateChatWrap = document.getElementById("private-chat-wrap");
+  const privateChatFeed = document.getElementById("private-chat-feed");
+  const privateChatForm = document.getElementById("private-chat-form");
+  const privateChatPeer = document.getElementById("private-chat-peer");
+  const privateChatInput = document.getElementById("private-chat-input");
+  const privatePeerInput = document.getElementById("private-peer-input");
+  const privatePeerOpenBtn = document.getElementById("private-peer-open");
+  const privateBlockPeerBtn = document.getElementById("private-block-peer-btn");
+  const privateBackThreadsBtn = document.getElementById("private-back-threads-btn");
+  const chatSettingsOpenBtn = document.getElementById("chat-settings-open");
+  const chatSettingsOverlay = document.getElementById("chat-settings-overlay");
+  const chatSettingsClose = document.getElementById("chat-settings-close");
+  const chatSettingsSave = document.getElementById("chat-settings-save");
+  const chatColorSystem = document.getElementById("chat-color-system");
+  const chatColorGlobal = document.getElementById("chat-color-global");
+  const chatColorAlliance = document.getElementById("chat-color-alliance");
+  const chatColorPrivate = document.getElementById("chat-color-private");
+  const chatDisablePrivate = document.getElementById("chat-disable-private");
+
+  const COMMS_COLLAPSED_KEY = "gs.comms.collapsed.v1";
+  const SYSTEM_LOG_FILTER_KEY = "gs.systemLog.filter.v1";
+  const CHAT_PREFS_KEY = "gs.chat.prefs.v1";
+  const commsWideMq = window.matchMedia("(min-width: 1200px)");
+  const readCommsCollapsedPref = () => {
+    try {
+      const v = localStorage.getItem(COMMS_COLLAPSED_KEY);
+      if (v === "true" || v === "1") return true;
+      if (v === "false" || v === "0") return false;
+    } catch (_e) {
+      /* ignore */
+    }
+    return null;
+  };
+  let commsCollapsedExplicit = readCommsCollapsedPref();
+  const isCommsCollapsed = () =>
+    commsCollapsedExplicit === null ? !commsWideMq.matches : commsCollapsedExplicit;
+
+  const readSystemLogFilter = () => {
+    try {
+      const v = (localStorage.getItem(SYSTEM_LOG_FILTER_KEY) || "all").trim();
+      if (
+        ["all", "combat", "economy", "supply", "research", "diplomacy"].includes(v)
+      )
+        return v;
+    } catch (_e) {
+      /* ignore */
+    }
+    return "all";
+  };
+  let systemLogFilterCategory = readSystemLogFilter();
+
+  /** Маппинг типов событий сервера → категории чипов «Система». Неизвестные → misc (только при «Все»). */
+  const EVENT_TYPE_TO_CATEGORY = {
+    fleet_combat: "combat",
+    combat_prompt_expired: "combat",
+    combat_prompt_declined: "combat",
+    combat_prompt_arrival: "combat",
+    outpost_fire: "combat",
+    discovery_bandit_ambush: "combat",
+    supplier_hired: "supply",
+    supply_radius_changed: "supply",
+    fleet_maintenance_failed: "supply",
+    fleet_emergency_return: "supply",
+    building_placed: "economy",
+    building_dismantled: "economy",
+    building_upgraded: "economy",
+    not_enough_resources: "economy",
+    not_enough_fuel: "economy",
+    fleet_merged: "economy",
+    fleet_split: "economy",
+    fleet_disbanded: "economy",
+    fleet_composition_changed: "economy",
+    fleet_renamed: "economy",
+    fleet_created: "economy",
+    fleet_order_created: "economy",
+    fleet_order_failed: "economy",
+    fleet_order_cancelled: "economy",
+    fleet_arrived: "economy",
+    order_done: "economy",
+    fuel_spent: "economy",
+    outpost_offline: "supply",
+    outpost_online: "supply",
+    research_points_granted: "research",
+    research_lab_underfunded: "research",
+    research_lab_strain_event: "research",
+    tech_done: "research",
+    tech_start_research_boost: "research",
+    tech_start_blueprint_cache: "research",
+    discovery_research_boost: "research",
+    discovery_blueprint_cache: "research",
+    npc_transit_completed: "economy",
+    emergency_orbit_staging: "economy",
+  };
+  const getEventCategory = (type) => {
+    const t = type ? String(type) : "";
+    return EVENT_TYPE_TO_CATEGORY[t] || "misc";
+  };
+
+  const filterEventsForSystemLog = (events) => {
+    const list = Array.isArray(events) ? events : [];
+    if (systemLogFilterCategory === "all") return list;
+    if (systemLogFilterCategory === "diplomacy")
+      return list.filter((e) => getEventCategory(e.type) === "diplomacy");
+    return list.filter((e) => getEventCategory(e.type) === systemLogFilterCategory);
+  };
+
+  /** Трёхколоночный MMO: высота коммов и HUD = высота карточки «Карта сектора» (центр задаёт ряд). */
+  const syncMmoSidePanelHeights = () => {
+    if (!pageGridMmo) return;
+    if (document.querySelector(".me-play-layout") && commsWideMq.matches) {
+      pageGridMmo.style.removeProperty("--mmo-sync-h");
+      return;
+    }
+    if (!mapSectorCard || !commsWideMq.matches) {
+      pageGridMmo.style.removeProperty("--mmo-sync-h");
+      return;
+    }
+    const h = mapSectorCard.getBoundingClientRect().height;
+    if (Number.isFinite(h) && h > 2) pageGridMmo.style.setProperty("--mmo-sync-h", `${Math.round(h)}px`);
+  };
+
+  const applyCommsLayout = () => {
+    const collapsed = isCommsCollapsed();
+    const wide = commsWideMq.matches;
+    if (commsPanel) {
+      commsPanel.classList.toggle("comms-panel--collapsed", collapsed);
+      commsPanel.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    }
+    if (commsCollapseBtn) {
+      commsCollapseBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      commsCollapseBtn.textContent = collapsed ? "›" : "‹";
+    }
+    if (pageGridMmo) pageGridMmo.classList.toggle("page-grid--comms-collapsed", collapsed && wide);
+    if (commsOverlay) {
+      const showOverlay = !wide && !collapsed;
+      commsOverlay.classList.toggle("hidden", !showOverlay);
+    }
+    syncMmoSidePanelHeights();
+  };
+
+  const toggleCommsCollapsed = () => {
+    const next = !isCommsCollapsed();
+    commsCollapsedExplicit = next;
+    try {
+      localStorage.setItem(COMMS_COLLAPSED_KEY, next ? "true" : "false");
+    } catch (_e) {
+      /* ignore */
+    }
+    applyCommsLayout();
+  };
+
+  let activeCommsTab = "system";
+  const syncCommsPanelTitle = () => {
+    if (!commsPanelTitleEl) return;
+    commsPanelTitleEl.textContent = activeCommsTab === "system" ? "События" : "Чат";
+  };
+  const setActiveCommsTab = (name) => {
+    activeCommsTab = name;
+    document.querySelectorAll(".comms-tab").forEach((btn) => {
+      const t = btn.getAttribute("data-comms-tab");
+      const on = t === name;
+      btn.classList.toggle("is-active", on);
+      btn.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    document.querySelectorAll(".comms-pane").forEach((pane) => {
+      const id = pane.id || "";
+      const map = {
+        "comms-pane-system": "system",
+        "comms-pane-global": "global",
+        "comms-pane-alliance": "alliance",
+        "comms-pane-private": "private",
+      };
+      const tab = map[id];
+      pane.classList.toggle("hidden", tab !== name);
+    });
+    syncCommsPanelTitle();
+  };
+
+  const readChatPrefs = () => {
+    try {
+      const raw = localStorage.getItem(CHAT_PREFS_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (_e) {
+      return {};
+    }
+  };
+  const writeChatPrefs = (patch) => {
+    try {
+      const cur = readChatPrefs();
+      localStorage.setItem(CHAT_PREFS_KEY, JSON.stringify({ ...cur, ...patch }));
+    } catch (_e) {
+      /* ignore */
+    }
+  };
+  const applyChatPrefsToDom = () => {
+    const p = readChatPrefs();
+    const root = document.documentElement;
+    const d = (k, fallback) => (p[k] && String(p[k]).trim() ? String(p[k]).trim() : fallback);
+    root.style.setProperty("--chat-accent-system", d("colorSystem", "#61eaa3"));
+    root.style.setProperty("--chat-accent-global", d("colorGlobal", "#7ec8e3"));
+    root.style.setProperty("--chat-accent-alliance", d("colorAlliance", "#c9a227"));
+    root.style.setProperty("--chat-accent-private", d("colorPrivate", "#d88fd8"));
+    if (globalChatFeed) globalChatFeed.style.borderColor = "color-mix(in srgb, var(--chat-accent-global) 35%, var(--border))";
+    if (privateChatFeed) privateChatFeed.style.borderColor = "color-mix(in srgb, var(--chat-accent-private) 35%, var(--border))";
+    if (eventsEl) eventsEl.style.borderLeft = "3px solid var(--chat-accent-system)";
+  };
+
+  let lastGlobalChatId = 0;
+  /** Синхронизация полного перезапроса истории при смене прав модерации. */
+  let lastViewerChatModerate = null;
+  let privatePeerActive = "";
+  let lastPrivateChatId = 0;
+
+  /** Согласовано с `MAX_CHAT_BODY_LEN` на сервере (`chat_service`). */
+  const MAX_CHAT_BODY_CHARS = 1000;
+  /** Только последние строки в DOM — без бесконечного роста ленты. */
+  const MAX_CHAT_FEED_LINES = 100;
+
+  const escChatTxt = (s) =>
+    String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+
+  const trimChatFeedToMaxLines = (feedEl) => {
+    if (!feedEl) return;
+    while (feedEl.querySelectorAll(".chat-line").length > MAX_CHAT_FEED_LINES) {
+      const first = feedEl.querySelector(".chat-line");
+      if (first) first.remove();
+      else break;
+    }
+  };
+
+  /** Рендер строк чата через DOM (`textContent`) — без интерпретации HTML из сети. */
+  const appendChatLines = (feedEl, messages, { reset } = { reset: false }) => {
+    if (!feedEl || !Array.isArray(messages)) return;
+    if (reset) feedEl.innerHTML = "";
+    for (const m of messages) {
+      const row = document.createElement("div");
+      row.className = "chat-line";
+      const mid = Number(m.id);
+      row.dataset.msgId = Number.isFinite(mid) && mid > 0 ? String(Math.floor(mid)) : "0";
+      const meta = document.createElement("span");
+      meta.className = "chat-meta";
+      meta.textContent = String(m.display_name || m.sender_id || "—");
+      row.appendChild(meta);
+      row.appendChild(document.createTextNode(String(m.body ?? "")));
+      feedEl.appendChild(row);
+    }
+    trimChatFeedToMaxLines(feedEl);
+    /* column-reverse: новые сообщения сверху — держим прокрутку у «верха» ленты */
+    feedEl.scrollTop = 0;
+  };
+
+  const appendGlobalChatLines = (feedEl, messages, { reset } = { reset: false }) => {
+    if (!feedEl || !Array.isArray(messages)) return;
+    if (reset) feedEl.innerHTML = "";
+    const senderIsSelf = (sid) => playerId && String(sid || "") === String(playerId);
+    for (const m of messages) {
+      const row = document.createElement("div");
+      row.className = "chat-line";
+      const mid = Number(m.id);
+      row.dataset.msgId = Number.isFinite(mid) && mid > 0 ? String(Math.floor(mid)) : "0";
+      const main = document.createElement("span");
+      main.className = "chat-line-main";
+      const meta = document.createElement("span");
+      meta.className = "chat-meta";
+      meta.textContent = String(m.display_name || m.sender_id || "—");
+      const bodyEl = document.createElement("span");
+      bodyEl.className = "chat-body";
+      bodyEl.textContent = String(m.body ?? "");
+      main.appendChild(meta);
+      main.appendChild(bodyEl);
+      row.appendChild(main);
+      if (m.can_mod) {
+        const act = document.createElement("span");
+        act.className = "chat-mod-actions";
+        const sid = String(m.sender_id || "");
+        const midStr = row.dataset.msgId;
+        if (!m.hidden) {
+          const hBtn = document.createElement("button");
+          hBtn.type = "button";
+          hBtn.className = "chat-mod-btn";
+          hBtn.textContent = "Скрыть";
+          hBtn.dataset.chatMod = "hide";
+          hBtn.dataset.mid = midStr;
+          act.appendChild(hBtn);
+        }
+        const dBtn = document.createElement("button");
+        dBtn.type = "button";
+        dBtn.className = "chat-mod-btn chat-mod-btn-danger";
+        dBtn.textContent = "Удалить";
+        dBtn.dataset.chatMod = "delete";
+        dBtn.dataset.mid = midStr;
+        act.appendChild(dBtn);
+        if (sid && !senderIsSelf(sid)) {
+          const bChat = document.createElement("button");
+          bChat.type = "button";
+          bChat.className = "chat-mod-btn";
+          bChat.textContent = "Мут чата";
+          bChat.dataset.chatMod = "ban_chat";
+          bChat.dataset.target = sid;
+          act.appendChild(bChat);
+        }
+        if (playerIsGameAdmin && sid && !senderIsSelf(sid)) {
+          const bAcct = document.createElement("button");
+          bAcct.type = "button";
+          bAcct.className = "chat-mod-btn chat-mod-btn-danger";
+          bAcct.textContent = "Бан аккаунта";
+          bAcct.dataset.chatMod = "ban_account";
+          bAcct.dataset.target = sid;
+          act.appendChild(bAcct);
+        }
+        row.appendChild(act);
+      }
+      feedEl.appendChild(row);
+    }
+    trimChatFeedToMaxLines(feedEl);
+    feedEl.scrollTop = 0;
+  };
+
+  const fetchGlobalChat = async () => {
+    if (!globalChatFeed) return;
+    try {
+      const q = lastGlobalChatId > 0 ? `?since_id=${lastGlobalChatId}` : "";
+      const r = await fetch(`/api/chat/global${q}`);
+      const body = await r.json();
+      if (!r.ok || !body || !body.ok) return;
+      const canMod = Boolean(body.viewer_can_moderate);
+      if (lastViewerChatModerate !== null && lastViewerChatModerate !== canMod) {
+        lastGlobalChatId = 0;
+        lastViewerChatModerate = canMod;
+        await fetchGlobalChat();
+        return;
+      }
+      lastViewerChatModerate = canMod;
+      const msgs = Array.isArray(body.messages) ? body.messages : [];
+      if (!lastGlobalChatId) {
+        if (msgs.length) {
+          appendGlobalChatLines(globalChatFeed, msgs, { reset: true });
+          lastGlobalChatId = msgs.reduce((a, m) => Math.max(a, Number(m.id) || 0), 0);
+        } else {
+          globalChatFeed.innerHTML = "<div class='muted'>Пока пусто — напишите первым.</div>";
+        }
+        return;
+      }
+      if (msgs.length) {
+        appendGlobalChatLines(globalChatFeed, msgs, { reset: false });
+        lastGlobalChatId = msgs.reduce((a, m) => Math.max(a, Number(m.id) || 0), lastGlobalChatId);
+      }
+    } catch (_e) {
+      /* ignore */
+    }
+  };
+
+  if (globalChatFeed && !globalChatFeed.dataset.chatModBound) {
+    globalChatFeed.dataset.chatModBound = "1";
+    globalChatFeed.addEventListener("click", (ev) => {
+      const btn = ev.target && ev.target.closest ? ev.target.closest("button[data-chat-mod]") : null;
+      if (!btn || !globalChatFeed.contains(btn)) return;
+      ev.preventDefault();
+      const act = btn.getAttribute("data-chat-mod");
+      const mid = (btn.getAttribute("data-mid") || "").trim();
+      const target = (btn.getAttribute("data-target") || "").trim();
+      void (async () => {
+        try {
+          if (act === "hide") {
+            if (!mid) return;
+            const r = await fetch(`/api/chat/global/${encodeURIComponent(mid)}/hide`, { method: "POST" });
+            const b = await r.json().catch(() => ({}));
+            if (!r.ok || !b.ok) {
+              setStatus(b.error ? `Чат: ${b.error}` : "Не удалось скрыть сообщение", "err");
+              return;
+            }
+          } else if (act === "delete") {
+            if (!mid) return;
+            const r = await fetch(`/api/chat/global/${encodeURIComponent(mid)}`, { method: "DELETE" });
+            const b = await r.json().catch(() => ({}));
+            if (!r.ok || !b.ok) {
+              setStatus(b.error ? `Чат: ${b.error}` : "Не удалось удалить сообщение", "err");
+              return;
+            }
+          } else if (act === "ban_chat") {
+            if (!target) return;
+            const raw = window.prompt(
+              "Мут в общем чате: сколько часов? (для снятия мута введите 0 — только администратор)",
+              "24"
+            );
+            if (raw === null) return;
+            let hours = Math.floor(Number(String(raw).trim()));
+            if (!Number.isFinite(hours)) hours = 24;
+            const r = await fetch("/api/chat/moderation/chat-ban", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ player_id: target, hours }),
+            });
+            const b = await r.json().catch(() => ({}));
+            if (!r.ok || !b.ok) {
+              setStatus(b.error ? `Чат: ${b.error}` : "Не удалось применить мут", "err");
+              return;
+            }
+            setStatus(hours <= 0 ? "Мут общего чата снят" : `Мут общего чата: ${hours} ч`, "ok");
+          } else if (act === "ban_account") {
+            if (!target) return;
+            if (
+              !window.confirm(
+                "Отключить вход в игру для этого игрока (аккаунт)? Восстановление — через админку или повторное действие."
+              )
+            )
+              return;
+            const r = await fetch("/api/chat/moderation/account-ban", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ player_id: target, disable: true }),
+            });
+            const b = await r.json().catch(() => ({}));
+            if (!r.ok || !b.ok) {
+              setStatus(b.error ? `Чат: ${b.error}` : "Не удалось отключить аккаунт", "err");
+              return;
+            }
+            setStatus("Аккаунт отключён", "ok");
+          } else {
+            return;
+          }
+          lastGlobalChatId = 0;
+          await fetchGlobalChat();
+        } catch (_e) {
+          setStatus("Ошибка сети (модерация чата)", "err");
+        }
+      })();
+    });
+  }
+
+  const fetchPrivateChat = async () => {
+    if (!privateChatFeed || !privatePeerActive) return;
+    try {
+      const q =
+        lastPrivateChatId > 0
+          ? `?peer_id=${encodeURIComponent(privatePeerActive)}&since_id=${lastPrivateChatId}`
+          : `?peer_id=${encodeURIComponent(privatePeerActive)}`;
+      const r = await fetch(`/api/chat/private${q}`);
+      const body = await r.json();
+      if (!r.ok || !body || !body.ok) {
+        if (body && body.error === "blocked_peer")
+          privateChatFeed.innerHTML = "<div class='muted'>Переписка скрыта (игнор).</div>";
+        return;
+      }
+      const msgs = Array.isArray(body.messages) ? body.messages : [];
+      if (!lastPrivateChatId) {
+        if (msgs.length) {
+          appendChatLines(privateChatFeed, msgs, { reset: true });
+          lastPrivateChatId = msgs.reduce((a, m) => Math.max(a, Number(m.id) || 0), 0);
+        } else {
+          privateChatFeed.innerHTML = "<div class='muted'>Нет сообщений. Напишите первым.</div>";
+        }
+        return;
+      }
+      if (msgs.length) {
+        appendChatLines(privateChatFeed, msgs, { reset: false });
+        lastPrivateChatId = msgs.reduce((a, m) => Math.max(a, Number(m.id) || 0), lastPrivateChatId);
+      }
+    } catch (_e) {
+      /* ignore */
+    }
+  };
+
+  const loadPrivateThreads = async () => {
+    if (!privateThreadsEl) return;
+    try {
+      const r = await fetch("/api/chat/private/threads");
+      const body = await r.json();
+      if (!r.ok || !body || !body.ok) {
+        privateThreadsEl.innerHTML = "<div class='muted'>Не удалось загрузить диалоги.</div>";
+        return;
+      }
+      const threads = Array.isArray(body.threads) ? body.threads : [];
+      if (!threads.length) {
+        privateThreadsEl.innerHTML =
+          "<div class='muted'>Нет переписок. Укажите UUID игрока выше или дождитесь входящего сообщения.</div>";
+        return;
+      }
+      privateThreadsEl.innerHTML = threads
+        .map(
+          (t) =>
+            `<button type="button" class="btn-secondary private-thread-btn" data-peer="${escChatTxt(t.peer_id)}"><b>${escChatTxt(t.display_name)}</b><span class="muted"> · ${escChatTxt(t.last_preview || "")}</span></button>`
+        )
+        .join("");
+      privateThreadsEl.querySelectorAll(".private-thread-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const pid = btn.getAttribute("data-peer");
+          if (pid) void openPrivatePeer(pid);
+        });
+      });
+    } catch (_e) {
+      privateThreadsEl.innerHTML = "<div class='muted'>Ошибка сети.</div>";
+    }
+  };
+
+  const openPrivatePeer = async (peerId) => {
+    const pid = String(peerId || "").trim();
+    if (!pid) return;
+    privatePeerActive = pid;
+    lastPrivateChatId = 0;
+    if (privateChatPeer) privateChatPeer.value = pid;
+    if (privateChatWrap) privateChatWrap.classList.remove("hidden");
+    if (privateThreadsEl) privateThreadsEl.classList.add("hidden");
+    if (privateChatFeed) privateChatFeed.innerHTML = "<div class='muted'>Загрузка…</div>";
+    await fetchPrivateChat();
+  };
+
+  const closePrivatePeerView = () => {
+    privatePeerActive = "";
+    lastPrivateChatId = 0;
+    if (privateChatPeer) privateChatPeer.value = "";
+    if (privateChatWrap) privateChatWrap.classList.add("hidden");
+    if (privateThreadsEl) privateThreadsEl.classList.remove("hidden");
+    void loadPrivateThreads();
+  };
   const planetModalOverlay = document.getElementById("planet-modal-overlay");
   const planetModalBody = document.getElementById("planet-modal-body");
   const planetModalTitle = document.getElementById("planet-modal-title");
@@ -178,6 +730,22 @@
   const uiBattleRadius = document.getElementById("ui-battle-radius");
   const uiBattleRadiusLabel = document.getElementById("ui-battle-radius-label");
   const uiForceAttack = document.getElementById("ui-force-attack");
+  const uiMapModeTactical = document.getElementById("ui-map-mode-tactical");
+  const uiMapModeGraphic = document.getElementById("ui-map-mode-graphic");
+  const uiMapGraphicHint = document.getElementById("ui-map-graphic-hint");
+  const uiMapShowCoords = document.getElementById("ui-map-show-coords");
+  const uiAdminFogWrap = document.getElementById("ui-admin-fog-wrap");
+  const uiRevealFogAdmin = document.getElementById("ui-reveal-fog-admin");
+  const uiAdminGotoX = document.getElementById("ui-admin-goto-x");
+  const uiAdminGotoY = document.getElementById("ui-admin-goto-y");
+  const uiAdminGotoZ = document.getElementById("ui-admin-goto-z");
+  const uiAdminGotoBtn = document.getElementById("ui-admin-goto-btn");
+  const mapWindowSizeLabel = document.getElementById("map-window-size-label");
+  const uiMapWindowMinus = document.getElementById("ui-map-window-minus");
+  const uiMapWindowPlus = document.getElementById("ui-map-window-plus");
+  const uiMapWindowLabel = document.getElementById("ui-map-window-label");
+  const uiMapPreset13 = document.getElementById("ui-map-preset-13");
+  const uiMapPreset17 = document.getElementById("ui-map-preset-17");
   const combatPromptOverlay = document.getElementById("combat-prompt-overlay");
   const cpSummary = document.getElementById("cp-summary");
   const cpCountdown = document.getElementById("cp-countdown");
@@ -226,9 +794,28 @@
       let battleFocusRadius = Number.isFinite(Number(s && s.battleFocusRadius)) ? Number(s.battleFocusRadius) : 6;
       battleFocusRadius = Math.min(10, Math.max(3, Math.round(battleFocusRadius)));
       const forceAttackGuaranteed = Boolean(s && s.forceAttackGuaranteed);
-      return { fontSize, lineHeight, battleFocusRadius, forceAttackGuaranteed };
+      const mapMode = s && s.mapMode === "graphic" ? "graphic" : "tactical";
+      const mapShowCoords = !(s && s.mapShowCoords === false);
+      const revealFogAdmin = Boolean(s && s.revealFogAdmin);
+      return {
+        fontSize,
+        lineHeight,
+        battleFocusRadius,
+        forceAttackGuaranteed,
+        mapMode,
+        mapShowCoords,
+        revealFogAdmin,
+      };
     } catch (_e) {
-      return { fontSize: 14, lineHeight: 1.35, battleFocusRadius: 6, forceAttackGuaranteed: false };
+      return {
+        fontSize: 14,
+        lineHeight: 1.35,
+        battleFocusRadius: 6,
+        forceAttackGuaranteed: false,
+        mapMode: "tactical",
+        mapShowCoords: true,
+        revealFogAdmin: false,
+      };
     }
   };
   const saveUiSettings = (s) => {
@@ -244,12 +831,19 @@
     if (uiBattleRadius) uiBattleRadius.value = String(s.battleFocusRadius ?? 6);
     if (uiBattleRadiusLabel && Number.isFinite(s.battleFocusRadius)) uiBattleRadiusLabel.textContent = String(s.battleFocusRadius);
     if (uiForceAttack) uiForceAttack.checked = Boolean(s.forceAttackGuaranteed);
+    const mm = s.mapMode === "graphic" ? "graphic" : "tactical";
+    if (uiMapModeTactical) uiMapModeTactical.checked = mm === "tactical";
+    if (uiMapModeGraphic) uiMapModeGraphic.checked = mm === "graphic";
+    if (uiMapShowCoords) uiMapShowCoords.checked = s.mapShowCoords !== false;
+    if (uiRevealFogAdmin) uiRevealFogAdmin.checked = Boolean(s.revealFogAdmin);
+    if (uiMapGraphicHint) uiMapGraphicHint.classList.toggle("hidden", mm !== "graphic");
     applyUiSettings(s);
   };
 
   // init UI settings early
   const initialUiSettings = loadUiSettings();
   applyUiSettings(initialUiSettings);
+  if (uiAdminFogWrap) uiAdminFogWrap.classList.toggle("hidden", !playerIsGameAdmin);
 
   let pendingFleetMove = null; // { fleet_id, from:{x,y,z}, to:{x,y,z}, qty, distance, travelTicks, arriveTick, fuelCost, destLabel, warn }
   let activeFleetId = null;
@@ -618,11 +1212,18 @@
     return lines.map((ln) => escHtml(ln)).join("\n");
   };
 
+  /** Системные события мира — только `#events` (вкладка «Система»). Общий чат — отдельный поток `/api/chat/global`, сюда не подмешивается. */
   const renderEvents = (events) => {
     if (!eventsEl) return;
-    const list = Array.isArray(events) ? events : [];
-    if (list.length === 0) {
+    const raw = Array.isArray(events) ? events : [];
+    const list = filterEventsForSystemLog(raw);
+    if (raw.length === 0) {
       eventsEl.innerHTML = "<div class='muted'>Пока нет событий.</div>";
+      return;
+    }
+    if (list.length === 0) {
+      eventsEl.innerHTML =
+        "<div class='muted'>Нет событий в выбранной категории. Переключите фильтр или откройте «Все».</div>";
       return;
     }
     // Свежие события — сверху
@@ -639,6 +1240,34 @@
   };
 
   const cellHasPlanet = (c) => Boolean(c && Array.isArray(c.objects) && c.objects.some((o) => o && o.type === "planet"));
+
+  /** Клетка не «пустой космос без метки» — по краю окна сначала выбираем, не панорамируя. */
+  const mapCellHasMeaningfulContent = (c) => {
+    if (!c) return false;
+    if (c.flags && c.flags.has_objects) return true;
+    const objs = Array.isArray(c.objects) ? c.objects : [];
+    if (objs.length > 0) return true;
+    const t = c.terrain;
+    if (t && t !== "empty" && t !== "fog") return true;
+    const g = c.glyph;
+    if (g != null && String(g).trim() && ![".", "·"].includes(String(g).trim())) return true;
+    return false;
+  };
+
+  const applyMapCellSelection = (c) => {
+    selectedCell = { ...c };
+    const myFleetObj = playerId
+      ? (c.objects || []).find((o) => o && o.type === "fleet" && String(o.owner) === String(playerId))
+      : null;
+    if (myFleetObj && myFleetObj.id) {
+      activeFleetId = String(myFleetObj.id);
+      if (fleetSelectEl) fleetSelectEl.value = activeFleetId;
+    }
+    updateSelectedPanel();
+    if (cellHasPlanet(c)) void openPlanetModal(c);
+    else closePlanetModal();
+    renderMap();
+  };
 
   const closePlanetModal = () => {
     if (planetModalOverlay) planetModalOverlay.classList.add("hidden");
@@ -894,6 +1523,60 @@
     </div>
   `;
 
+  const OUTPOST_COST_RES_RU = {
+    metal: "металл",
+    crystal: "кристалл",
+    energy: "энергия",
+    fuel: "топливо",
+    food: "еда",
+    water: "вода",
+  };
+
+  const formatBalanceCostRuHtml = (cost) => {
+    if (!cost || typeof cost !== "object") return "";
+    const parts = [];
+    for (const k of ["metal", "crystal", "energy", "fuel", "food", "water"]) {
+      const v = Number(cost[k]);
+      if (Number.isFinite(v) && v > 0) {
+        const label = OUTPOST_COST_RES_RU[k] || k;
+        parts.push(`${label} <b>${v}</b>`);
+      }
+    }
+    return parts.join(" • ");
+  };
+
+  /** Расходы форпоста из `outposts` в `/api/balance` + списание инженера (как на сервере). */
+  const outpostBuildCostBlockHtml = async (outpostType) => {
+    await fetchBalanceCached();
+    const bb = window.__guardstarBalanceCache && window.__guardstarBalanceCache.body;
+    if (!bb || !bb.ok || !Array.isArray(bb.outposts)) return "";
+    const o = bb.outposts.find((it) => it && String(it.id) === String(outpostType));
+    if (!o || typeof o !== "object") return "";
+    const cost = o.build && typeof o.build === "object" ? o.build.cost : null;
+    const resLine = formatBalanceCostRuHtml(cost);
+    const nm = o.name ? String(o.name) : String(outpostType);
+    if (!resLine) return "";
+    return `
+      <div class="muted" style="margin-top:6px;font-size:88%;line-height:1.35;">
+        <b>${escHtml(nm)}</b> — со склада домашней планеты: ${resLine}.
+      </div>
+      <div class="muted" style="margin-top:4px;font-size:88%;">С выбранного флота: <b>−1</b> инженер.</div>
+    `;
+  };
+
+  const syncHudFleetDetailVisibility = () => {
+    const wrap = document.getElementById("hud-fleet-detail");
+    if (!wrap) return;
+    const onCell =
+      selectedCell &&
+      Array.isArray(selectedCell.objects) &&
+      selectedCell.objects.some(
+        (o) => o && o.type === "fleet" && playerId && String(o.owner) === String(playerId),
+      );
+    const show = !selectedCell || onCell;
+    wrap.classList.toggle("hidden", !show);
+  };
+
   const updateSelectedPanel = () => {
     const unit = pickedFleetForHud();
     const isMoving = unit && unit.status === "moving";
@@ -903,6 +1586,8 @@
       if (selCoordEl) selCoordEl.textContent = "—";
       if (selTerrainEl) selTerrainEl.textContent = "—";
       if (selGlyphEl) selGlyphEl.textContent = "—";
+      const gWrapClear = document.getElementById("sel-glyph-wrap");
+      if (gWrapClear) gWrapClear.classList.add("hidden");
       if (selObjectsEl) selObjectsEl.textContent = "—";
       if (selDistanceEl) selDistanceEl.textContent = "—";
       if (selTravelEl) selTravelEl.textContent = "—";
@@ -914,20 +1599,35 @@
         selSupplyEl.classList.remove("hud-warn");
       }
       if (flyBtn) flyBtn.disabled = true;
-      if (buildBtn) buildBtn.disabled = true;
-      if (discoveryResolveBtn) {
-        discoveryResolveBtn.classList.add("hidden");
-        discoveryResolveBtn.disabled = true;
+      if (buildBtn) {
+        buildBtn.disabled = true;
+        buildBtn.classList.remove("hud-btn-blocked");
       }
+      if (buildBtnHelp) buildBtnHelp.classList.add("hidden");
+      if (discoveryResolveBtn) {
+        discoveryHudCellKey = null;
+        discoveryResolveBtn.classList.add("hidden");
+        discoveryResolveBtn.classList.remove("hud-btn-blocked");
+        discoveryResolveBtn.disabled = true;
+        discoveryResolveBtn.title = "";
+      }
+      if (discoveryResolveLabel) discoveryResolveLabel.textContent = "Исследовать";
+      if (discoveryResolveHelp) discoveryResolveHelp.classList.add("hidden");
+      syncHudFleetDetailVisibility();
       return;
     }
 
     if (selCoordEl) selCoordEl.textContent = `${selectedCell.x}, ${selectedCell.y}, ${selectedCell.z}`;
     if (selTerrainEl) selTerrainEl.textContent = formatTerrainRu(selectedCell.terrain);
-    if (selGlyphEl) {
-      // Для планеты "P" как маркер не несёт пользы.
-      if (selectedCell.terrain === "planet") selGlyphEl.textContent = "—";
-      else selGlyphEl.textContent = formatGlyphRu(selectedCell.terrain, selectedCell.glyph);
+    let glyphText = "—";
+    if (selectedCell.terrain !== "planet") {
+      glyphText = formatGlyphRu(selectedCell.terrain, selectedCell.glyph);
+    }
+    if (selGlyphEl) selGlyphEl.textContent = glyphText;
+    const gWrap = document.getElementById("sel-glyph-wrap");
+    if (gWrap) {
+      const hideGlyph = glyphText === "—" || glyphText === "нет (пусто)";
+      gWrap.classList.toggle("hidden", hideGlyph);
     }
 
     const objs = selectedCell.objects || [];
@@ -1005,27 +1705,47 @@
     const sameCell = selectedCell.x === from.x && selectedCell.y === from.y && selectedCell.z === from.z;
     if (flyBtn) flyBtn.disabled = isMoving || sameCell;
     if (buildBtn) {
-      const engineerFleet = engineerFleetForCell(selectedCell);
-      const hasOutpost = (selectedCell.objects || []).some((o) => o && o.type === "outpost" && String(o.owner) === String(playerId));
-      const canBuildHere = Boolean(
-        selectedCell &&
-          selectedCell.flags &&
-          selectedCell.flags.is_visible &&
-          (engineerFleet || hasOutpost),
+      const vis = Boolean(selectedCell.flags && selectedCell.flags.is_visible);
+      const ownPlanetHere = objs.some(
+        (o) => o && o.type === "planet" && String(o.owner) === String(playerId),
       );
+      const engineerFleet = engineerFleetForCell(selectedCell);
+      const canBuildHere = Boolean(selectedCell && vis && (ownPlanetHere || engineerFleet));
+      const needEngineersHud = Boolean(vis && !ownPlanetHere && !engineerFleet);
       buildBtn.disabled = !canBuildHere;
-      buildBtn.title = canBuildHere
-        ? ""
-        : 'Создайте флот с "инженерами" и приведите его в эту клетку (или стройте из своей клетки с форпостом).';
+      buildBtn.classList.toggle("hud-btn-blocked", needEngineersHud);
+      buildBtn.title = vis ? "" : "Клетка не в обзоре.";
+      if (buildBtnHelp) {
+        buildBtnHelp.classList.toggle("hidden", !needEngineersHud);
+      }
     }
 
-    if (discoveryResolveBtn) {
-      discoveryResolveBtn.classList.add("hidden");
-      discoveryResolveBtn.disabled = true;
-      discoveryResolveBtn.textContent = "Исследовать";
+    if (discoveryResolveBtn && discoveryResolveLabel && discoveryResolveHelp) {
       const vis = selectedCell.flags && selectedCell.flags.is_visible;
       const tr = selectedCell.terrain;
-      if (vis && (tr === "ruins" || tr === "anomaly")) {
+      const dKey = `${selectedCell.x},${selectedCell.y},${selectedCell.z ?? 0}`;
+      const onDiscoveryTerrain = Boolean(vis && (tr === "ruins" || tr === "anomaly"));
+      if (!onDiscoveryTerrain) {
+        discoveryHudCellKey = null;
+        discoveryResolveBtn.classList.add("hidden");
+        discoveryResolveBtn.classList.remove("hud-btn-blocked");
+        discoveryResolveBtn.disabled = true;
+        discoveryResolveLabel.textContent = "Исследовать";
+        discoveryResolveBtn.title = "";
+        discoveryResolveHelp.classList.add("hidden");
+      } else {
+        const sameHudCell = discoveryHudCellKey === dKey;
+        discoveryHudCellKey = dKey;
+        // При опросах state/window не гасим кнопку: иначе каждый тик — «Исследовать» до ответа sector и мерцание.
+        if (!sameHudCell) {
+          discoveryResolveBtn.classList.add("hidden");
+          discoveryResolveBtn.disabled = true;
+          discoveryResolveLabel.textContent = "Исследовать";
+          discoveryResolveBtn.title = "";
+          discoveryResolveBtn.classList.remove("hud-btn-blocked");
+          discoveryResolveHelp.classList.add("hidden");
+        }
+        const myGen = ++discoverySectorFetchGen;
         void (async () => {
           try {
             const r = await fetch(
@@ -1033,20 +1753,36 @@
             );
             if (!r.ok) return;
             const sec = await r.json();
+            if (myGen !== discoverySectorFetchGen) return;
             const d = sec.discovery;
             if (!d) return;
             if (d.can_resolve) {
+              discoveryResolveBtn.classList.remove("hud-btn-blocked");
+              discoveryResolveHelp.classList.add("hidden");
               discoveryResolveBtn.classList.remove("hidden");
               discoveryResolveBtn.disabled = false;
+              discoveryResolveLabel.textContent = "Исследовать";
+              discoveryResolveBtn.title = "Исследовать руины или аномалию";
             } else if (d.done) {
-              discoveryResolveBtn.textContent = "Уже исследовано";
+              discoveryResolveBtn.classList.remove("hud-btn-blocked");
+              discoveryResolveHelp.classList.add("hidden");
+              discoveryResolveLabel.textContent = "Исследовано";
               discoveryResolveBtn.classList.remove("hidden");
               discoveryResolveBtn.disabled = true;
+              discoveryResolveBtn.title = "";
+            } else if (!d.fleet_on_cell && !d.done) {
+              discoveryResolveLabel.textContent = "Исследовать";
+              discoveryResolveBtn.classList.remove("hidden");
+              discoveryResolveBtn.disabled = true;
+              discoveryResolveBtn.title = "";
+              discoveryResolveBtn.classList.add("hud-btn-blocked");
+              discoveryResolveHelp.classList.remove("hidden");
             }
           } catch (_e) {}
         })();
       }
     }
+    syncHudFleetDetailVisibility();
   };
 
   const placeBuilding = async (x, y, z, building_type, fleetId = null) => {
@@ -1100,7 +1836,11 @@
       }
       await loadWorldState();
       if (selectedCell && planetModalOverlay && !planetModalOverlay.classList.contains("hidden")) {
-        await fillPlanetModalFromApi(selectedCell);
+        if (cellHasPlanet(selectedCell)) {
+          await fillPlanetModalFromApi(selectedCell);
+        } else {
+          planetModalOverlay.classList.add("hidden");
+        }
       }
       updateSelectedPanel();
     } catch (_e) {
@@ -1535,9 +2275,11 @@
       } else if (buildingHere) {
         buildHtml = `<div>На клетке уже стоит <b>${escHtml(buildingLabelRu(buildingHere.building_type || "постройка"))}</b>.</div>`;
       } else {
+        const outpostCostHtml = await outpostBuildCostBlockHtml("outpost_t1");
         buildHtml = `
           <div class="section-title">Форпосты</div>
           ${outpostButtonsHtml()}
+          ${outpostCostHtml}
           <div class="muted" style="margin-top:8px;">Форпосты дают влияние, обзор, слоты модулей и базовую оборону.</div>
           <div class="section-title">Обычные постройки</div>
           ${buildButtonsHtml()}
@@ -2046,15 +2788,19 @@
       const body = await r.json();
       worldState = body || worldState;
       if (body && body.player_id) worldState.player_id = body.player_id;
+      if (body) {
+        const wasAdmin = playerIsGameAdmin;
+        playerIsGameAdmin = Boolean(body.is_game_admin);
+        playerIsGameModerator = Boolean(body.is_game_moderator);
+        if (uiAdminFogWrap) uiAdminFogWrap.classList.toggle("hidden", !playerIsGameAdmin);
+        if (wasAdmin && !playerIsGameAdmin) {
+          const s = { ...loadUiSettings(), revealFogAdmin: false };
+          saveUiSettings(s);
+          if (uiRevealFogAdmin) uiRevealFogAdmin.checked = false;
+        }
+      }
       await fetchBalanceCached();
       if (tickEl) tickEl.textContent = String(body.current_sol ?? body.current_tick ?? 0);
-      if (body.home_planet) {
-        const elP = document.getElementById("hud-pop");
-        const elM = document.getElementById("hud-pop-max");
-        const hp = body.home_planet;
-        if (elP) elP.textContent = hp.population != null ? String(hp.population) : "—";
-        if (elM) elM.textContent = hp.max_population != null ? String(hp.max_population) : "—";
-      }
       if (body.economy) {
         if (topMetalEl) topMetalEl.textContent = String(body.economy.metal ?? "—");
         if (topCrystalEl) topCrystalEl.textContent = String(body.economy.crystal ?? "—");
@@ -2081,10 +2827,6 @@
             topRpEl.textContent = "—";
             topRpEl.title = "";
           }
-        }
-        const einf = body.economy.influence;
-        if (hudInfluenceHomeEl) {
-          hudInfluenceHomeEl.textContent = einf ? formatInfluenceHud(einf) : "—";
         }
       }
 
@@ -2727,16 +3469,131 @@
     }
   };
 
+  /** Встроенные SVG для графического режима; при `false` графический режим откатывается к тактическим глифам. */
+  const MAP_GRAPHIC_SVG_AVAILABLE = true;
+
+  const getMapRenderOpts = () => {
+    const s = loadUiSettings();
+    const mapShowCoords = s.mapShowCoords !== false;
+    const graphic = s.mapMode === "graphic" && MAP_GRAPHIC_SVG_AVAILABLE;
+    return { graphic, mapShowCoords };
+  };
+
+  const mapGraphicWrap = (tone, svgInner) =>
+    `<span class="map-cell-icon-wrap map-cell-icon-tone-${tone}" aria-hidden="true">${svgInner}</span>`;
+
+  const MAP_GRAPHIC_SVG = {
+    planet:
+      '<svg class="map-cell-icon" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" stroke-width="1.75"/><ellipse cx="12" cy="12" rx="10" ry="3.2" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".55"/></svg>',
+    asteroids:
+      '<svg class="map-cell-icon" viewBox="0 0 24 24" focusable="false"><circle cx="8" cy="9" r="2.2" fill="currentColor"/><circle cx="14" cy="7" r="1.6" fill="currentColor" opacity=".85"/><circle cx="15" cy="14" r="2" fill="currentColor" opacity=".7"/><circle cx="10" cy="15" r="1.4" fill="currentColor" opacity=".55"/></svg>',
+    nebula:
+      '<svg class="map-cell-icon" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" d="M5 14c3-4 6-5 9-2s6 3 9-1M6 10c2.5-2 6-2 8 1"/><path fill="none" stroke="currentColor" stroke-width="1" opacity=".6" d="M7 17c3-2 5-1 8 1"/></svg>',
+    ruins:
+      '<svg class="map-cell-icon" viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d="M8 18V10l2-4h4l2 4v8H8zm1-1h6v-3H9v3zm1-4h4v-2l-1-2h-2l-1 2v2z"/></svg>',
+    ruinsSurveyed:
+      '<svg class="map-cell-icon" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.65" d="M12 4l2.2 6.8H21l-5.5 4 2.1 6.7L12 17.5 6.4 21.5l2.1-6.7L3 10.8h6.8L12 4z"/></svg>',
+    anomaly:
+      '<svg class="map-cell-icon" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="2.2" fill="currentColor"/></svg>',
+    fogQ:
+      '<svg class="map-cell-icon" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="3 2.5"/></svg>',
+    fleetFighter:
+      '<svg class="map-cell-icon" viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d="M12 4l6 14h-4l-1.2-3H11.2L10 18H6L12 4z"/></svg>',
+    fleetScout:
+      '<svg class="map-cell-icon" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.55" d="M12 5v7M8 9l4-2 4 2"/><rect x="9" y="13" width="6" height="5.5" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.45"/><path fill="currentColor" d="M11 14.2h2v1.9h-2z"/></svg>',
+    outpost:
+      '<svg class="map-cell-icon" viewBox="0 0 24 24" focusable="false"><rect x="6" y="7" width="12" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.75"/><path fill="currentColor" opacity=".35" d="M8 9h8v2H8z"/></svg>',
+    mine:
+      '<svg class="map-cell-icon" viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d="M11 4h2l1 3h2l-6 9H6l6-9H10l1-3zm0 11l-2 3h6l-2-3h-2z"/></svg>',
+    reactor:
+      '<svg class="map-cell-icon" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path fill="none" stroke="currentColor" stroke-width="1.35" d="M12 4.5v3M12 16.5v3M4.5 12h3M16.5 12h3M6.8 6.8l2.1 2.1M15.1 15.1l2.1 2.1M17.2 6.8l-2.1 2.1M8.9 15.1l-2.1 2.1"/></svg>',
+    genericBuilding:
+      '<svg class="map-cell-icon" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" d="M12 5l6.5 6H17v8H7v-8H5.5L12 5z"/></svg>',
+  };
+
+  const buildGraphicMapMarker = (ctx) => {
+    if (!MAP_GRAPHIC_SVG_AVAILABLE) return null;
+    const {
+      c,
+      playerId,
+      isHomeCell,
+      planetObj,
+      isEnemyPlanet,
+      anyFleetObj,
+      isEnemyFleet,
+      hasAnyFleet,
+      isFromCell,
+      outpostObj,
+      buildingObj,
+      rsRuins,
+    } = ctx;
+    const T_SELF = "self";
+    const T_ENEMY = "enemy";
+    const T_NEUTRAL = "neutral";
+    const T_FOG = "fog";
+
+    if (planetObj || isHomeCell) {
+      let t = T_NEUTRAL;
+      if (isEnemyPlanet) t = T_ENEMY;
+      else if (
+        planetObj &&
+        playerId &&
+        planetObj.owner &&
+        String(planetObj.owner) === String(playerId)
+      )
+        t = T_SELF;
+      else if (isHomeCell) t = T_SELF;
+      return mapGraphicWrap(t, MAP_GRAPHIC_SVG.planet);
+    }
+    if (hasAnyFleet && anyFleetObj && !isFromCell) {
+      const ft = isEnemyFleet ? T_ENEMY : T_SELF;
+      const isFighter = anyFleetObj.unit_type === "fighter";
+      return mapGraphicWrap(ft, isFighter ? MAP_GRAPHIC_SVG.fleetFighter : MAP_GRAPHIC_SVG.fleetScout);
+    }
+    if (outpostObj) {
+      const t = playerId && String(outpostObj.owner) === String(playerId) ? T_SELF : T_ENEMY;
+      return mapGraphicWrap(t, MAP_GRAPHIC_SVG.outpost);
+    }
+    if (buildingObj) {
+      const t = playerId && String(buildingObj.owner) === String(playerId) ? T_SELF : T_ENEMY;
+      if (buildingObj.building_type === "mine") return mapGraphicWrap(t, MAP_GRAPHIC_SVG.mine);
+      if (buildingObj.building_type === "reactor") return mapGraphicWrap(t, MAP_GRAPHIC_SVG.reactor);
+      return mapGraphicWrap(t, MAP_GRAPHIC_SVG.genericBuilding);
+    }
+    if (c.terrain === "planet") return mapGraphicWrap(T_NEUTRAL, MAP_GRAPHIC_SVG.planet);
+    if (c.terrain === "asteroids") return mapGraphicWrap(T_NEUTRAL, MAP_GRAPHIC_SVG.asteroids);
+    if (c.terrain === "nebula") return mapGraphicWrap(T_NEUTRAL, MAP_GRAPHIC_SVG.nebula);
+    if (c.terrain === "ruins" && rsRuins) return mapGraphicWrap(T_NEUTRAL, MAP_GRAPHIC_SVG.ruinsSurveyed);
+    if (c.terrain === "ruins") return mapGraphicWrap(T_NEUTRAL, MAP_GRAPHIC_SVG.ruins);
+    if (c.terrain === "anomaly") return mapGraphicWrap(T_NEUTRAL, MAP_GRAPHIC_SVG.anomaly);
+    if (c.terrain === "fog" && c.glyph === "?") return mapGraphicWrap(T_FOG, MAP_GRAPHIC_SVG.fogQ);
+    return null;
+  };
+
+  /** Размер клетки: заполняем ширину `.map-wrap`, с запасом и верхним пределом читаемости. */
+  const computeMapLayoutCellPx = (size) => {
+    const minC = 22;
+    const maxC = 140;
+    const baseCell =
+      Number.parseInt(getComputedStyle(document.documentElement).getPropertyValue("--cell-size"), 10) || 96;
+    const refCells = 13;
+    const fallback = Math.max(minC, Math.min(baseCell, Math.round((baseCell * refCells) / size)));
+    const w = mapWrapEl ? mapWrapEl.clientWidth : 0;
+    if (!w || w < size * minC) return fallback;
+    const slot = Math.max(0, w - 6);
+    return Math.max(minC, Math.min(maxC, Math.floor(slot / size)));
+  };
+
   const renderMap = () => {
     if (!mapEl || !currentWindow || !currentWindow.cells) return;
+    const mapOpts = getMapRenderOpts();
     const size = currentWindow.radius * 2 + 1;
     mapEl.innerHTML = "";
     mapEl.style.setProperty("--map-size", String(size));
-    // Одна и та же «ширина поля»: при 21×21 ячейки ужимаются относительно 9×9 (база — --cell-size).
-    const baseCell =
-      Number.parseInt(getComputedStyle(document.documentElement).getPropertyValue("--cell-size"), 10) || 96;
-    const refCells = 9;
-    const layoutCell = Math.max(22, Math.min(baseCell, Math.round((baseCell * refCells) / size)));
+    mapEl.classList.toggle("map-mode-graphic", mapOpts.graphic);
+    mapEl.classList.toggle("map-mode-tactical", !mapOpts.graphic);
+    mapEl.classList.toggle("map-hide-coords", !mapOpts.mapShowCoords);
+    const layoutCell = computeMapLayoutCellPx(size);
     mapEl.style.setProperty("--map-layout-cell", `${layoutCell}px`);
 
     const scout = detectScoutPos();
@@ -2836,6 +3693,13 @@
           btn.classList.add("cell-to");
         }
 
+        const ct = c.flags && c.flags.cell_tint ? String(c.flags.cell_tint) : "";
+        if (ct === "ally") btn.classList.add("cell-tint-ally");
+        else if (ct === "hostile") btn.classList.add("cell-tint-hostile");
+        else if (ct === "neutral") btn.classList.add("cell-tint-neutral");
+        else if (ct === "ruins_surveyed") btn.classList.add("cell-tint-ruins-surveyed");
+
+        const rsRuins = Boolean(c.flags && c.flags.ruins_surveyed);
         const terrainIcon =
           c.terrain === "planet"
             ? "<span class='terrain-icon'>🪐</span>"
@@ -2843,11 +3707,13 @@
           c.terrain === "asteroids"
             ? "<span class='terrain-icon'>☄</span>"
             : c.terrain === "nebula"
-              ? "<span class='terrain-icon'>🌫</span>"
+              ? "<span class='terrain-icon' aria-label='Туманность'>≋</span>"
+              : c.terrain === "ruins" && rsRuins
+                ? "<span class='terrain-icon terrain-ruins-surveyed' aria-label='Исследованные руины'>◈</span>"
               : c.terrain === "ruins"
-                ? "<span class='terrain-icon'>🏚</span>"
+                ? "<span class='terrain-icon' aria-label='Руины'>⟁</span>"
                 : c.terrain === "anomaly"
-                  ? "<span class='terrain-icon'>❓</span>"
+                  ? "<span class='terrain-icon' aria-label='Аномалия'>◎</span>"
                   : c.terrain === "fog" && c.glyph === "?"
                     ? "<span class='terrain-icon muted'>?</span>"
                     : "";
@@ -2863,26 +3729,47 @@
 
         const fleetIcon = anyFleetObj && anyFleetObj.unit_type === "fighter" ? "🚀" : "🛰";
         const fleetMarker = hasAnyFleet && !isFromCell
-          ? `<span class='unit-icon ${isEnemyFleet ? "enemy" : ""}' aria-label='Флот'>${fleetIcon}</span>`
+          ? `<span class='unit-icon ${isEnemyFleet ? "enemy" : "ally"}' aria-label='Флот'>${fleetIcon}</span>`
           : null;
 
         // Центр окна — это только рамка (cell-center), не "планета".
         const outpostMarker = outpostObj
-          ? `<span class="terrain-icon" aria-label="Форпост">${String(outpostObj.owner) === String(playerId) ? "🏰" : "🏯"}</span>`
+          ? `<span class="terrain-icon ${String(outpostObj.owner) === String(playerId) ? "outpost-ally" : "outpost-hostile"}" aria-label="Форпост">▣</span>`
           : null;
 
         const buildingMarker = buildingObj
-          ? `<span class="terrain-icon" aria-label="Постройка">${buildingObj.building_type === "mine" ? "⛏" : (buildingObj.building_type === "reactor" ? "⚙" : "💎")}</span>`
+          ? `<span class="terrain-icon ${String(buildingObj.owner) === String(playerId) ? "building-ally" : "building-hostile"}" aria-label="Постройка">${buildingObj.building_type === "mine" ? "⛏" : (buildingObj.building_type === "reactor" ? "⚙" : "◇")}</span>`
           : null;
 
-        const marker = planetMarker || fleetMarker || outpostMarker || buildingMarker || terrainIcon;
+        const tacticalMarker =
+          planetMarker || fleetMarker || outpostMarker || buildingMarker || terrainIcon;
+        const graphicMarker = mapOpts.graphic
+          ? buildGraphicMapMarker({
+              c,
+              playerId,
+              isHomeCell,
+              planetObj,
+              isEnemyPlanet,
+              anyFleetObj,
+              isEnemyFleet,
+              hasAnyFleet,
+              isFromCell,
+              outpostObj,
+              buildingObj,
+              rsRuins,
+            })
+          : null;
+        const marker = graphicMarker || tacticalMarker;
         const markerHtml = marker ? `<div>${marker}</div>` : "<div class='marker-spacer'></div>";
-        const showCoord = Boolean(hasObjects || terrainIcon);
+        const showCoord =
+          mapOpts.mapShowCoords && Boolean(hasObjects || tacticalMarker);
         const coordHtml = showCoord ? `<div class='coord'>${c.x},${c.y}</div>` : "<div class='coord'></div>";
 
         // Клики по краям окна двигают карту. Стрелки рисуем поверх содержимого клетки.
         const winCenter = currentWindow && currentWindow.center ? currentWindow.center : viewCenter;
-        const r = currentWindow && Number.isInteger(currentWindow.radius) ? currentWindow.radius : 4;
+        const r = clampMapWindowRadius(
+          currentWindow && Number.isInteger(currentWindow.radius) ? currentWindow.radius : MAP_WINDOW_RADIUS_MIN
+        );
         const x0 = winCenter.x - r;
         const x1 = winCenter.x + r;
         const y0 = winCenter.y - r;
@@ -2951,6 +3838,22 @@
             const raw = e.dataTransfer.getData("text/plain");
             const data = raw ? JSON.parse(raw) : null;
             if (data && data.fleet_id) {
+              const stackOthers = (c.objects || []).filter(
+                (o) =>
+                  o &&
+                  o.type === "fleet" &&
+                  o.owner != null &&
+                  String(o.owner) === String(playerId) &&
+                  String(o.id) !== String(data.fleet_id),
+              );
+              if (stackOthers.length > 0) {
+                await openFleetStackingChoiceModal({
+                  draggedFleetId: String(data.fleet_id),
+                  targetFleetId: String(stackOthers[0].id),
+                  targetPos: { x: c.x, y: c.y, z: c.z },
+                });
+                return;
+              }
               // Защита от случайного "ОК" сразу после drop: кнопка OK будет включена с задержкой.
               await openFleetMoveConfirm({
                 fleet_id: data.fleet_id,
@@ -2968,28 +3871,29 @@
           await moveScout(c.x, c.y, c.z);
         });
 
-        // Click still selects for panel/ETA
+        // Край окна: панорама; если в клетке есть объекты/непустой террейн — первый клик только выбор, второй — сдвиг.
         btn.addEventListener("click", () => {
+          const cellKey = `${c.x},${c.y},${c.z ?? 0}`;
           if (isEdge) {
+            if (mapCellHasMeaningfulContent(c)) {
+              if (lastEdgePanCellKey !== cellKey) {
+                lastEdgePanCellKey = cellKey;
+                applyMapCellSelection(c);
+                return;
+              }
+              lastEdgePanCellKey = null;
+            } else {
+              lastEdgePanCellKey = null;
+            }
             const step = r * 2; // двигаемся "окнами" без перекрытия
             const dx = isLeft ? -step : isRight ? step : 0;
             const dy = isTop ? -step : isBottom ? step : 0;
             viewCenter = { x: winCenter.x + dx, y: winCenter.y + dy };
-            refreshWindow();
+            void refreshWindow();
             return;
           }
-          selectedCell = { ...c };
-          const myFleetObj = playerId
-            ? (c.objects || []).find((o) => o && o.type === "fleet" && String(o.owner) === String(playerId))
-            : null;
-          if (myFleetObj && myFleetObj.id) {
-            activeFleetId = String(myFleetObj.id);
-            if (fleetSelectEl) fleetSelectEl.value = activeFleetId;
-          }
-          updateSelectedPanel();
-          if (cellHasPlanet(c)) void openPlanetModal(c);
-          else closePlanetModal();
-          renderMap();
+          lastEdgePanCellKey = null;
+          applyMapCellSelection(c);
         });
         rowEl.appendChild(btn);
       }
@@ -3321,6 +4225,27 @@
     drawBorder(inControlSelf, "zone-line-self");
   };
 
+  const applyMapCellSizeFromContainer = () => {
+    if (!mapEl || !currentWindow || !currentWindow.cells) return;
+    const size = currentWindow.radius * 2 + 1;
+    mapEl.style.setProperty("--map-layout-cell", `${computeMapLayoutCellPx(size)}px`);
+    renderZoneOverlay();
+    renderFlightOverlay();
+    syncMmoSidePanelHeights();
+  };
+
+  if (mapWrapEl && typeof ResizeObserver !== "undefined") {
+    let mapResizeTimer = null;
+    new ResizeObserver(() => {
+      clearTimeout(mapResizeTimer);
+      mapResizeTimer = setTimeout(() => applyMapCellSizeFromContainer(), 60);
+    }).observe(mapWrapEl);
+  }
+
+  if (mapSectorCard && typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(() => syncMmoSidePanelHeights()).observe(mapSectorCard);
+  }
+
   if (mapWrapEl) {
     mapWrapEl.addEventListener("scroll", () => {
       renderFlightOverlay();
@@ -3331,7 +4256,11 @@
   // drag-pan removed
 
   const refreshWindow = async () => {
-    const r = await fetch(`/api/world/window?radius=${viewRadius}&z=${currentZ}&center_x=${viewCenter.x}&center_y=${viewCenter.y}`);
+    const fog =
+      playerIsGameAdmin && loadUiSettings().revealFogAdmin ? "&reveal_fog=1" : "";
+    const r = await fetch(
+      `/api/world/window?radius=${viewRadius}&z=${currentZ}&center_x=${viewCenter.x}&center_y=${viewCenter.y}${fog}`
+    );
     if (!r.ok) {
       setStatus("Ошибка загрузки карты", "err");
       return;
@@ -3434,6 +4363,24 @@
           return;
         }
         if (body.error === "cell_occupied_by_own_fleet") {
+          const fleets = Array.isArray(worldState && worldState.fleets) ? worldState.fleets : [];
+          const others = fleets.filter(
+            (f) =>
+              f &&
+              f.id &&
+              String(f.id) !== String(fleetId) &&
+              Number(f.x) === Number(x) &&
+              Number(f.y) === Number(y) &&
+              Number(f.z) === Number(z),
+          );
+          if (others.length > 0) {
+            await openFleetStackingChoiceModal({
+              draggedFleetId: String(fleetId),
+              targetFleetId: String(others[0].id),
+              targetPos: { x, y, z },
+            });
+            return;
+          }
           setStatus("В этой клетке уже ваш флот. Два флота не могут стоять в одной клетке.", "err");
           return;
         }
@@ -3535,9 +4482,7 @@
     if (isNewOrder) {
       const tx = prim.target && Number.isFinite(Number(prim.target.x)) ? Number(prim.target.x) : 0;
       const ty = prim.target && Number.isFinite(Number(prim.target.y)) ? Number(prim.target.y) : 0;
-      const br = loadUiSettings().battleFocusRadius ?? 6;
       viewCenter = { x: tx, y: ty };
-      viewRadius = br;
       void refreshWindow();
     }
 
@@ -3607,6 +4552,141 @@
       }
     }
     return { label, warn };
+  };
+
+  const fetchSectorAsDestCell = async (x, y, z) => {
+    const zz = Number(z) || 0;
+    try {
+      const r = await fetch(`/api/world/sector?x=${x}&y=${y}&z=${zz}`);
+      const b = await r.json();
+      const terrain =
+        b.cell && typeof b.cell === "object" && b.cell.terrain ? String(b.cell.terrain) : null;
+      return {
+        x,
+        y,
+        z: zz,
+        terrain,
+        objects: Array.isArray(b.objects) ? b.objects : [],
+        flags: { is_visible: true },
+      };
+    } catch (_e) {
+      return { x, y, z: zz, terrain: null, objects: [], flags: { is_visible: true } };
+    }
+  };
+
+  const cellHasOtherOwnFleet = (cell, draggedFleetId) =>
+    Boolean(
+      cell &&
+        (cell.objects || []).some(
+          (o) =>
+            o &&
+            o.type === "fleet" &&
+            o.owner != null &&
+            String(o.owner) === String(playerId) &&
+            String(o.id) !== String(draggedFleetId),
+        ),
+    );
+
+  const resolveAdjacentFleetLanding = async (to, draggedFleetId) => {
+    const tz = Number(to.z) || 0;
+    const cand = [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+      [1, 1],
+      [1, -1],
+      [-1, 1],
+      [-1, -1],
+      [2, 0],
+      [-2, 0],
+      [0, 2],
+      [0, -2],
+      [2, 1],
+      [2, -1],
+      [-2, 1],
+      [-2, -1],
+      [1, 2],
+      [1, -2],
+      [-1, 2],
+      [-1, -2],
+      [3, 0],
+      [-3, 0],
+      [0, 3],
+      [0, -3],
+    ];
+    const rows = (currentWindow && currentWindow.cells) || [];
+    const cellFromWindow = (nx, ny) => {
+      for (const row of rows) {
+        for (const cc of row.row || []) {
+          if (cc.x === nx && cc.y === ny && (cc.z ?? 0) === tz) return cc;
+        }
+      }
+      return null;
+    };
+    for (const [dx, dy] of cand) {
+      const nx = to.x + dx;
+      const ny = to.y + dy;
+      let dest = cellFromWindow(nx, ny);
+      if (!dest) dest = await fetchSectorAsDestCell(nx, ny, tz);
+      if (!cellHasOtherOwnFleet(dest, draggedFleetId))
+        return { x: nx, y: ny, z: tz, destCell: dest };
+    }
+    return null;
+  };
+
+  const openFleetStackingChoiceModal = async ({ draggedFleetId, targetFleetId, targetPos }) => {
+    await fetchBalanceCached();
+    const fleets = Array.isArray(worldState && worldState.fleets) ? worldState.fleets : [];
+    const dragged = fleets.find((f) => f && String(f.id) === String(draggedFleetId));
+    const target = fleets.find((f) => f && String(f.id) === String(targetFleetId));
+    if (!fleetSubOverlay || !fleetSubTitle || !fleetSubBody || !fleetSubFoot) return;
+    if (!dragged || !target) {
+      setStatus("Не удалось сопоставить флоты — обновите карту (сол).", "err");
+      return;
+    }
+    const to = targetPos || { x: target.x, y: target.y, z: target.z };
+    const dn = (f) => (f.name && String(f.name).trim()) || "Флот";
+    const dc = (f) => formatComposition(f.composition) || "—";
+    const from = { x: dragged.x, y: dragged.y, z: dragged.z };
+    fleetSubTitle.textContent = "Два ваших флота";
+    fleetSubBody.innerHTML = `
+      <p class="muted" style="margin-top:0;">Клетка <b>(${to.x}, ${to.y}, ${to.z})</b> занята <b>${escHtml(dn(target))}</b> (${escHtml(
+      dc(target),
+    )}). Флот <b>${escHtml(dn(dragged))}</b> (${escHtml(dc(dragged))}) не может занять ту же клетку.</p>
+      <p class="muted"><b>Объединить</b> — корабли из «${escHtml(dn(dragged))}» переходят в «${escHtml(
+      dn(target),
+    )}», перетаскиваемый флот исчезает с карты.</p>
+      <p class="muted"><b>Рядом</b> — заказать полёт в ближайшую соседнюю клетку без вашего второго флота (откроется обычное подтверждение полёта).</p>
+      <div class="row" style="flex-direction:column;gap:10px;margin-top:14px;">
+        <button type="button" class="btn-primary" id="fs-merge-drop">Объединить флоты</button>
+        <button type="button" class="btn-secondary" id="fs-near-drop">Остановиться рядом</button>
+        <button type="button" class="btn-secondary" id="fs-cancel-drop">Отмена</button>
+      </div>`;
+    fleetSubFoot.innerHTML = `<span class="muted" style="font-size:88%;">Если «Рядом» недоступен — увеличьте окно карты в «Настройки UI» (до 25×25) или подойдите с другой стороны.</span>`;
+    const close = () => closeFleetSubModal();
+    fleetSubBody.querySelector("#fs-cancel-drop").addEventListener("click", close);
+    fleetSubBody.querySelector("#fs-merge-drop").addEventListener("click", async () => {
+      close();
+      await mergeFleetsApi(String(target.id), String(dragged.id));
+    });
+    fleetSubBody.querySelector("#fs-near-drop").addEventListener("click", async () => {
+      close();
+      const alt = await resolveAdjacentFleetLanding(to, String(dragged.id));
+      if (!alt) {
+        setStatus("Нет подходящей соседней клетки без вашего флота.", "err");
+        return;
+      }
+      await openFleetMoveConfirm({
+        fleet_id: String(dragged.id),
+        qty: Number(dragged.qty) || 0,
+        from,
+        to: { x: alt.x, y: alt.y, z: alt.z },
+        destCell: alt.destCell,
+        deferOkMs: 450,
+      });
+    });
+    fleetSubOverlay.classList.remove("hidden");
   };
 
   const openFleetMoveConfirm = async ({ fleet_id, qty, from, to, destCell, deferOkMs }) => {
@@ -3758,7 +4838,10 @@
     buildBtn.addEventListener("click", async () => {
       if (!selectedCell) return;
       if (buildBtn.disabled) {
-        setStatus('Создайте флот с "инженерами" и приведите его в эту клетку (или стройте из своей клетки с форпостом).', "err");
+        setStatus(
+          "Нужны инженеры: приведите в эту клетку флот с инженерами или откройте строительство с клетки своей планеты.",
+          "err",
+        );
         return;
       }
       await openPlanetModal(selectedCell);
@@ -3783,10 +4866,13 @@
         if (!r.ok || !body.ok) {
           if (body.error === "sector_not_visible") setStatus("Клетка не в зоне обзора флотов/колоний", "err");
           else if (body.error === "nothing_to_discover") setStatus("Здесь нечего исследовать", "err");
+          else if (body.error === "fleet_required")
+            setStatus("Исследование руин и аномалий: приведите свой флот на эту клетку.", "err");
           else setStatus(`Ошибка: ${body.error || "discovery_failed"}`, "err");
           return;
         }
         if (body.already_done) setStatus("Объект уже исследован", "ok");
+        else if (body.headline) setStatus(String(body.headline), "ok");
         else setStatus("Исследование завершено — см. журнал событий", "ok");
         await refreshWindow();
         refreshSelectedCellFromWindow();
@@ -3817,6 +4903,7 @@
   if (clearSelBtn) {
     clearSelBtn.addEventListener("click", () => {
       selectedCell = null;
+      lastEdgePanCellKey = null;
       updateSelectedPanel();
       renderMap();
     });
@@ -3824,8 +4911,6 @@
 
   const zDown = document.getElementById("z-down");
   const zUp = document.getElementById("z-up");
-  const radius4Btn = document.getElementById("radius-4");
-  const radius10Btn = document.getElementById("radius-10");
   if (zDown) {
     zDown.addEventListener("click", async () => {
       currentZ = Math.max(-10, currentZ - 1);
@@ -3841,27 +4926,42 @@
     });
   }
 
-  const syncMapRadiusButtons = () => {
-    const b4 = document.getElementById("radius-4");
-    const b10 = document.getElementById("radius-10");
-    if (b4) b4.classList.toggle("is-active", viewRadius === 4);
-    if (b10) b10.classList.toggle("is-active", viewRadius === 10);
+  const formatMapSizeLabel = () => `${mapWindowSideCells(viewRadius)}×${mapWindowSideCells(viewRadius)}`;
+
+  const syncMapWindowUi = () => {
+    const t = formatMapSizeLabel();
+    if (mapWindowSizeLabel) mapWindowSizeLabel.textContent = t;
+    if (uiMapWindowLabel) uiMapWindowLabel.textContent = t;
+    if (uiMapWindowMinus) uiMapWindowMinus.disabled = viewRadius <= MAP_WINDOW_RADIUS_MIN;
+    if (uiMapWindowPlus) uiMapWindowPlus.disabled = viewRadius >= MAP_WINDOW_RADIUS_MAX;
+    if (uiMapPreset13) uiMapPreset13.classList.toggle("is-active", viewRadius === MAP_WINDOW_RADIUS_MIN);
+    if (uiMapPreset17) uiMapPreset17.classList.toggle("is-active", viewRadius === 8);
   };
 
   const setRadius = async (r) => {
-    const nr = Number(r);
-    viewRadius = Number.isInteger(nr) ? Math.max(1, Math.min(nr, 10)) : 4;
+    viewRadius = clampMapWindowRadius(r);
     try {
       localStorage.setItem(MAP_VIEW_RADIUS_KEY, String(viewRadius));
     } catch (_e) {
       /* ignore */
     }
-    syncMapRadiusButtons();
+    syncMapWindowUi();
     await refreshWindow();
-    setStatus(`Размер карты: ${viewRadius === 10 ? "21×21" : "9×9"}`, "ok");
+    setStatus(`Размер окна карты: ${formatMapSizeLabel()}`, "ok");
   };
-  if (radius4Btn) radius4Btn.addEventListener("click", async () => setRadius(4));
-  if (radius10Btn) radius10Btn.addEventListener("click", async () => setRadius(10));
+
+  if (uiMapWindowMinus) {
+    uiMapWindowMinus.addEventListener("click", async () => {
+      await setRadius(viewRadius - 1);
+    });
+  }
+  if (uiMapWindowPlus) {
+    uiMapWindowPlus.addEventListener("click", async () => {
+      await setRadius(viewRadius + 1);
+    });
+  }
+  if (uiMapPreset13) uiMapPreset13.addEventListener("click", async () => setRadius(MAP_WINDOW_RADIUS_MIN));
+  if (uiMapPreset17) uiMapPreset17.addEventListener("click", async () => setRadius(8));
 
   if (planetModalClose) planetModalClose.addEventListener("click", closePlanetModal);
   if (planetModalOverlay) {
@@ -3925,6 +5025,12 @@
     if (!uiSettingsOverlay) return;
     const s = loadUiSettings();
     syncUiSettingsControls(s);
+    syncMapWindowUi();
+    if (playerIsGameAdmin) {
+      if (uiAdminGotoX) uiAdminGotoX.value = String(Math.round(Number(viewCenter.x) || 0));
+      if (uiAdminGotoY) uiAdminGotoY.value = String(Math.round(Number(viewCenter.y) || 0));
+      if (uiAdminGotoZ) uiAdminGotoZ.value = String(Math.round(Number(currentZ) || 0));
+    }
     uiSettingsOverlay.classList.remove("hidden");
   };
   const closeUiSettings = () => {
@@ -3941,25 +5047,251 @@
   const onSettingsChanged = () => {
     const brRaw = uiBattleRadius ? Number(uiBattleRadius.value) : 6;
     const br = Math.min(10, Math.max(3, Math.round(Number.isFinite(brRaw) ? brRaw : 6)));
+    const mapMode = uiMapModeGraphic && uiMapModeGraphic.checked ? "graphic" : "tactical";
+    if (uiMapGraphicHint) uiMapGraphicHint.classList.toggle("hidden", mapMode !== "graphic");
     const s = {
       fontSize: uiFontSize ? Number(uiFontSize.value) : 14,
       lineHeight: uiLineHeight ? Number(uiLineHeight.value) : 1.35,
       battleFocusRadius: br,
       forceAttackGuaranteed: Boolean(uiForceAttack && uiForceAttack.checked),
+      mapMode,
+      mapShowCoords: Boolean(uiMapShowCoords && uiMapShowCoords.checked),
+      revealFogAdmin: Boolean(playerIsGameAdmin && uiRevealFogAdmin && uiRevealFogAdmin.checked),
     };
     applyUiSettings(s);
     saveUiSettings(s);
     if (uiBattleRadiusLabel) uiBattleRadiusLabel.textContent = String(br);
+    if (typeof renderMap === "function") renderMap();
   };
   if (uiFontSize) uiFontSize.addEventListener("input", onSettingsChanged);
   if (uiLineHeight) uiLineHeight.addEventListener("input", onSettingsChanged);
   if (uiBattleRadius) uiBattleRadius.addEventListener("input", onSettingsChanged);
   if (uiForceAttack) uiForceAttack.addEventListener("change", onSettingsChanged);
+  if (uiMapModeTactical) uiMapModeTactical.addEventListener("change", onSettingsChanged);
+  if (uiMapModeGraphic) uiMapModeGraphic.addEventListener("change", onSettingsChanged);
+  if (uiMapShowCoords) uiMapShowCoords.addEventListener("change", onSettingsChanged);
+  if (uiRevealFogAdmin) {
+    uiRevealFogAdmin.addEventListener("change", () => {
+      onSettingsChanged();
+      void refreshWindow();
+    });
+  }
+  if (uiAdminGotoBtn) {
+    uiAdminGotoBtn.addEventListener("click", async () => {
+      if (!playerIsGameAdmin) return;
+      const x = Math.round(Number(uiAdminGotoX && uiAdminGotoX.value));
+      const y = Math.round(Number(uiAdminGotoY && uiAdminGotoY.value));
+      let zz = Math.round(Number(uiAdminGotoZ && uiAdminGotoZ.value));
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        setStatus("Укажите целые координаты X и Y", "err");
+        return;
+      }
+      if (!Number.isFinite(zz)) zz = currentZ;
+      zz = Math.max(-10, Math.min(10, zz));
+      viewCenter = { x, y };
+      currentZ = zz;
+      if (zEl) zEl.textContent = String(currentZ);
+      await refreshWindow();
+      setStatus(`Карта: центр (${x}, ${y}), z=${currentZ}`, "ok");
+    });
+  }
   if (uiSettingsReset) {
     uiSettingsReset.addEventListener("click", () => {
-      const s = { fontSize: 14, lineHeight: 1.35, battleFocusRadius: 6, forceAttackGuaranteed: false };
+      const s = {
+        fontSize: 14,
+        lineHeight: 1.35,
+        battleFocusRadius: 6,
+        forceAttackGuaranteed: false,
+        mapMode: "tactical",
+        mapShowCoords: true,
+        revealFogAdmin: false,
+      };
       saveUiSettings(s);
       syncUiSettingsControls(s);
+      if (typeof renderMap === "function") renderMap();
+    });
+  }
+
+  document.querySelectorAll("#system-log-filters [data-sys-filter]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const f = btn.getAttribute("data-sys-filter") || "all";
+      systemLogFilterCategory = f;
+      try {
+        localStorage.setItem(SYSTEM_LOG_FILTER_KEY, f);
+      } catch (_e) {
+        /* ignore */
+      }
+      document.querySelectorAll("#system-log-filters [data-sys-filter]").forEach((b) => {
+        b.classList.toggle("is-active", (b.getAttribute("data-sys-filter") || "") === f);
+      });
+      renderEvents(worldState.events);
+    });
+  });
+  document.querySelectorAll("#system-log-filters [data-sys-filter]").forEach((b) => {
+    b.classList.toggle(
+      "is-active",
+      (b.getAttribute("data-sys-filter") || "") === systemLogFilterCategory
+    );
+  });
+
+  document.querySelectorAll(".comms-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const name = tab.getAttribute("data-comms-tab");
+      if (!name) return;
+      setActiveCommsTab(name);
+      if (name === "global") void fetchGlobalChat();
+      if (name === "private") void loadPrivateThreads();
+    });
+  });
+
+  if (commsCollapseBtn) commsCollapseBtn.addEventListener("click", () => toggleCommsCollapsed());
+  if (commsOverlay) {
+    commsOverlay.addEventListener("click", () => {
+      if (!commsWideMq.matches && !isCommsCollapsed()) {
+        commsCollapsedExplicit = true;
+        try {
+          localStorage.setItem(COMMS_COLLAPSED_KEY, "true");
+        } catch (_e) {
+          /* ignore */
+        }
+        applyCommsLayout();
+      }
+    });
+  }
+  commsWideMq.addEventListener("change", () => {
+    if (commsCollapsedExplicit === null) applyCommsLayout();
+    else syncMmoSidePanelHeights();
+  });
+  applyCommsLayout();
+  syncCommsPanelTitle();
+  applyChatPrefsToDom();
+
+  const syncChatSettingsControls = () => {
+    const p = readChatPrefs();
+    if (chatColorSystem) chatColorSystem.value = p.colorSystem || "#61eaa3";
+    if (chatColorGlobal) chatColorGlobal.value = p.colorGlobal || "#7ec8e3";
+    if (chatColorAlliance) chatColorAlliance.value = p.colorAlliance || "#c9a227";
+    if (chatColorPrivate) chatColorPrivate.value = p.colorPrivate || "#d88fd8";
+    if (chatDisablePrivate) chatDisablePrivate.checked = Boolean(p.disablePrivateIncoming);
+  };
+  const openChatSettings = () => {
+    if (!chatSettingsOverlay) return;
+    syncChatSettingsControls();
+    chatSettingsOverlay.classList.remove("hidden");
+  };
+  const closeChatSettings = () => {
+    if (chatSettingsOverlay) chatSettingsOverlay.classList.add("hidden");
+  };
+  if (chatSettingsOpenBtn) chatSettingsOpenBtn.addEventListener("click", openChatSettings);
+  if (chatSettingsClose) chatSettingsClose.addEventListener("click", closeChatSettings);
+  if (chatSettingsOverlay) {
+    chatSettingsOverlay.addEventListener("click", (e) => {
+      if (e.target === chatSettingsOverlay) closeChatSettings();
+    });
+  }
+  if (chatSettingsSave) {
+    chatSettingsSave.addEventListener("click", () => {
+      writeChatPrefs({
+        colorSystem: chatColorSystem && chatColorSystem.value,
+        colorGlobal: chatColorGlobal && chatColorGlobal.value,
+        colorAlliance: chatColorAlliance && chatColorAlliance.value,
+        colorPrivate: chatColorPrivate && chatColorPrivate.value,
+        disablePrivateIncoming: Boolean(chatDisablePrivate && chatDisablePrivate.checked),
+      });
+      applyChatPrefsToDom();
+      closeChatSettings();
+    });
+  }
+
+  if (globalChatForm) {
+    globalChatForm.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const t = globalChatInput && globalChatInput.value.trim();
+      if (!t) return;
+      if (t.length > MAX_CHAT_BODY_CHARS) {
+        if (statusEl)
+          statusEl.textContent = `Чат: не более ${MAX_CHAT_BODY_CHARS} символов (сейчас ${t.length}).`;
+        return;
+      }
+      try {
+        const r = await fetch("/api/chat/global", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: t }),
+        });
+        const body = await r.json();
+        if (!r.ok || !body || !body.ok) {
+          if (statusEl) statusEl.textContent = `Чат: ${(body && body.error) || "ошибка"}`;
+          return;
+        }
+        if (globalChatInput) globalChatInput.value = "";
+        await fetchGlobalChat();
+      } catch (_e) {
+        if (statusEl) statusEl.textContent = "Чат: сеть";
+      }
+    });
+  }
+
+  if (privateChatForm) {
+    privateChatForm.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const peer = (privateChatPeer && privateChatPeer.value.trim()) || privatePeerActive;
+      const t = privateChatInput && privateChatInput.value.trim();
+      if (!peer || !t) return;
+      if (t.length > MAX_CHAT_BODY_CHARS) {
+        if (statusEl)
+          statusEl.textContent = `ЛС: не более ${MAX_CHAT_BODY_CHARS} символов (сейчас ${t.length}).`;
+        return;
+      }
+      const prefs = readChatPrefs();
+      if (prefs.disablePrivateIncoming) {
+        if (statusEl) statusEl.textContent = "В настройках чата отключены личные сообщения.";
+        return;
+      }
+      try {
+        const r = await fetch("/api/chat/private", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ peer_id: peer, body: t }),
+        });
+        const body = await r.json();
+        if (!r.ok || !body || !body.ok) {
+          if (statusEl) statusEl.textContent = `ЛС: ${(body && body.error) || "ошибка"}`;
+          return;
+        }
+        if (privateChatInput) privateChatInput.value = "";
+        await fetchPrivateChat();
+      } catch (_e) {
+        if (statusEl) statusEl.textContent = "ЛС: сеть";
+      }
+    });
+  }
+
+  if (privatePeerOpenBtn && privatePeerInput) {
+    privatePeerOpenBtn.addEventListener("click", () => {
+      void openPrivatePeer(privatePeerInput.value.trim());
+    });
+  }
+  if (privateBackThreadsBtn) privateBackThreadsBtn.addEventListener("click", () => closePrivatePeerView());
+  if (privateBlockPeerBtn) {
+    privateBlockPeerBtn.addEventListener("click", async () => {
+      const peer = (privateChatPeer && privateChatPeer.value.trim()) || privatePeerActive;
+      if (!peer || !confirm("Игнорировать сообщения этого игрока в чатах?")) return;
+      try {
+        const r = await fetch("/api/chat/blocks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ blocked_id: peer }),
+        });
+        const body = await r.json();
+        if (!r.ok || !body || !body.ok) {
+          if (statusEl) statusEl.textContent = `Игнор: ${(body && body.error) || "ошибка"}`;
+          return;
+        }
+        closePrivatePeerView();
+      } catch (_e) {
+        if (statusEl) statusEl.textContent = "Игнор: сеть";
+      }
     });
   }
 
@@ -3971,8 +5303,12 @@
       renderZoneOverlay();
       void loadWorldState();
     }
-    syncMapRadiusButtons();
+    syncMapWindowUi();
     updateSelectedPanel();
+    requestAnimationFrame(() => {
+      applyMapCellSizeFromContainer();
+      syncMmoSidePanelHeights();
+    });
   })();
 
   if (homeBtn) {
@@ -3986,11 +5322,13 @@
   // При серверных автотиках интерфейс должен жить сам.
   // Обновляем state + карту раз в несколько секунд.
   setInterval(() => {
-    refreshWindow();
-    loadWorldState();
+    // `refreshWindow` уже вызывает `loadWorldState` — второй вызов дублировал опросы и мешал HUD (в т.ч. discovery).
+    void refreshWindow();
     // Если открыта статистика экономики — обновляем её вместе с тиками.
     if (economyModalOverlay && !economyModalOverlay.classList.contains("hidden")) {
       void loadEconomyModalContent();
     }
+    if (activeCommsTab === "global") void fetchGlobalChat();
+    if (activeCommsTab === "private" && privatePeerActive) void fetchPrivateChat();
   }, 3000);
 })();

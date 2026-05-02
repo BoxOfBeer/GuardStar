@@ -35,3 +35,16 @@ class Player(Base):
     feedback_audited: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, index=True
     )
+    # Модерация/персонал: сообщения не скрываются игнором в чатах (настраивается только в админке).
+    staff_chat_exempt: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
+    )
+    # Игровые роли (включаются в админке; не путать с HTTP-админтокеном).
+    is_game_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_game_moderator: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Блокировка общего/приватного чата до указанного времени (UTC).
+    chat_banned_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Полный запрет входа в игру (только снятие в админке).
+    account_disabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

@@ -1,10 +1,113 @@
 {% extends "base.html" %}
 {% block body %}
   <div class="card register-card">
-    <h2>Создать пилота</h2>
-    <form method="post" class="register-form">
+    <h2>Создать оператора</h2>
+    <form method="post" class="register-form" id="register-pilot-form">
+      <section class="pilot-rules-panel" aria-labelledby="pilot-rules-heading">
+        <h3 id="pilot-rules-heading" class="pilot-rules-title">Правила оператора GuardStar</h3>
+        <div class="pilot-rules-scroll muted">
+          <p class="pilot-rules-lead">Добро пожаловать. Перед тем как начать, важно понимать, во что ты заходишь.</p>
+
+          <h4 class="pilot-rules-h">1. Это живой проект</h4>
+          <p>Игра создаётся одним человеком и продолжает развиваться прямо сейчас.</p>
+          <ul class="pilot-rules-ul">
+            <li>здесь могут быть ошибки</li>
+            <li>механики могут меняться</li>
+            <li>баланс будет корректироваться</li>
+          </ul>
+          <p>Это не «готовый продукт», а растущая система.</p>
+
+          <h4 class="pilot-rules-h">2. Разработчик слушает, но не подчиняется</h4>
+          <p>Любые идеи, предложения и критика приветствуются.</p>
+          <p>Но:</p>
+          <ul class="pilot-rules-ul">
+            <li>решения принимаются не голосованием</li>
+            <li>игра не будет меняться по одному требованию</li>
+            <li>приоритет — целостность мира, а не удобство в моменте</li>
+          </ul>
+
+          <h4 class="pilot-rules-h">3. Никакого Pay-to-Win</h4>
+          <p>В игре не будет:</p>
+          <ul class="pilot-rules-ul">
+            <li>покупки силы</li>
+            <li>покупки победы</li>
+            <li>преимуществ за реальные деньги</li>
+          </ul>
+          <p>Донат — это поддержка проекта, а не способ выиграть.</p>
+
+          <h4 class="pilot-rules-h">4. Без «заплати или жди»</h4>
+          <p>Игра не строится на:</p>
+          <ul class="pilot-rules-ul">
+            <li>энергии «на 5 действий»</li>
+            <li>ожидании по 100 часов</li>
+            <li>искусственных ограничениях ради доната</li>
+          </ul>
+          <p>Ты играешь, потому что хочешь, а не потому что «разрешили».</p>
+
+          <h4 class="pilot-rules-h">5. Один мир для всех</h4>
+          <p>В игре не планируется:</p>
+          <ul class="pilot-rules-ul">
+            <li>десятки серверов</li>
+            <li>«перезапуски ради доната»</li>
+            <li>разделение игроков по кластерам</li>
+          </ul>
+          <p>Мир один, и ты в нём — не временно.</p>
+
+          <h4 class="pilot-rules-h">6. PvP и PvE — часть игры</h4>
+          <p>Ты не в безопасной песочнице.</p>
+          <ul class="pilot-rules-ul">
+            <li>другие игроки могут влиять на тебя</li>
+            <li>ты можешь влиять на других</li>
+            <li>конфликты — часть игрового процесса</li>
+          </ul>
+          <p>Но это не повод для токсичности.</p>
+
+          <h4 class="pilot-rules-h">7. Уважение к другим</h4>
+          <p>Простое правило:</p>
+          <p><em>не веди себя как человек, с которым сам не захотел бы играть</em></p>
+          <p>Запрещено:</p>
+          <ul class="pilot-rules-ul">
+            <li>оскорбления</li>
+            <li>спам</li>
+            <li>намеренное разрушение опыта других вне игровых механик</li>
+          </ul>
+
+          <h4 class="pilot-rules-h">8. Ответственность за свои действия</h4>
+          <p>Игра не будет спасать от каждого неверного решения.</p>
+          <ul class="pilot-rules-ul">
+            <li>потеря — часть процесса</li>
+            <li>ошибки — часть опыта</li>
+            <li>путь ты строишь сам</li>
+          </ul>
+
+          <h4 class="pilot-rules-h">9. Донат — это поддержка</h4>
+          <p>Если ты донатишь:</p>
+          <ul class="pilot-rules-ul">
+            <li>ты помогаешь проекту жить</li>
+            <li>но не покупаешь преимущество</li>
+          </ul>
+
+          <h4 class="pilot-rules-h">10. Главное</h4>
+          <p>GuardStar — это не про «быстро выиграть».</p>
+          <p>Это про:</p>
+          <ul class="pilot-rules-ul">
+            <li>развитие</li>
+            <li>принятие решений</li>
+            <li>взаимодействие с другими</li>
+          </ul>
+          <p class="pilot-rules-welcome">Если тебе близка такая философия — добро пожаловать в мир.</p>
+        </div>
+      </section>
+
       <label for="reg-display-name">Имя (любое):</label>
-      <input id="reg-display-name" name="display_name" placeholder="например, Molot" maxlength="64" />
+      <input
+        id="reg-display-name"
+        name="display_name"
+        placeholder="например, Molot"
+        maxlength="64"
+        value="{{ display_name_value or '' }}"
+        autocomplete="username"
+      />
 
       <fieldset class="race-fieldset">
         <legend class="race-legend">Раса</legend>
@@ -24,7 +127,7 @@
               </label>
               <details class="race-lore">
                 <summary class="race-lore-summary">Подробнее</summary>
-                <div class="race-lore-body">Солнечный Союз Людей — сбалансированный старт для пилота.</div>
+                <div class="race-lore-body">Солнечный Союз Людей — сбалансированный старт для оператора.</div>
               </details>
             </div>
           </div>
@@ -72,12 +175,38 @@
         {% endif %}
       </fieldset>
 
+      <div class="register-accept-wrap">
+        <label class="register-accept-label" for="reg-accept-rules">
+          <input
+            type="checkbox"
+            id="reg-accept-rules"
+            name="accept_pilot_rules"
+            value="1"
+            required
+            {% if accept_pilot_rules_checked %}checked{% endif %}
+          />
+          <span>Согласиться с правилами оператора</span>
+        </label>
+      </div>
+
       <div class="register-submit-wrap">
-        <button type="submit" class="btn-primary">Создать пилота</button>
+        <button type="submit" class="btn-primary" id="reg-submit-pilot">Создать оператора</button>
       </div>
     </form>
     {% if error %}<div class="error">{{ error }}</div>{% endif %}
     <p class="muted">Почта не нужна. Для входа будет выдан код доступа.</p>
     <p><a href="{{ url_for('web.index') }}">На главную</a></p>
   </div>
+  <script>
+    (function () {
+      var cb = document.getElementById("reg-accept-rules");
+      var btn = document.getElementById("reg-submit-pilot");
+      if (!cb || !btn) return;
+      function sync() {
+        btn.disabled = !cb.checked;
+      }
+      cb.addEventListener("change", sync);
+      sync();
+    })();
+  </script>
 {% endblock %}

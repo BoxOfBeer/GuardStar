@@ -92,12 +92,13 @@ def try_resolve_ruins_anomaly_for_sector(
     terrain: str,
     now_tick: int,
     explored: ExploredSector,
-) -> None:
+) -> dict[str, Any]:
     if terrain not in TERRAIN_DISCOVERY:
-        return
+        return {"ok": False, "reason": "not_applicable"}
     if bool(getattr(explored, "discovery_done", False)):
-        return
+        return {"ok": False, "reason": "already_done"}
 
+    headline: str | None = None
     seed = str(getattr(world, "_world_seed", "") or "")
     subtype = _source_subtype(seed, player_id, int(x), int(y), int(z), terrain)
     outcome = _weighted_outcome(
@@ -136,6 +137,7 @@ def try_resolve_ruins_anomaly_for_sector(
             "trap": "аномальная структура с полезными следами",
         }.get(subtype, "архив данных")
         msg = f"В {place} найден {subtype_ru}. Исследования быстрее на {pct}%, осталось {max(0, exp - tick)} тиков."
+        headline = msg
         world.grant_player_research_points(
             s,
             player_id=player_id,
@@ -206,6 +208,7 @@ def try_resolve_ruins_anomaly_for_sector(
                 "trap": "ловушка",
             }.get(subtype, "аномалия")
             msg = f"В {place} обнаружены фрагменты данных ({subtype_ru}). Следующее исследование дешевле по металлу и кристаллам."
+        headline = msg
         world._emit_event(
             s,
             tick=tick,
@@ -262,11 +265,15 @@ def try_resolve_ruins_anomaly_for_sector(
             )
             place = "аномалии" if terrain == "anomaly" else "руинах"
             pct = max(0, int(round((1.0 - float(mult)) * 100)))
+            headline = (
+                f"В {place} найден повреждённый маяк с телеметрией. Исследования быстрее на {pct}%, "
+                f"осталось {max(0, exp - tick)} тиков."
+            )
             world._emit_event(
                 s,
                 tick=tick,
                 type="discovery_research_boost",
-                message=f"В {place} найден повреждённый маяк с телеметрией. Исследования быстрее на {pct}%, осталось {max(0, exp - tick)} тиков.",
+                message=headline,
                 payload={
                     "x": x,
                     "y": y,
@@ -292,11 +299,15 @@ def try_resolve_ruins_anomaly_for_sector(
                 if subtype == "signal"
                 else "маяк"
             )
+            headline = (
+                f"{danger_src.capitalize()} из {place} привлёк корсаров. "
+                "Засада рядом с сектором — будьте готовы к бою."
+            )
             world._emit_event(
                 s,
                 tick=tick,
                 type="discovery_bandit_ambush",
-                message=f"{danger_src.capitalize()} из {place} привлёк корсаров. Засада рядом с сектором — будьте готовы к бою.",
+                message=headline,
                 payload={
                     "x": x,
                     "y": y,
@@ -318,3 +329,10 @@ def try_resolve_ruins_anomaly_for_sector(
             )
 
     s.flush()
+    return {
+        "ok": True,
+        "outcome": outcome,
+        "subtype": subtype,
+        "terrain": terrain,
+        "headline": headline or "Исследование завершено.",
+    }

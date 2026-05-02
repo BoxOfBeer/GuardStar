@@ -88,7 +88,7 @@
         Список «Аккаунты» — обычный запрос к таблице <code>players</code> в <b>этой</b> базе; обновление страницы ничего не сбрасывает.
         Если здесь 0, а раньше были «Молот» и др. — почти всегда другой <code>DATABASE_URL</code> (другой хост/порт/имя БД или Docker vs локальный Postgres), не та инстанция, куда вы регистрировались.
         Код доступа (32 hex-символа) в БД не хранится в открытом виде — только SHA256-хэш; при смене <code>SERVER_SALT</code> старые коды перестанут подходить, но строки в <code>players</code> останутся.
-        Интеграционные тесты создают пилотов с именем на <code>gs_py_*</code> и удаляют их после кейса; глобальный сол в тестовой БД сбрасывается между тестами.
+        Интеграционные тесты создают операторов с именем на <code>gs_py_*</code> и удаляют их после кейса; глобальный сол в тестовой БД сбрасывается между тестами.
       </p>
     </div>
 
@@ -168,8 +168,48 @@
                 <div><b>{{ p.display_name }}</b> <span class="admin-muted">({{ p.id }})</span></div>
                 <div class="admin-muted">создан: {{ p.created_at.isoformat() }}{% if p.last_login_at %} • вход: {{ p.last_login_at.isoformat() }}{% endif %}</div>
               </div>
-              <div class="admin-muted">key_hash: {{ p.access_code_hash[:12] }}… • планет: {{ p.planets_count }} • флотов: {{ p.fleets_count }} • аудит API: {% if p.feedback_audited %}<b>вкл.</b>{% else %}выкл.{% endif %}</div>
+              <div class="admin-muted">key_hash: {{ p.access_code_hash[:12] }}… • планет: {{ p.planets_count }} • флотов: {{ p.fleets_count }} • аудит API: {% if p.feedback_audited %}<b>вкл.</b>{% else %}выкл.{% endif %} • игнор в чатах не скрывает: {% if p.staff_chat_exempt %}<b>да</b> (staff){% else %}нет{% endif %} • <b>админ игры</b>: {% if p.is_game_admin %}да{% else %}нет{% endif %} • <b>модератор</b>: {% if p.is_game_moderator %}да{% else %}нет{% endif %} • <b>аккаунт отключён</b>: {% if p.account_disabled %}<b>да</b>{% else %}нет{% endif %}</div>
               <div class="row" style="gap:8px;flex-wrap:wrap;">
+                <form method="post" action="{{ url_for('web.admin_toggle_game_admin', player_id=p.id) }}?token={{ token }}" style="display:flex;gap:6px;align-items:center;">
+                  <input type="hidden" name="token" value="{{ token }}" />
+                  {% if p.is_game_admin %}
+                    <input type="hidden" name="enabled" value="0" />
+                    <button type="submit">Снять «админ»</button>
+                  {% else %}
+                    <input type="hidden" name="enabled" value="1" />
+                    <button type="submit" title="Полномочия в игровом чате и туман войны в UI">Админ</button>
+                  {% endif %}
+                </form>
+                <form method="post" action="{{ url_for('web.admin_toggle_game_moderator', player_id=p.id) }}?token={{ token }}" style="display:flex;gap:6px;align-items:center;">
+                  <input type="hidden" name="token" value="{{ token }}" />
+                  {% if p.is_game_moderator %}
+                    <input type="hidden" name="enabled" value="0" />
+                    <button type="submit">Снять «модератор»</button>
+                  {% else %}
+                    <input type="hidden" name="enabled" value="1" />
+                    <button type="submit" title="Модерация общего чата из игры">Модератор</button>
+                  {% endif %}
+                </form>
+                <form method="post" action="{{ url_for('web.admin_toggle_account_disabled', player_id=p.id) }}?token={{ token }}" style="display:flex;gap:6px;align-items:center;">
+                  <input type="hidden" name="token" value="{{ token }}" />
+                  {% if p.account_disabled %}
+                    <input type="hidden" name="enabled" value="0" />
+                    <button type="submit">Включить аккаунт</button>
+                  {% else %}
+                    <input type="hidden" name="enabled" value="1" />
+                    <button type="submit" style="border-color:#7a1f3c;color:#ff6f91;" title="Запрет входа в игру">Отключить аккаунт</button>
+                  {% endif %}
+                </form>
+                <form method="post" action="{{ url_for('web.admin_toggle_staff_chat_exempt', player_id=p.id) }}?token={{ token }}" style="display:flex;gap:6px;align-items:center;">
+                  <input type="hidden" name="token" value="{{ token }}" />
+                  {% if p.staff_chat_exempt %}
+                    <input type="hidden" name="enabled" value="0" />
+                    <button type="submit" title="Обычные правила игнора в чатах">Снять staff-чат</button>
+                  {% else %}
+                    <input type="hidden" name="enabled" value="1" />
+                    <button type="submit" title="Сообщения не фильтруются игнором; в игре бейдж не показывается">Staff в чатах</button>
+                  {% endif %}
+                </form>
                 <form method="post" action="{{ url_for('web.admin_toggle_playtest_audit', player_id=p.id) }}?token={{ token }}" style="display:flex;gap:6px;align-items:center;">
                   <input type="hidden" name="token" value="{{ token }}" />
                   {% if p.feedback_audited %}

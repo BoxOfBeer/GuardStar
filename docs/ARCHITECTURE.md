@@ -5,10 +5,10 @@
 ## Высокоуровневые слои
 
 - **Web UI (Jinja + JS)**: `server/app/templates/*`, `server/app/static/*`
-- **API (Flask)**: `server/app/routes/api.py`
-- **Web-роуты (Flask)**: `server/app/routes/web.py` (логин/регистрация/страницы/админка)
+- **API (Flask)**: `server/app/routes/api/` (blueprint `api_bp`, маршруты в `routes_*.py`)
+- **Web-роуты (Flask)**: `server/app/routes/web/` (blueprint `web_bp`, `public_routes` / `admin_routes`)
 - **Сервисы домена**:
-  - `server/app/services/world_service.py` — главный “оркестратор” домена (пока монолит).
+  - `server/app/services/world_service/` — главный “оркестратор” домена (`WorldService` из нескольких `_mixin_*.py`, общие ORM-импорты в `_deps.py`, константы в `constants.py` с явным импортом из миксинов).
   - `server/app/services/outpost_service.py` — логика форпостов, модулей и их upkeep.
   - `server/app/services/supply_service.py` — снабжение/радиусы/хабы.
   - `server/app/services/discovery_service.py` — одноразовые находки руин/аномалий.

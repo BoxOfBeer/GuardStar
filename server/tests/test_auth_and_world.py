@@ -47,22 +47,22 @@ def test_login_with_valid_code_works(client, _test_engine):
         assert me_after.status_code == 200
 
 
-def test_world_window_returns_9x9(client, _test_engine):
+def test_world_window_returns_13x13(client, _test_engine):
     with ih.registered_player(client, _test_engine, "map"):
-        r = client.get("/api/world/window?radius=4")
+        r = client.get("/api/world/window?radius=6")
         assert r.status_code == 200
         body = r.get_json()
-        assert body["radius"] == 4
+        assert body["radius"] == 6
         assert body["z"] == 0
         assert body["center"]["x"] is not None
         assert body["center"]["y"] is not None
-        assert len(body["cells"]) == 9
-        assert all(len(row["row"]) == 9 for row in body["cells"])
+        assert len(body["cells"]) == 13
+        assert all(len(row["row"]) == 13 for row in body["cells"])
 
 
 def test_world_window_visible_cells_include_influence(client, _test_engine):
     with ih.registered_player(client, _test_engine, "inflw"):
-        w = client.get("/api/world/window?radius=4&z=0").get_json()
+        w = client.get("/api/world/window?radius=6&z=0").get_json()
         visible = []
         for row in w["cells"]:
             for c in row["row"]:
@@ -88,6 +88,7 @@ def test_world_window_z_changes_and_is_deterministic(client, _test_engine):
         w0a = client.get("/api/world/window?radius=2&z=0").get_json()
         w0b = client.get("/api/world/window?radius=2&z=0").get_json()
         assert w0a == w0b
+        assert w0a["radius"] == 6
 
         w1 = client.get("/api/world/window?radius=2&z=1").get_json()
         assert w1["z"] == 1
@@ -111,7 +112,7 @@ def test_health_and_ready_endpoints(client):
 
 def test_move_scout_creates_order(client, _test_engine):
     with ih.registered_player(client, _test_engine, "move"):
-        window = client.get("/api/world/window?radius=4&z=0").get_json()
+        window = client.get("/api/world/window?radius=6&z=0").get_json()
         cx, cy = window["center"]["x"], window["center"]["y"]
 
         move = client.post("/api/units/move_scout", json={"x": cx + 1, "y": cy, "z": 0})
@@ -129,7 +130,7 @@ def test_move_scout_creates_order(client, _test_engine):
 
 def test_move_scout_rejects_second_active_order(client, _test_engine):
     with ih.registered_player(client, _test_engine, "queue"):
-        window = client.get("/api/world/window?radius=4&z=0").get_json()
+        window = client.get("/api/world/window?radius=6&z=0").get_json()
         cx, cy = window["center"]["x"], window["center"]["y"]
 
         first = client.post("/api/units/move_scout", json={"x": cx + 1, "y": cy, "z": 0})
@@ -142,12 +143,12 @@ def test_move_scout_rejects_second_active_order(client, _test_engine):
 
 def test_tick_executes_move_order(client, _test_engine):
     with ih.registered_player(client, _test_engine, "tick"):
-        window = client.get("/api/world/window?radius=4&z=0").get_json()
+        window = client.get("/api/world/window?radius=6&z=0").get_json()
         cx, cy = window["center"]["x"], window["center"]["y"]
 
         client.post("/api/units/move_scout", json={"x": cx + 1, "y": cy, "z": 0})
 
-        before_tick = client.get("/api/world/window?radius=4&z=0").get_json()
+        before_tick = client.get("/api/world/window?radius=6&z=0").get_json()
         target_before = None
         for row in before_tick["cells"]:
             for cell in row["row"]:
@@ -166,7 +167,7 @@ def test_tick_executes_move_order(client, _test_engine):
         assert tick_body["current_tick"] == 1
         assert any(e["type"] == "order_done" for e in tick_body["events"])
 
-        after_tick = client.get("/api/world/window?radius=4&z=0").get_json()
+        after_tick = client.get("/api/world/window?radius=6&z=0").get_json()
         target_after = None
         for row in after_tick["cells"]:
             for cell in row["row"]:
@@ -181,7 +182,7 @@ def test_tick_executes_move_order(client, _test_engine):
 
 def test_units_status_switches_idle_moving(client, _test_engine):
     with ih.registered_player(client, _test_engine, "ustat"):
-        window = client.get("/api/world/window?radius=4&z=0").get_json()
+        window = client.get("/api/world/window?radius=6&z=0").get_json()
         cx, cy = window["center"]["x"], window["center"]["y"]
 
         initial = client.get("/api/units/status").get_json()
@@ -213,7 +214,7 @@ def test_world_state_endpoint_shows_tick_and_unit(client, _test_engine):
         assert body0["unit"]["type"] == "scout"
         assert body0["unit"]["status"] in ("idle", "moving")
 
-        window = client.get("/api/world/window?radius=4&z=0").get_json()
+        window = client.get("/api/world/window?radius=6&z=0").get_json()
         cx, cy = window["center"]["x"], window["center"]["y"]
         client.post("/api/units/move_scout", json={"x": cx + 2, "y": cy, "z": 0})
 
@@ -225,7 +226,7 @@ def test_world_state_endpoint_shows_tick_and_unit(client, _test_engine):
 
 def test_move_scout_invalid_target_fails(client, _test_engine):
     with ih.registered_player(client, _test_engine, "badmv"):
-        window = client.get("/api/world/window?radius=4&z=0").get_json()
+        window = client.get("/api/world/window?radius=6&z=0").get_json()
         cx, cy = window["center"]["x"], window["center"]["y"]
 
         move = client.post("/api/units/move_scout", json={"x": cx, "y": cy, "z": 0})

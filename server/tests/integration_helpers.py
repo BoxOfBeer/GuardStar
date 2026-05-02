@@ -39,7 +39,7 @@ def delete_player_cascade(engine: Engine, player_id: str) -> None:
 
 
 def delete_players_display_prefix(engine: Engine, prefix: str = "gs_py_") -> None:
-    """Удалить всех тестовых пилотов по префиксу имени (хвосты после падения теста)."""
+    """Удалить всех тестовых операторов по префиксу имени (хвосты после падения теста)."""
     Session = sessionmaker(bind=engine, expire_on_commit=False)
     with Session() as s:
         ids = list(

@@ -1,9 +1,8 @@
 {% extends "base.html" %}
 {% block body %}
   <div class="topbar card">
-    <div>
-      <h2 style="margin: 0;">GuardStar</h2>
-      <div class="muted">Пилот: <b id="pilot-name">{{ data.display_name }}</b></div>
+    <div class="topbar-left">
+      <div class="muted topbar-operator">Оператор: <b id="operator-name">{{ data.display_name }}</b></div>
     </div>
     <div class="status-chip resources-bar" id="resources-chip">
       <span class="res-chip"><span class="muted" aria-hidden="true">⛏</span><span id="top-metal">—</span></span>
@@ -21,9 +20,83 @@
   </div>
 
   {% if data.planets and data.planets|length > 0 %}
-    <div class="page-grid">
-      <section class="card">
+    <div class="me-play-layout">
+    <div class="page-grid page-grid-mmo">
+      <aside id="comms-panel" class="card comms-panel" aria-label="Коммуникации и события">
+        <div class="comms-panel-head">
+          <button type="button" id="comms-collapse-btn" class="btn-secondary comms-collapse-btn" title="Свернуть или развернуть панель" aria-expanded="true" aria-controls="comms-panel-inner">‹</button>
+          <span id="comms-panel-title" class="comms-panel-title muted">События</span>
+        </div>
+        <div id="comms-panel-inner" class="comms-panel-inner">
+          <div class="comms-tabs" role="tablist" aria-label="Каналы">
+            <button type="button" class="comms-tab is-active" data-comms-tab="system" role="tab" aria-selected="true">Система</button>
+            <button type="button" class="comms-tab" data-comms-tab="global" role="tab" aria-selected="false">Общий</button>
+            <button type="button" class="comms-tab" data-comms-tab="alliance" role="tab" aria-selected="false">Альянс</button>
+            <button type="button" class="comms-tab" data-comms-tab="private" role="tab" aria-selected="false">Приват</button>
+          </div>
+          <div id="comms-pane-system" class="comms-pane is-active" role="tabpanel">
+            <div id="system-log-filters" class="system-log-filters" aria-label="Фильтр системного лога">
+              <button type="button" class="chip chip-filter is-active" data-sys-filter="all">Все</button>
+              <button type="button" class="chip chip-filter" data-sys-filter="combat">Бой</button>
+              <button type="button" class="chip chip-filter" data-sys-filter="economy">Экономика</button>
+              <button type="button" class="chip chip-filter" data-sys-filter="supply">Снабжение</button>
+              <button type="button" class="chip chip-filter" data-sys-filter="research">Исследования</button>
+              <button type="button" class="chip chip-filter" data-sys-filter="diplomacy">Дипломатия</button>
+            </div>
+            <div id="events" class="events comms-events-scroll"></div>
+          </div>
+          <div id="comms-pane-global" class="comms-pane hidden" role="tabpanel">
+            <form id="global-chat-form" class="comms-chat-form row" autocomplete="off">
+              <input id="global-chat-input" type="text" maxlength="1000" placeholder="Сообщение в общий чат…" style="flex:1;min-width:0;" />
+              <button type="submit" class="btn-primary">Отпр.</button>
+            </form>
+            <div id="global-chat-feed" class="comms-chat-feed channel-global"></div>
+          </div>
+          <div id="comms-pane-alliance" class="comms-pane hidden" role="tabpanel">
+            <p class="muted comms-stub">Альянсы в разработке. Здесь будет чат коалиции.</p>
+          </div>
+          <div id="comms-pane-private" class="comms-pane hidden" role="tabpanel">
+            <div class="row" style="gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+              <input id="private-peer-input" type="text" placeholder="UUID игрока для ЛС" style="flex:1;min-width:0;" maxlength="64" />
+              <button type="button" id="private-peer-open" class="btn-secondary">Открыть</button>
+            </div>
+            <div id="private-threads" class="private-threads muted"></div>
+            <div id="private-chat-wrap" class="hidden">
+              <form id="private-chat-form" class="comms-chat-form row" autocomplete="off">
+                <input type="hidden" id="private-chat-peer" value="" />
+                <input id="private-chat-input" type="text" maxlength="1000" placeholder="Личное сообщение…" style="flex:1;min-width:0;" />
+                <button type="submit" class="btn-primary">Отпр.</button>
+              </form>
+              <div id="private-chat-feed" class="comms-chat-feed channel-private"></div>
+              <div class="row private-chat-actions-row" style="gap:8px;margin-top:8px;">
+                <button type="button" id="private-block-peer-btn" class="btn-secondary" title="Не показывать сообщения этого игрока">Игнор</button>
+                <button type="button" id="private-back-threads-btn" class="btn-secondary">К списку</button>
+              </div>
+            </div>
+          </div>
+          <div class="comms-footer-actions">
+            <button type="button" id="chat-settings-open" class="btn-secondary" style="width:100%;">Настройка чата…</button>
+          </div>
+        </div>
+      </aside>
+
+      <section class="card map-sector-card">
         <h3 style="margin-top: 0;">Карта сектора</h3>
+        <div class="map-sector-toolbar muted map-sector-toolbar-one-line">
+          <span class="map-sector-toolbar-cluster">
+            <span class="map-sector-toolbar-label">Z-слой</span>
+            <button type="button" id="z-down" class="btn-secondary btn-toolbar-compact" title="Z − 1">−</button>
+            <button type="button" id="z-up" class="btn-secondary btn-toolbar-compact" title="Z + 1">+</button>
+            <b id="hud-z">{{ z }}</b>
+          </span>
+          <span class="map-sector-toolbar-sep" aria-hidden="true">·</span>
+          <span class="map-sector-toolbar-cluster">
+            <span class="map-sector-toolbar-label">Окно</span>
+            <b id="map-window-size-label" class="map-window-size-readout" title="Изменить размер: «Настройки UI»">—</b>
+          </span>
+          <span class="map-sector-toolbar-sep" aria-hidden="true">·</span>
+          <span id="status" class="status-line map-sector-status-inline">Ожидание действия…</span>
+        </div>
         <div class="map-wrap">
           <div class="map-layer">
             <div id="map-grid" class="map-grid"></div>
@@ -44,22 +117,8 @@
       </section>
 
       <aside class="card hud">
-        <h3>HUD пилота</h3>
-
-        <section class="hud-section">
-          <h4 class="hud-section-title">Пилот</h4>
-          <div class="hud-block muted">Имя пилота: <b>{{ data.display_name }}</b></div>
-          <div class="hud-block muted" id="hud-pop-wrap" style="font-size:90%;margin-top:0;">
-            Население дома: <b id="hud-pop">—</b> / <b id="hud-pop-max">—</b>
-          </div>
-          <div class="hud-block muted" id="hud-influence-wrap" style="font-size:88%;margin-top:0;">
-            Зона влияния (дом): <b id="hud-influence-home">—</b>
-          </div>
-        </section>
-
         <section class="hud-section">
           <h4 class="hud-section-title">Флот</h4>
-          <div class="hud-block">Активный флот: <b id="hud-unit">—</b></div>
           <div class="hud-block">
             <div class="row" style="gap:8px;margin-top:0;align-items:center;flex-wrap:wrap;">
               <select id="fleet-select" style="flex:1;min-width:0;"></select>
@@ -67,12 +126,34 @@
               <button type="button" id="fleet-edit-btn" class="btn-secondary" title="Состав и имя флота">Состав</button>
             </div>
           </div>
-          <div class="hud-block hud-kpi">Текущие координаты: <b id="hud-unit-pos">—</b></div>
-          <div class="hud-block">Текущий Z-слой: <b id="hud-z">{{ z }}</b></div>
-          <div class="hud-block">Текущий сол: <b id="hud-tick">0</b></div>
-          <div class="hud-block hud-kpi">Статус флота: <b id="hud-unit-status">ожидание</b></div>
-          <div class="hud-block">Осталось солов: <b id="hud-eta">—</b> • Прибытие (сол): <b id="hud-arrive-tick">—</b></div>
-          <div class="hud-block">Домашняя планета: <b id="hud-home">{{ data.planets[0].pos.x }}, {{ data.planets[0].pos.y }}, 0</b></div>
+          <div id="hud-fleet-detail" class="hud-fleet-detail">
+            <div class="hud-block">Активный флот: <b id="hud-unit">—</b></div>
+            <div class="hud-block hud-kpi">Текущие координаты: <b id="hud-unit-pos">—</b></div>
+            <div class="hud-block">Текущий сол: <b id="hud-tick">0</b></div>
+            <div class="hud-block hud-kpi">Статус флота: <b id="hud-unit-status">ожидание</b></div>
+            <div class="hud-block">Осталось солов: <b id="hud-eta">—</b> • Прибытие (сол): <b id="hud-arrive-tick">—</b></div>
+            <div class="hud-block">Домашняя планета: <b id="hud-home">{{ data.planets[0].pos.x }}, {{ data.planets[0].pos.y }}, 0</b></div>
+          </div>
+        </section>
+
+        <section class="hud-section">
+          <h4 class="hud-section-title">Действия</h4>
+          <div class="hud-actions">
+            <button type="button" id="fly-btn" class="btn-primary" disabled>Лететь</button>
+            <div class="hud-action-build-wrap">
+              <button type="button" id="build-btn" class="btn-secondary hud-btn-with-help" disabled>
+                <span class="hud-btn-main-label">Строительство</span
+                ><span id="build-btn-help" class="hud-help-tip-inline hidden" title="Нужен флот с хотя бы одним инженерным кораблём в этой клетке. С клетки своей планеты строить можно без инженеров." aria-label="Подсказка: инженеры">?</span>
+              </button>
+            </div>
+            <div class="hud-action-discovery-wrap">
+              <button type="button" id="discovery-resolve-btn" class="btn-secondary hud-btn-with-help hidden" disabled>
+                <span id="discovery-resolve-label" class="hud-btn-main-label">Исследовать</span
+                ><span id="discovery-resolve-help" class="hud-help-tip-inline hidden" title="Нужен ваш флот на этой клетке." aria-label="Подсказка: флот для исследования">?</span>
+              </button>
+            </div>
+            <button type="button" id="clear-sel-btn" class="btn-secondary">Снять выбор</button>
+          </div>
         </section>
 
         <section class="hud-section">
@@ -80,7 +161,7 @@
           <div class="hud-block muted" style="margin-bottom:6px;">Выбранная клетка</div>
           <div class="hud-kv">
             <div class="hud-kpi-line">Координаты: <b id="sel-coord">—</b></div>
-            <div>Ландшафт: <b id="sel-terrain">—</b> • Маркер: <b id="sel-glyph">—</b></div>
+            <div class="hud-kpi-line">Ландшафт: <b id="sel-terrain">—</b><span id="sel-glyph-wrap" class="hidden"> • Маркер: <b id="sel-glyph">—</b></span></div>
             <div>Объекты: <b id="sel-objects">—</b></div>
             <div>Контроль (видимая клетка): <b id="sel-influence">—</b></div>
             <div>Снабжение: <b id="sel-supply">—</b></div>
@@ -89,41 +170,8 @@
           </div>
         </section>
 
-        <section class="hud-section">
-          <h4 class="hud-section-title">Действия</h4>
-          <div class="hud-actions">
-            <button type="button" id="fly-btn" class="btn-primary" disabled>Лететь</button>
-            <button type="button" id="build-btn" class="btn-secondary" disabled>Строительство</button>
-            <button type="button" id="discovery-resolve-btn" class="btn-secondary hidden" title="Исследовать руины или аномалию">Исследовать</button>
-            <button type="button" id="clear-sel-btn" class="btn-secondary">Снять выбор</button>
-          </div>
-        </section>
-
-        <section class="hud-section">
-          <h4 class="hud-section-title">Карта</h4>
-          <div class="hud-block">
-            <div class="muted" style="margin-bottom:6px;">Смена Z-слоя:</div>
-            <div class="row">
-              <button type="button" id="z-down" class="btn-secondary">Z - 1</button>
-              <button type="button" id="z-up" class="btn-secondary">Z + 1</button>
-            </div>
-          </div>
-          <div class="hud-block">
-            <div class="muted" style="margin-bottom:6px;">Размер карты:</div>
-            <div class="row">
-              <button type="button" id="radius-4" class="btn-secondary">9×9</button>
-              <button type="button" id="radius-10" class="btn-secondary">21×21</button>
-            </div>
-          </div>
-        </section>
-
-        <div id="status" class="status-line">Ожидание действия…</div>
-
-        <section class="hud-section" style="margin-top:12px;">
-          <h4 class="hud-section-title">События</h4>
-          <div id="events" class="events"></div>
-        </section>
       </aside>
+    </div>
     </div>
 
     <div id="planet-modal-overlay" class="overlay hidden" role="dialog" aria-modal="true">
@@ -215,7 +263,22 @@
     <div class="card">Планет пока нет.</div>
   {% endif %}
 
-  <script id="initial-data" type="application/json">{{ {'window': window, 'z': z, 'player': data.player_id, 'home': data.planets[0].pos if data.planets and data.planets|length > 0 else None}|tojson }}</script>
+  <footer class="site-footer card" role="contentinfo">
+    <p class="site-footer-cookie">
+      Сайт использует файлы cookie и локальное хранилище браузера, чтобы сохранить сессию оператора: при следующем
+      заходе с этого устройства можно снова оказаться в игре без повторного ввода кода доступа. Не используйте общий
+      компьютер, если не хотите, чтобы другой человек зашёл под вашим оператором.
+    </p>
+    <img
+      class="site-footer-logo"
+      src="{{ url_for('static', filename='img/guardstar-logo.png') }}"
+      alt="GuardStar"
+      decoding="async"
+      loading="lazy"
+    />
+  </footer>
+
+  <script id="initial-data" type="application/json">{{ {'window': window, 'z': z, 'player': data.player_id, 'home': data.planets[0].pos if data.planets and data.planets|length > 0 else None, 'is_game_admin': data.get('is_game_admin', False), 'is_game_moderator': data.get('is_game_moderator', False)}|tojson }}</script>
 
   <div id="tech-modal-overlay" class="overlay hidden" role="dialog" aria-modal="true">
     <div class="overlay-card card tech-modal-card">
@@ -224,6 +287,34 @@
         <button type="button" id="tech-modal-close" class="planet-modal-close" aria-label="Закрыть">×</button>
       </div>
       <div id="tech-modal-body" class="planet-modal-body muted">Загрузка…</div>
+    </div>
+  </div>
+
+  <div id="comms-overlay" class="comms-overlay hidden" aria-hidden="true"></div>
+
+  <div id="chat-settings-overlay" class="overlay hidden" role="dialog" aria-modal="true">
+    <div class="overlay-card card" style="max-width:420px;">
+      <h3 style="margin-top:0;">Настройка чата</h3>
+      <p class="muted" style="font-size:90%;">Цвета каналов и личные ограничения сохраняются в браузере (localStorage), пока нет синхронизации на сервер.</p>
+      <div class="hud-kv" style="margin-top:10px;">
+        <div><label for="chat-color-system">Система / лог</label></div>
+        <input id="chat-color-system" type="color" style="width:100%;height:36px;" />
+        <div style="margin-top:8px;"><label for="chat-color-global">Общий чат</label></div>
+        <input id="chat-color-global" type="color" style="width:100%;height:36px;" />
+        <div style="margin-top:8px;"><label for="chat-color-alliance">Альянс</label></div>
+        <input id="chat-color-alliance" type="color" style="width:100%;height:36px;" />
+        <div style="margin-top:8px;"><label for="chat-color-private">Приват</label></div>
+        <input id="chat-color-private" type="color" style="width:100%;height:36px;" />
+        <label style="display:flex;gap:8px;margin-top:12px;align-items:center;cursor:pointer;">
+          <input id="chat-disable-private" type="checkbox" style="width:auto;" />
+          <span>Запретить входящие личные сообщения</span>
+        </label>
+        <div class="muted" style="margin-top:10px;font-size:88%;">Игнор-лист для ЛС синхронизируется с сервером при сохранении блокировок (кнопки в потоке приватов — позже).</div>
+      </div>
+      <div class="row" style="margin-top:14px;">
+        <button type="button" id="chat-settings-save" class="btn-primary">Сохранить</button>
+        <button type="button" id="chat-settings-close" class="btn-secondary">Закрыть</button>
+      </div>
     </div>
   </div>
 
@@ -237,10 +328,59 @@
         <input id="ui-line-height" type="range" min="1.15" max="1.6" step="0.05" />
         <div style="margin-top:12px;">Радиус окна карты при фокусе на клетку боя: <b id="ui-battle-radius-label">—</b></div>
         <input id="ui-battle-radius" type="range" min="3" max="10" step="1" />
+        <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
+          <div class="muted" style="margin-bottom:6px;">Окно тактической карты (клеток по стороне)</div>
+          <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;">
+            <button type="button" id="ui-map-window-minus" class="btn-secondary btn-toolbar-compact" title="Меньше на 2 клетки по стороне">−</button>
+            <span><b id="ui-map-window-label">—</b></span>
+            <button type="button" id="ui-map-window-plus" class="btn-secondary btn-toolbar-compact" title="Больше на 2 клетки по стороне">+</button>
+            <button type="button" id="ui-map-preset-13" class="btn-secondary btn-toolbar-compact">13×13</button>
+            <button type="button" id="ui-map-preset-17" class="btn-secondary btn-toolbar-compact">17×17</button>
+          </div>
+          <div class="muted" style="margin-top:8px;font-size:88%;line-height:1.35;">Диапазон 13…25 (шаг ±2 к стороне); сохраняется в этом браузере (localStorage).</div>
+        </div>
         <label style="display:flex;gap:8px;margin-top:10px;align-items:flex-start;cursor:pointer;">
           <input id="ui-force-attack" type="checkbox" style="width:auto;margin-top:2px;" />
           <span>Атаковать при прилёте без второго окна, если в цели вражеский флот (гарантированно).</span>
         </label>
+        <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
+          <div class="muted" style="margin-bottom:6px;">Вид карты</div>
+          <div class="ui-map-mode-row" role="group" aria-label="Вид карты">
+            <label class="ui-segment-label"><input id="ui-map-mode-tactical" type="radio" name="ui-map-mode" value="tactical" checked /> Тактический</label>
+            <label class="ui-segment-label"><input id="ui-map-mode-graphic" type="radio" name="ui-map-mode" value="graphic" /> Графический</label>
+          </div>
+          <div id="ui-map-graphic-hint" class="muted hidden" style="margin-top:8px;font-size:90%;line-height:1.4;">
+            Графический режим — задел под отдельные иконки/SVG; сейчас используются встроенные упрощённые SVG поверх клетки.
+            Если набор иконок отключён в сборке, карта остаётся тактической.
+          </div>
+          <label style="display:flex;gap:8px;margin-top:12px;align-items:center;cursor:pointer;">
+            <input id="ui-map-show-coords" type="checkbox" style="width:auto;" checked />
+            <span>Показывать координаты на клетках карты</span>
+          </label>
+        </div>
+        <div id="ui-admin-fog-wrap" class="hidden" style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
+          <div class="muted" style="margin-bottom:6px;">Администратор</div>
+          <label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;">
+            <input id="ui-reveal-fog-admin" type="checkbox" style="width:auto;margin-top:2px;" />
+            <span>Убрать туман войны на тактической карте (данные с сервера только для администратора)</span>
+          </label>
+          <p class="muted" style="margin:10px 0 6px;font-size:88%;line-height:1.35;">
+            Ландшафт клетки считается от сида мира (лениво, по координатам), без перегенерации «всей карты сервера». В окне подгружаются только объекты из БД в текущем прямоугольнике (флоты, планеты и т.д.).
+          </p>
+          <div class="muted" style="margin-bottom:6px;">Перейти на координаты (центр окна карты)</div>
+          <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;">
+            <label class="muted" style="display:flex;gap:6px;align-items:center;">X
+              <input id="ui-admin-goto-x" type="number" step="1" style="width:6.5rem;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:inherit;" />
+            </label>
+            <label class="muted" style="display:flex;gap:6px;align-items:center;">Y
+              <input id="ui-admin-goto-y" type="number" step="1" style="width:6.5rem;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:inherit;" />
+            </label>
+            <label class="muted" style="display:flex;gap:6px;align-items:center;">Z
+              <input id="ui-admin-goto-z" type="number" step="1" min="-10" max="10" style="width:4.5rem;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:inherit;" />
+            </label>
+            <button type="button" id="ui-admin-goto-btn" class="btn-secondary btn-toolbar-compact">Перейти</button>
+          </div>
+        </div>
       </div>
       <div class="row" style="margin-top:12px;">
         <button type="button" id="ui-settings-close" class="btn-secondary">Закрыть</button>

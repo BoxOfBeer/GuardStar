@@ -25,6 +25,7 @@ def test_balance_pack_loads_from_repo_default_path():
     assert svc.pack.tech_by_id.get("tech_supply_networks_1") is not None
     assert svc.pack.tech_by_id.get("tech_deep_scan_1") is not None
     assert svc.pack.buildings_by_id.get("logistics_center_t1") is not None
+    assert svc.pack.outposts_by_id.get("outpost_t1") is not None
 
     ws = WorldService(balance=svc)
     assert ws._fleet_empire_upkeep_unpaid_penalty_energy() >= 0
@@ -185,11 +186,16 @@ def test_influence_control_accumulates_with_decay_and_opposition():
     assert v2 == 0.0
 
 
-def test_influence_decay_has_building_whitelist_guard():
-    ws_path = (
-        Path(__file__).resolve().parents[1] / "app" / "services" / "world_service.py"
+def _world_service_package_source_blob() -> str:
+    root = Path(__file__).resolve().parents[1] / "app" / "services" / "world_service"
+    return "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(root.rglob("*.py"))
     )
-    txt = ws_path.read_text(encoding="utf-8")
+
+
+def test_influence_decay_has_building_whitelist_guard():
+    txt = _world_service_package_source_blob()
     assert "INFLUENCE_BUILDING_TYPES" in txt
 
 
@@ -208,10 +214,7 @@ def test_balance_contains_outposts_and_territory_techs():
 
 def test_get_sector_stub_regression_guard_no_pobj_typo():
     # Regression guard: раньше в get_sector_stub было pobj.owner_player_id (NameError).
-    ws_path = (
-        Path(__file__).resolve().parents[1] / "app" / "services" / "world_service.py"
-    )
-    txt = ws_path.read_text(encoding="utf-8")
+    txt = _world_service_package_source_blob()
     assert "pobj.owner_player_id" not in txt
 
 
