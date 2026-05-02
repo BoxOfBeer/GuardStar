@@ -55,7 +55,7 @@ def calc_planet_production(*, planet_level: int = 1) -> ProductionPlan:
     lvl = max(1, int(planet_level))
     return ProductionPlan(
         metal_per_tick=6 * lvl,
-        crystal_per_tick=3 * lvl,
+        crystal_per_tick=5 * lvl,
         energy_per_tick=2 * lvl,
         fuel_per_tick=2 * lvl,
         food_per_tick=1 * lvl,

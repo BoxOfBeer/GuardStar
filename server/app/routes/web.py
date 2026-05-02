@@ -18,12 +18,17 @@ from app.db.models.event import Event
 from app.db.models.planet import Planet
 from app.db.models.fleet import Fleet
 from app.db.models.admin_config import AdminConfig
+from app.db.models.feedback_message import FeedbackMessage
+from app.db.models.world_state import WorldState
 from sqlalchemy import delete, func, select
 import uuid
 
 from app.build_info import BUILD_ID, GAME_VERSION
 
 web_bp = Blueprint("web", __name__)
+
+_DISCORD_INVITE_URL = "https://discord.gg/7Wf4hRJSZu"
+_FEEDBACK_CATEGORIES = frozenset({"bug", "idea", "other"})
 
 
 @web_bp.get("/favicon.ico")
@@ -62,13 +67,19 @@ def register():
             key=lambda r: str(r.get("name") or r.get("id") or ""),
         )
     if request.method == "GET":
-        return render_template("register.html", races=races)
+        return render_template("register.html", races=races, selected_race_id=None)
 
+    form_race = (request.form.get("race_id") or "").strip() or None
     display_name = (request.form.get("display_name") or "").strip()
     if not display_name:
-        return render_template("register.html", error="Введите имя.", races=races)
+        return render_template(
+            "register.html",
+            error="Введите имя.",
+            races=races,
+            selected_race_id=form_race,
+        )
 
-    race_id = (request.form.get("race_id") or "").strip() or "human"
+    race_id = form_race or "human"
     if race_id and balance:
         try:
             r = balance.get_race(race_id)
@@ -76,7 +87,10 @@ def register():
             r = None
         if not isinstance(r, dict) or r.get("enabled") is False:
             return render_template(
-                "register.html", error="Выберите расу из списка.", races=races
+                "register.html",
+                error="Выберите расу из списка.",
+                races=races,
+                selected_race_id=form_race,
             )
 
     auth = AuthService(server_salt=current_app.config["SERVER_SALT"])
@@ -234,26 +248,188 @@ def account_delete():
     return redirect(url_for("web.index"))
 
 
-def _require_admin_token() -> str:
-    token = (request.args.get("token") or "").strip()
-    # Админский токен живёт в БД (хэш), чтобы не зависеть от env.
+@web_bp.route("/feedback", methods=["GET", "POST"])
+def feedback():
+    player_id = _require_login()
+    if not player_id:
+        return redirect(url_for("web.login"))
+
+    if request.method == "GET":
+        sent = request.args.get("sent")
+        category = (request.args.get("category") or "bug").strip()
+        if category not in _FEEDBACK_CATEGORIES:
+            category = "bug"
+        return render_template(
+            "feedback.html",
+            discord_url=_DISCORD_INVITE_URL,
+            sent_ok=bool(sent),
+            error=None,
+            category=category,
+            body_prefill="",
+        )
+
+    category = (request.form.get("category") or "bug").strip()
+    if category not in _FEEDBACK_CATEGORIES:
+        category = "bug"
+    body = (request.form.get("body") or "").strip()
+    if len(body) < 3:
+        return render_template(
+            "feedback.html",
+            discord_url=_DISCORD_INVITE_URL,
+            sent_ok=False,
+            error="Напишите хотя бы пару слов (от 3 символов).",
+            category=category,
+            body_prefill=body,
+        )
+    if len(body) > 6000:
+        body = body[:6000]
+
+    with db_session() as s:
+        pid = uuid.UUID(player_id)
+        player = s.execute(select(Player).where(Player.id == pid)).scalar_one_or_none()
+        if not player:
+            session.clear()
+            return redirect(url_for("web.index"))
+        ws = s.execute(select(WorldState).where(WorldState.id == 1)).scalar_one_or_none()
+        tick = int(ws.current_tick) if ws else None
+        msg = FeedbackMessage(
+            pilot_name=(player.display_name or "")[:64],
+            category=category,
+            body=body,
+            player_id=pid,
+            current_tick=tick,
+        )
+        s.add(msg)
+        s.commit()
+
+    return redirect(url_for("web.feedback", sent=1))
+
+
+def _db_connection_label(database_url: str) -> str:
+    """Хост и имя БД без пароля — чтобы сверить, та ли это база, где лежат игроки."""
+    try:
+        from sqlalchemy.engine.url import make_url
+
+        u = make_url(database_url)
+        host = u.host or "?"
+        if u.port:
+            host = f"{host}:{u.port}"
+        dbn = u.database or "?"
+        return f"{host} · «{dbn}»"
+    except Exception:
+        return "не удалось разобрать DATABASE_URL"
+
+
+def _admin_token_raw() -> str:
+    return (request.args.get("token") or request.form.get("token") or "").strip()
+
+
+def _admin_expected_token_hash() -> str:
     with db_session() as s:
         cfg = s.execute(
             select(AdminConfig).where(AdminConfig.id == 1)
         ).scalar_one_or_none()
-        expected_hash = (cfg.admin_token_hash if cfg else "").strip()
-    if not expected_hash:
-        abort(403)
+        return (cfg.admin_token_hash if cfg else "").strip()
+
+
+def _admin_token_valid(token: str) -> bool:
+    t = (token or "").strip()
+    expected_hash = _admin_expected_token_hash()
+    if not expected_hash or not t:
+        return False
     auth = AuthService(server_salt=current_app.config["SERVER_SALT"])
-    if auth.hash_access_code(token) != expected_hash:
+    return auth.hash_access_code(t) == expected_hash
+
+
+def _require_admin_token() -> str:
+    tok = _admin_token_raw()
+    if not _admin_token_valid(tok):
         abort(403)
-    return token
+    return tok
+
+
+@web_bp.get("/admin/world")
+def admin_world_legacy_redirect():
+    return redirect(
+        url_for(
+            "web.admin_hub",
+            token=(request.args.get("token") or "").strip(),
+            tab="world",
+        )
+    )
 
 
 @web_bp.get("/admin/accounts")
-def admin_accounts():
-    token = _require_admin_token()
+def admin_accounts_legacy_redirect():
+    return redirect(
+        url_for(
+            "web.admin_hub",
+            token=(request.args.get("token") or "").strip(),
+            tab="accounts",
+        )
+    )
+
+
+@web_bp.get("/admin")
+def admin_hub():
+    token_in = _admin_token_raw()
+    tab = (request.args.get("tab") or "world").strip()
+    if tab not in ("world", "accounts", "feedback"):
+        tab = "world"
+
+    authorized = _admin_token_valid(token_in)
+    if not authorized:
+        return render_template(
+            "admin_hub.html",
+            title="GuardStar — админка",
+            authorized=False,
+            token_field_value=token_in,
+            tab=tab,
+            bad_token=bool(token_in),
+            game_version=GAME_VERSION,
+            build_id=BUILD_ID,
+        )
+
+    token = token_in
+
     with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        ws = world.get_or_create_world_state(s)
+
+        runtime = {
+            "auto_tick_running": bool(
+                current_app.extensions.get("auto_tick_scheduler")
+            ),
+            "auto_tick_last_run_at": current_app.extensions.get(
+                "auto_tick_last_run_at"
+            ),
+            "auto_tick_last_tick": current_app.extensions.get("auto_tick_last_tick"),
+            "auto_tick_error": current_app.extensions.get("auto_tick_error"),
+        }
+        spawn_min = max(0, int(getattr(ws, "player_spawn_min_manhattan", 25) or 25))
+
+        planets_n = int(
+            s.execute(select(func.count()).select_from(Planet)).scalar_one()
+        )
+
+        data = {
+            "auto_tick_enabled": bool(ws.auto_tick_enabled),
+            "auto_tick_interval_seconds": float(ws.auto_tick_interval_seconds),
+            "current_tick": int(ws.current_tick),
+            "player_spawn_min_manhattan": spawn_min,
+            "planets_registered": planets_n,
+            "runtime": runtime,
+            "api_app": "guardstar",
+            "game_version": GAME_VERSION,
+            "build_id": BUILD_ID,
+            "balance_schema_version": balance.balance_schema_version()
+            if balance
+            else None,
+        }
+
         players = (
             s.execute(select(Player).order_by(Player.created_at.desc())).scalars().all()
         )
@@ -292,50 +468,30 @@ def admin_accounts():
                 }
             )
 
-    return render_template("admin_accounts.html", players=payload, token=token)
-
-
-@web_bp.get("/admin/world")
-def admin_world():
-    token = _require_admin_token()
-    with db_session() as s:
-        balance = current_app.extensions.get("balance_service")
-        world = WorldService(
-            world_seed=current_app.config["SERVER_SALT"], balance=balance
-        )
-        ws = world.get_or_create_world_state(s)
-
-        runtime = {
-            "auto_tick_running": bool(
-                current_app.extensions.get("auto_tick_scheduler")
-            ),
-            "auto_tick_last_run_at": current_app.extensions.get(
-                "auto_tick_last_run_at"
-            ),
-            "auto_tick_last_tick": current_app.extensions.get("auto_tick_last_tick"),
-            "auto_tick_error": current_app.extensions.get("auto_tick_error"),
-        }
-        spawn_min = max(0, int(getattr(ws, "player_spawn_min_manhattan", 25) or 25))
-
-        planets_n = int(
-            s.execute(select(func.count()).select_from(Planet)).scalar_one()
+        feedback_messages = (
+            s.execute(
+                select(FeedbackMessage)
+                .order_by(FeedbackMessage.created_at.desc())
+                .limit(400)
+            )
+            .scalars()
+            .all()
         )
 
-        data = {
-            "auto_tick_enabled": bool(ws.auto_tick_enabled),
-            "auto_tick_interval_seconds": float(ws.auto_tick_interval_seconds),
-            "current_tick": int(ws.current_tick),
-            "player_spawn_min_manhattan": spawn_min,
-            "planets_registered": planets_n,
-            "runtime": runtime,
-            "api_app": "guardstar",
-            "game_version": GAME_VERSION,
-            "build_id": BUILD_ID,
-            "balance_schema_version": balance.balance_schema_version()
-            if balance
-            else None,
-        }
-    return render_template("admin_world.html", token=token, data=data)
+    return render_template(
+        "admin_hub.html",
+        title="GuardStar — админка",
+        authorized=True,
+        token=token,
+        tab=tab,
+        players=payload,
+        data=data,
+        feedback_messages=feedback_messages,
+        discord_url=_DISCORD_INVITE_URL,
+        db_connection_label=_db_connection_label(
+            str(current_app.config.get("DATABASE_URL") or "")
+        ),
+    )
 
 
 @web_bp.post("/admin/world/autotick")
@@ -383,7 +539,7 @@ def admin_world_autotick():
     except Exception as e:
         current_app.extensions["auto_tick_error"] = repr(e)
 
-    return redirect(url_for("web.admin_world", token=token))
+    return redirect(url_for("web.admin_hub", token=token, tab="world"))
 
 
 @web_bp.post("/admin/world/spawn")
@@ -406,7 +562,20 @@ def admin_world_spawn_settings():
         ws.player_spawn_min_manhattan = int(v)
         s.commit()
 
-    return redirect(url_for("web.admin_world", token=token))
+    return redirect(url_for("web.admin_hub", token=token, tab="world"))
+
+
+@web_bp.post("/admin/world/tick_once")
+def admin_world_tick_once():
+    token = _require_admin_token()
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        world.process_next_tick(s)
+        s.commit()
+    return redirect(url_for("web.admin_hub", token=token, tab="world"))
 
 
 @web_bp.post("/admin/accounts/<player_id>/playtest-audit")
@@ -426,12 +595,12 @@ def admin_toggle_playtest_audit(player_id: str):
         s.commit()
 
     invalidate_feedback_audited_cache(pid_s)
-    return redirect(url_for("web.admin_accounts", token=token))
+    return redirect(url_for("web.admin_hub", token=token, tab="accounts"))
 
 
 @web_bp.post("/admin/accounts/<player_id>/delete")
 def admin_delete_player(player_id: str):
-    _require_admin_token()
+    token = _require_admin_token()
     with db_session() as s:
         pid = uuid.UUID(player_id)
         s.execute(delete(Event).where(Event.player_id == pid))
@@ -439,7 +608,18 @@ def admin_delete_player(player_id: str):
         if player:
             s.delete(player)
         s.commit()
-    return redirect(url_for("web.admin_accounts", token=request.args.get("token")))
+    return redirect(url_for("web.admin_hub", token=token, tab="accounts"))
+
+
+@web_bp.post("/admin/feedback/<int:message_id>/delete")
+def admin_feedback_delete(message_id: int):
+    token = _require_admin_token()
+    with db_session() as s:
+        msg = s.get(FeedbackMessage, message_id)
+        if msg:
+            s.delete(msg)
+            s.commit()
+    return redirect(url_for("web.admin_hub", token=token, tab="feedback"))
 
 
 @web_bp.post("/admin/accounts/<player_id>/regenerate")

@@ -5,8 +5,9 @@
       <h2 style="margin: 0;">Аккаунт</h2>
       <div class="muted">Пилот: <b>{{ player.display_name }}</b></div>
     </div>
-    <a href="{{ url_for('web.me') }}">Назад в игру</a>
-    <form method="post" action="{{ url_for('web.logout') }}">
+    <a href="{{ url_for('web.me') }}" class="status-chip" style="text-decoration:none;">Назад в игру</a>
+    <a href="{{ url_for('web.feedback') }}" class="status-chip" style="text-decoration:none;">Обратная связь</a>
+    <form method="post" action="{{ url_for('web.logout') }}" style="display:inline;">
       <button type="submit">Выйти</button>
     </form>
   </div>
@@ -15,9 +16,12 @@
     <div class="hud-kv">
       <div><span class="muted">Имя</span> — <b>{{ player.display_name }}</b></div>
       <div><span class="muted">Дата регистрации</span> — <b>{{ player.created_at.isoformat() }}</b></div>
-      <div><span class="muted">Ключ доступа</span> — <b>{{ access_code or "не показываем (храним только хеш)" }}</b></div>
       {% if access_code %}
-        <div class="muted">Скопируй ключ сейчас: мы покажем его только один раз.</div>
+      <p class="access-code-label"><b>Код доступа (сохрани его):</b></p>
+      <div class="access-code-value" translate="no">{{ access_code }}</div>
+      <div class="muted">Скопируй ключ сейчас: мы покажем его только один раз.</div>
+      {% else %}
+      <div><span class="muted">Ключ доступа</span> — <b>не показываем (храним только хеш)</b></div>
       {% endif %}
       <div><span class="muted">Хеш ключа</span> — <span class="muted">{{ player.access_code_hash[:12] }}…</span></div>
     </div>

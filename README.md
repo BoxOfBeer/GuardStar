@@ -8,6 +8,7 @@ MVP браузерной игры с единым миром (Flask + PostgreSQL
 
 - Инструкции по запуску: `server/README.md`
 - Переменные окружения: используйте `server/.env.example` (файл `server/.env` в репозиторий не добавляется)
+- Плейтест для игроков: чеклист в `docs/PLAYTEST.md`
 
 ## Коротко по командам
 
@@ -15,7 +16,7 @@ MVP браузерной игры с единым миром (Flask + PostgreSQL
 cd server
 cp .env.example .env
 pip install -r requirements.txt
-alembic upgrade head
+python -m alembic upgrade head
 python run.py
 ```
 

@@ -130,7 +130,7 @@
   ```json
   {
     "app": "guardstar",
-    "game_version": "01.017",
+    "game_version": "01.019",
     "balance_schema_version": 1,
     "balance_pack_id": "<string-or-null>",
     "balance_pack_name": "<string-or-null>",

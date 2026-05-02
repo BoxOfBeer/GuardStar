@@ -15,13 +15,15 @@
   - `server/app/services/balance_service.py` — загрузка JSON-пака баланса и вычисления (upkeep/travel).
   - `server/app/services/auto_tick.py` — планировщик автосола (APScheduler).
 - **Данные (PostgreSQL)**: модели `server/app/db/models/*`, миграции `server/app/db/migrations/*`.
+- **Схема БД**: основной путь — Alembic `upgrade head`. В `create_app()` опционально включается dev-safety-net (`GUARDSTAR_DB_SAFETY_NET`, по умолчанию в локалке `true`): `create_all()` + аварийные `ALTER`/`CREATE`. Для плейтеста/прода рекомендуется `false`.
 - **Баланс (JSON)**: `server/data/balance/*` (buildings/units/tech/races/economy/aliases/meta).
 
 ## Основной цикл “сол” (tick)
 
 Источник истины: `WorldService.process_next_tick()` — выполняется либо:
 - автосолом (`auto_tick.py`), либо
-- вручную `POST /api/world/tick`.
+- из админки: `POST /admin/world/tick_once` (токен), либо
+- по API с сессией игрока: `POST /api/world/tick` (в HUD кнопки ручного шага нет).
 
 Типичный порядок внутри тика (упрощённо):
 - завершение исследований (PlayerTech).

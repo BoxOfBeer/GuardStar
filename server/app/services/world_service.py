@@ -231,12 +231,18 @@ class WorldService:
             .scalars()
             .all()
         )
-        if rows:
-            pos = {r.unit_type: int(r.qty) for r in rows if int(r.qty) > 0}
-            if pos:
-                return pos
-        if int(fleet.qty) > 0 and fleet.unit_type:
-            return {str(fleet.unit_type): int(fleet.qty)}
+        pos = {r.unit_type: int(r.qty) for r in rows if int(r.qty) > 0}
+        tot_rows = sum(pos.values())
+        fq = int(fleet.qty) if fleet.qty else 0
+        # Если строки fleet_ships неполные, а legacy qty больше — добиваем «невидимых»
+        # кораблей в доминантный тип (частая причина пропажи скаута после полевой стройки).
+        if pos and fleet.unit_type and fq > tot_rows:
+            ut = str(fleet.unit_type)
+            pos[ut] = int(pos.get(ut, 0)) + (fq - tot_rows)
+        if pos:
+            return pos
+        if fq > 0 and fleet.unit_type:
+            return {str(fleet.unit_type): fq}
         return {}
 
     def _cell_has_planet(self, s: Session, *, x: int, y: int, z: int) -> bool:
@@ -254,7 +260,19 @@ class WorldService:
         pos = {str(k): int(v) for k, v in units.items() if int(v) > 0}
         tot = sum(pos.values())
         if tot <= 0:
-            fleet.qty = 0
+            fid = fleet.id
+            pid_ev = fleet.owner_player_id
+            s.delete(fleet)
+            s.flush()
+            ws = self.get_or_create_world_state(s)
+            self._emit_event(
+                s,
+                tick=ws.current_tick,
+                type="fleet_disbanded",
+                message="Флот расформирован (0 кораблей)",
+                payload={"fleet_id": str(fid), "reason": "empty_composition"},
+                player_id=str(pid_ev),
+            )
             return
         for ut, q in pos.items():
             s.add(FleetShip(fleet_id=fleet.id, unit_type=ut, qty=int(q)))
@@ -970,7 +988,7 @@ class WorldService:
             name="Терра Прайм",
             pos_x=x,
             pos_y=y,
-            population=800,
+            population=600,
             max_population=max_pop,
             planet_class=planet_class,
             build_slots_total=slots_total,
@@ -1904,6 +1922,8 @@ class WorldService:
             .all()
         )
         for f in fleets_in_cell:
+            if not self._fleet_units_map(s, f):
+                continue
             owner_ids.add(f.owner_player_id)
         for op in outposts_in_cell:
             owner_ids.add(op.owner_player_id)
@@ -1950,6 +1970,12 @@ class WorldService:
                     "fuel_per_tick": dlt["fuel"],
                     "food_per_tick": dlt["food"],
                     "water_per_tick": dlt["water"],
+                    "metal_per_sol": dlt["metal"],
+                    "crystal_per_sol": dlt["crystal"],
+                    "energy_per_sol": dlt["energy"],
+                    "fuel_per_sol": dlt["fuel"],
+                    "food_per_sol": dlt["food"],
+                    "water_per_sol": dlt["water"],
                 }
                 built_total = int(
                     s.execute(
@@ -1995,13 +2021,15 @@ class WorldService:
 
         for f in fleets_in_cell:
             comp = self._fleet_units_map(s, f)
+            if not comp:
+                continue
             sector["objects"].append(
                 {
                     "type": "fleet",
                     "id": str(f.id),
                     "name": self._fleet_public_name(f),
                     "unit_type": f.unit_type,
-                    "qty": f.qty,
+                    "qty": int(sum(int(v) for v in comp.values())),
                     "composition": comp,
                     "energy": int(getattr(f, "energy", 0) or 0),
                     "max_energy": int(getattr(f, "max_energy", 100) or 100),
@@ -2140,7 +2168,8 @@ class WorldService:
             .all()
         )
         for f in fleets:
-            owner_ids.add(f.owner_player_id)
+            if self._fleet_units_map(s, f):
+                owner_ids.add(f.owner_player_id)
 
         owners = {}
         if owner_ids:
@@ -2151,14 +2180,17 @@ class WorldService:
                 .all()
             }
         for f in fleets:
+            comp = self._fleet_units_map(s, f)
+            if not comp:
+                continue
             by_pos.setdefault((f.pos_x, f.pos_y), []).append(
                 {
                     "type": "fleet",
                     "id": str(f.id),
                     "name": self._fleet_public_name(f),
                     "unit_type": f.unit_type,
-                    "qty": f.qty,
-                    "composition": self._fleet_units_map(s, f),
+                    "qty": int(sum(int(v) for v in comp.values())),
+                    "composition": comp,
                     "energy": int(getattr(f, "energy", 0) or 0),
                     "max_energy": int(getattr(f, "max_energy", 100) or 100),
                     "owner": str(f.owner_player_id),
@@ -3265,7 +3297,7 @@ class WorldService:
             if isinstance(prod.get(k), (int, float)) and float(prod[k]) != 0:
                 v = int(prod[k])
                 sign = "+" if v > 0 else ""
-                parts.append(f"{sign}{v} {ru}/тик")
+                parts.append(f"{sign}{v} {ru}/сол")
         if (
             isinstance(eff.get("max_population_add"), (int, float))
             and float(eff["max_population_add"]) != 0
@@ -4718,11 +4750,15 @@ class WorldService:
         z: int,
         fleet_id: str | None = None,
     ) -> Fleet | None:
-        q = select(Fleet).where(
-            Fleet.owner_player_id == owner_id,
-            Fleet.pos_x == x,
-            Fleet.pos_y == y,
-            Fleet.pos_z == z,
+        q = (
+            select(Fleet)
+            .where(
+                Fleet.owner_player_id == owner_id,
+                Fleet.pos_x == x,
+                Fleet.pos_y == y,
+                Fleet.pos_z == z,
+            )
+            .order_by(Fleet.created_at.asc())
         )
         if fleet_id:
             try:
@@ -6988,6 +7024,14 @@ class WorldService:
                 }
             )
 
+        from app.services.economy_service import EconomyService
+
+        pl_row = s.get(Player, pid)
+        rp_bal = float(getattr(pl_row, "research_points", 0) or 0) if pl_row else 0.0
+        rp_per_sol = float(
+            EconomyService(world=self)._player_rp_info(s, player_id=pid).per_sol
+        )
+
         return {
             "current_tick": ws.current_tick,
             "current_sol": int(ws.current_tick),
@@ -7009,7 +7053,17 @@ class WorldService:
                 "fuel": fuel,
                 "food": food,
                 "water": water,
+                "research_points": round(rp_bal, 4),
+                "research_points_per_sol": round(rp_per_sol, 4),
                 "production_per_tick": {
+                    "metal": prod_per_tick["metal"],
+                    "crystal": prod_per_tick["crystal"],
+                    "energy": prod_per_tick["energy"],
+                    "fuel": prod_per_tick["fuel"],
+                    "food": prod_per_tick["food"],
+                    "water": prod_per_tick["water"],
+                },
+                "production_per_sol": {
                     "metal": prod_per_tick["metal"],
                     "crystal": prod_per_tick["crystal"],
                     "energy": prod_per_tick["energy"],
@@ -7030,6 +7084,7 @@ class WorldService:
                     "water": pop_water_need,
                 },
                 "upkeep_energy_per_tick": upkeep_energy,
+                "upkeep_energy_per_sol": upkeep_energy,
                 "fleet_units": fleet_units,
                 "energy_ticks_left": energy_ticks_left,
                 "influence": {

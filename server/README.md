@@ -10,7 +10,7 @@
 - **Discovery (руины/аномалии)**: одноразовые находки с бустами/кэшем/засадой; **явное** взаимодействие кнопкой.
 - **Исследования**: 1 слот очереди; старт исследования тратит **очки исследования (RP)** и идёт короткий остаточный таймер.
 - **Расы**: модификаторы экономики/перелётов/влияния/боя из `data/balance/races.json`.
-- **Админка**: `/admin/world` и `/admin/accounts` (токеном).
+- **Админка**: `/admin` (вкладки мир/аккаунты/обратная связь, `?token=…`).
 
 ## Переменные окружения
 Скопируйте `.env.example` в `.env` и при необходимости отредактируйте:
@@ -18,7 +18,7 @@
 - `SECRET_KEY` — ключ сессии Flask.
 - `SERVER_SALT` — соль/seed для процедурной генерации и auth.
 - `DATABASE_URL` — строка подключения к PostgreSQL.
-- `TEST_DATABASE_URL` — отдельная БД для `pytest` (опционально).
+- `TEST_DATABASE_URL` — БД для интеграционных тестов (см. «Тесты»): тестовые пилоты `gs_py_*`, без `TRUNCATE` всей базы.
 - `ADMIN_TOKEN` — включить админку (токен передаётся query-параметром `?token=...`).
 
 ## Локальный запуск
@@ -61,13 +61,30 @@ python run.py
 - API: `http://127.0.0.1:5000/api/me`
 
 Админка (если задан `ADMIN_TOKEN` и вы перезапустили сервер):
-- `http://127.0.0.1:5000/admin/world?token=<ADMIN_TOKEN>`
-- `http://127.0.0.1:5000/admin/accounts?token=<ADMIN_TOKEN>`
+- `http://127.0.0.1:5000/admin?token=<ADMIN_TOKEN>`
 
 ## Тесты
 
+Безопасно для вашей игровой БД (только баланс/юнит-тесты, **без** `drop_all`):
+
 ```bash
+pytest -q tests/test_balance.py
+```
+
+Полный набор, включая `tests/test_auth_and_world.py`, регистрирует пилотов с префиксом **`gs_py_`**, после каждого теста удаляет их из БД и сбрасывает глобальный сол в 0. Рекомендуется отдельная база:
+
+```bash
+# PostgreSQL: CREATE DATABASE guardstar_test;
+set TEST_DATABASE_URL=postgresql+psycopg://guardstar:guardstar@127.0.0.1:5432/guardstar_test
 pytest -q
 ```
 
-> Если тесты пропускаются, задайте `TEST_DATABASE_URL` или `DATABASE_URL` с доступной PostgreSQL.
+> Раньше при отсутствии `TEST_DATABASE_URL` подставлялся `DATABASE_URL` — один запуск `pytest` мог **обнулить `players`** в `guardstar`. Так больше не делаем.
+
+## Открытый плейтест (кратко)
+
+1. `python -m alembic upgrade head`
+2. В `.env` для хоста плейтеста: **`GUARDSTAR_DB_SAFETY_NET=false`** (схема только через миграции; без авто-`ALTER` при старте).
+3. Задать стабильные **`SERVER_SALT`**, **`SECRET_KEY`**, **`ADMIN_TOKEN`**.
+4. Чеклист и детали: `docs/PLAYTEST.md`.
+5. Опционально: в `/admin/accounts` включить аудит API для отдельных игроков (`feedback_audited`), только с их согласия.

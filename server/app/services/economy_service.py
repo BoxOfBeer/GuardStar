@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models.building import Building
@@ -287,6 +287,42 @@ class EconomyService:
             else 0,
         }
 
+        bal = getattr(self._world, "_balance", None)
+        stock_buildings = {"metal": 0, "crystal": 0, "energy": 0, "fuel": 0}
+        stock_fleet_ships = {"metal": 0, "crystal": 0, "energy": 0, "fuel": 0}
+        if bal:
+            for b in buildings:
+                bt = str(getattr(b, "building_type", "") or "").strip().lower()
+                if not bt:
+                    continue
+                try:
+                    bd = bal.get_building(bt)
+                except Exception:
+                    continue
+                bbuild = bd.get("build") if isinstance(bd.get("build"), dict) else {}
+                bc = bbuild.get("cost") if isinstance(bbuild.get("cost"), dict) else {}
+                lvl = max(1, int(getattr(b, "level", 1) or 1))
+                for k in stock_buildings:
+                    v = int(bc.get(k, 0) or 0) if isinstance(bc.get(k), (int, float)) else 0
+                    if v:
+                        stock_buildings[k] += v * lvl
+            for f in fleets:
+                if int(getattr(f, "qty", 0) or 0) <= 0:
+                    continue
+                um = getattr(self._world, "_fleet_units_map")(s, f)
+                for ut, n in (um or {}).items():
+                    qty = int(n) or 0
+                    if qty <= 0:
+                        continue
+                    try:
+                        parts = getattr(self._world, "_unit_build_cost_parts")(str(ut))
+                    except Exception:
+                        parts = {}
+                    if not isinstance(parts, dict):
+                        parts = {}
+                    for k in stock_fleet_ships:
+                        stock_fleet_ships[k] += int(parts.get(k, 0) or 0) * qty
+
         fleets_payload = []
         for f in fleets:
             if int(getattr(f, "qty", 0) or 0) <= 0:
@@ -330,6 +366,11 @@ class EconomyService:
                     "energy": int(upkeep_energy),
                     "fleets": fleet_count,
                 },
+            },
+            "construction_reference": {
+                "note": "Справочно: сумма цен из баланса для текущих построек (×уровень) и кораблей во флотах; не ежесолевая статья расходов.",
+                "buildings_replacement_cost": stock_buildings,
+                "fleet_ships_replacement_cost": stock_fleet_ships,
             },
             "planets": planet_rows,
             "buildings": buildings_info,

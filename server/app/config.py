@@ -15,5 +15,10 @@ class Config:
         self.AUTO_TICK_INTERVAL_SECONDS = float(
             os.environ.get("AUTO_TICK_INTERVAL_SECONDS", "5")
         )
-        # Если пусто — админка отключена (всё будет 403).
-        self.ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
+        # Если переменная ADMIN_TOKEN не задана в окружении — временный дефолт для личного инстанса.
+        # Явно задайте ADMIN_TOKEN="" чтобы не подставлять дефолт (хэш не запишется при пустом env).
+        self.ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "1662916644")
+        # Локальный dev: create_all + аварийные ALTER/CREATE. Для открытого плейтеста/прода — false и только Alembic.
+        self.GUARDSTAR_DB_SAFETY_NET = os.environ.get(
+            "GUARDSTAR_DB_SAFETY_NET", "true"
+        ).lower() in ("1", "true", "yes", "on")

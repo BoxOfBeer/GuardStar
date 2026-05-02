@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block body %}
+  <div class="topbar card">
+    <div>
+      <h2 style="margin: 0;">Обратная связь</h2>
+      <div class="muted">Баги, идеи, впечатления о плейтесте</div>
+    </div>
+    <a href="{{ url_for('web.me') }}">Моя империя</a>
+    <a href="{{ url_for('web.account') }}">Аккаунт</a>
+  </div>
+
+  <div class="card" style="max-width:720px;margin-top:14px;">
+    {% if sent_ok %}
+      <p style="color:#61eaa3;margin-top:0;">Спасибо, сообщение сохранено на сервере. По желанию продублируйте в Discord — так быстрее обсудить детали.</p>
+    {% endif %}
+    {% if error %}
+      <p style="color:#ff8a9e;margin-top:0;">{{ error }}</p>
+    {% endif %}
+
+    <p class="muted" style="margin-top:0;">
+      Постоянное приглашение GuardStar в Discord:
+      <a href="{{ discord_url }}" target="_blank" rel="noopener noreferrer">{{ discord_url }}</a>.
+      Для багрепортов удобен канал <b>«баги»</b> — можно приложить скрин и обсудить вживую.
+    </p>
+
+    <form method="post" action="{{ url_for('web.feedback') }}" style="display:grid;gap:12px;">
+      <label>
+        <span class="muted">Тип</span>
+        <select name="category" style="width:100%;max-width:320px;padding:8px;margin-top:4px;">
+          <option value="bug" {% if category == 'bug' %}selected{% endif %}>Баг / ошибка</option>
+          <option value="idea" {% if category == 'idea' %}selected{% endif %}>Идея / предложение</option>
+          <option value="other" {% if category == 'other' %}selected{% endif %}>Другое</option>
+        </select>
+      </label>
+      <label>
+        <span class="muted">Текст (до 6000 символов)</span>
+        <textarea name="body" rows="12" style="width:100%;box-sizing:border-box;padding:10px;margin-top:4px;font-family:inherit;">{{ body_prefill }}</textarea>
+      </label>
+      <button type="submit">Отправить</button>
+    </form>
+  </div>
+{% endblock %}

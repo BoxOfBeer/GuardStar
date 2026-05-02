@@ -1048,6 +1048,15 @@ def api_tech_state():
         current_tick = int(ws.current_tick) if ws else 0
         pl = s.get(Player, pid)
         rp_bal = float(getattr(pl, "research_points", 0) or 0) if pl else 0.0
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        from app.services.economy_service import EconomyService
+
+        rp_per_sol = float(
+            EconomyService(world=world)._player_rp_info(s, player_id=pid).per_sol
+        )
         payload = []
         for r in rows:
             remaining = None
@@ -1071,6 +1080,7 @@ def api_tech_state():
                 "current_tick": current_tick,
                 "current_sol": current_tick,
                 "research_points": round(rp_bal, 4),
+                "research_points_per_sol": round(rp_per_sol, 4),
                 "techs": payload,
             }
         )

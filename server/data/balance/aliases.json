@@ -8,7 +8,11 @@
 
     "engineer": "engineer_t1",
 
-    "corvette": "corvette_t1"
+    "corvette": "corvette_t1",
+
+    "supplier": "supplier_t1",
+
+    "freighter": "freighter_t1"
 
   },
 

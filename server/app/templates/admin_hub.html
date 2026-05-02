@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block head_extra %}
+  <style>
+    .admin-token-panel { max-width: 420px; margin: 0 auto; }
+    .admin-token-panel input[type="text"] { width: 100%; box-sizing: border-box; padding: 8px 10px; margin-top: 6px; }
+    .admin-nav { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; align-items: center; }
+    .admin-nav a {
+      text-decoration: none; padding: 6px 12px; border-radius: 8px;
+      border: 1px solid rgba(97, 234, 163, 0.35); color: #cfe9dc;
+      background: rgba(10, 19, 36, 0.65);
+    }
+    .admin-nav a.admin-tab-active {
+      border-color: #61eaa3; box-shadow: 0 0 0 1px rgba(97, 234, 163, 0.25);
+    }
+    .admin-row { display: flex; gap: 24px; flex-wrap: wrap; }
+    .admin-card {
+      border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 12px; padding: 16px;
+      min-width: 300px; flex: 1 1 320px; background: rgba(10, 19, 36, 0.72);
+    }
+    .admin-card h3 { margin-top: 0; }
+    .admin-muted { color: rgba(203, 224, 235, 0.62); font-size: 92%; }
+    .admin-card label { display: block; margin-top: 10px; }
+    .admin-card input[type="number"] { width: 140px; padding: 6px 8px; }
+    .admin-card button { margin-top: 12px; padding: 8px 12px; }
+    .admin-card code { background: rgba(0, 0, 0, 0.35); padding: 2px 6px; border-radius: 6px; }
+    .admin-section-title { scroll-margin-top: 96px; }
+    .feedback-admin-item {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08); padding: 12px 0;
+      display: grid; gap: 6px;
+    }
+    .feedback-admin-item pre {
+      margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 88%;
+      background: rgba(0, 0, 0, 0.35); padding: 10px; border-radius: 8px; max-height: 240px; overflow: auto;
+    }
+    .err-flash { color: #ff8a9e; margin-bottom: 10px; }
+  </style>
+{% endblock %}
+{% block body %}
+  {% if not authorized %}
+    <div class="topbar card admin-token-panel">
+      <div>
+        <h2 style="margin: 0;">Админка</h2>
+        <p class="admin-muted">Доступ по секретному токену (хранится на сервере как хэш). Введите токен ниже или откройте ссылку с <code>?token=…</code>.</p>
+      </div>
+      {% if bad_token %}<p class="err-flash">Токен не подходит или админка не настроена.</p>{% endif %}
+      <form method="get" action="{{ url_for('web.admin_hub') }}" style="margin-top:12px;">
+        <input type="hidden" name="tab" value="{{ tab }}" />
+        <label>
+          Токен
+          <input type="text" name="token" value="{{ token_field_value }}" autocomplete="off" spellcheck="false" />
+        </label>
+        <button type="submit" style="margin-top:12px;">Войти</button>
+      </form>
+      <p class="admin-muted" style="margin-top:14px;">
+        Версия игры (справочно): <code>{{ game_version }}</code> · <code>{{ build_id }}</code>
+      </p>
+      <p style="margin-top:16px;"><a href="{{ url_for('web.index') }}">На главную</a></p>
+    </div>
+  {% else %}
+    <div class="topbar card">
+      <div>
+        <h2 style="margin: 0;">Админка</h2>
+        <div class="admin-muted">Единая панель · игрокам: форма <a href="{{ url_for('web.feedback') }}">/feedback</a></div>
+      </div>
+      <form method="get" action="{{ url_for('web.admin_hub') }}" class="row" style="gap:8px;align-items:flex-end;flex-wrap:wrap;">
+        <input type="hidden" name="tab" value="{{ tab }}" />
+        <label style="margin:0;">
+          <span class="admin-muted" style="display:block;font-size:80%;">Токен</span>
+          <input type="text" name="token" value="{{ token }}" autocomplete="off" spellcheck="false" style="min-width:200px;padding:6px 8px;" />
+        </label>
+        <button type="submit">Применить</button>
+      </form>
+      <a href="{{ url_for('web.index') }}">На главную</a>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <div class="admin-nav">
+        <a href="{{ url_for('web.admin_hub', token=token, tab='world') }}" class="{% if tab == 'world' %}admin-tab-active{% endif %}">Мир</a>
+        <a href="{{ url_for('web.admin_hub', token=token, tab='accounts') }}" class="{% if tab == 'accounts' %}admin-tab-active{% endif %}">Аккаунты</a>
+        <a href="{{ url_for('web.admin_hub', token=token, tab='feedback') }}" class="{% if tab == 'feedback' %}admin-tab-active{% endif %}">Обратная связь</a>
+      </div>
+      <p class="admin-muted">
+        Discord для живого обсуждения багов: <a href="{{ discord_url }}" target="_blank" rel="noopener noreferrer">{{ discord_url }}</a>
+        (канал «баги»). Сообщения из игры дублируются не автоматически — игрок может написать и там.
+      </p>
+      <p class="admin-muted" style="margin-top:12px;border-top:1px solid rgba(255,255,255,0.08);padding-top:12px;line-height:1.45;">
+        <b>PostgreSQL для этого процесса:</b> <code>{{ db_connection_label }}</code>.
+        Список «Аккаунты» — обычный запрос к таблице <code>players</code> в <b>этой</b> базе; обновление страницы ничего не сбрасывает.
+        Если здесь 0, а раньше были «Молот» и др. — почти всегда другой <code>DATABASE_URL</code> (другой хост/порт/имя БД или Docker vs локальный Postgres), не та инстанция, куда вы регистрировались.
+        Код доступа (32 hex-символа) в БД не хранится в открытом виде — только SHA256-хэш; при смене <code>SERVER_SALT</code> старые коды перестанут подходить, но строки в <code>players</code> останутся.
+        Интеграционные тесты создают пилотов с именем на <code>gs_py_*</code> и удаляют их после кейса; глобальный сол в тестовой БД сбрасывается между тестами.
+      </p>
+    </div>
+
+    <section id="admin-tab-world" class="admin-section-title" style="margin-top:18px;">
+      <h3 class="admin-muted" style="margin-bottom:10px;">Мир и автосол</h3>
+      <div class="admin-row">
+        <div class="admin-card">
+          <h3>Версия API и билда</h3>
+          <p>Приложение: <code>{{ data.api_app }}</code> · игра: <code>{{ data.game_version }}</code></p>
+          <p><code>BUILD_ID</code>: <code>{{ data.build_id }}</code></p>
+          {% if data.balance_schema_version %}
+          <p>Схема баланса: <code>{{ data.balance_schema_version }}</code></p>
+          {% endif %}
+          <p class="admin-muted">В клиентском UI эти поля не показываются.</p>
+        </div>
+
+        <div class="admin-card">
+          <h3>Автосол</h3>
+          <p>Текущий сол: <code>{{ data.current_tick }}</code></p>
+          <p>Включён: <code>{{ 'да' if data.auto_tick_enabled else 'нет' }}</code></p>
+          <p>Интервал (сек): <code>{{ '%.1f'|format(data.auto_tick_interval_seconds) }}</code></p>
+          <p>Статус воркера: <code>{{ 'работает' if data.runtime.auto_tick_running else 'остановлен' }}</code></p>
+          <p>Последний запуск: <code>{{ data.runtime.auto_tick_last_run_at or '—' }}</code> · последний сол: <code>{{ data.runtime.auto_tick_last_tick or '—' }}</code></p>
+          <p>Ошибка планировщика: <code>{{ data.runtime.auto_tick_error or '—' }}</code></p>
+
+          <form method="post" action="{{ url_for('web.admin_world_autotick', token=token) }}">
+            <input type="hidden" name="token" value="{{ token }}" />
+            <label>
+              <input type="checkbox" name="enabled" value="1" {% if data.auto_tick_enabled %}checked{% endif %} />
+              Включить автосол
+            </label>
+            <label>
+              Интервал (1..60 сек):
+              <input type="number" min="1" max="60" step="1" name="interval_seconds" value="{{ data.auto_tick_interval_seconds|int }}" />
+            </label>
+            <button type="submit">Применить (перезапуск job)</button>
+          </form>
+        </div>
+
+        <div class="admin-card">
+          <h3>Спавн новых игроков</h3>
+          <p class="admin-muted">Минимальное расстояние Манхэттена от любой существующей планеты до новой домашней при регистрации.</p>
+          <p>Планет в мире: <code>{{ data.planets_registered }}</code></p>
+          <p>Текущее значение: <code>{{ data.player_spawn_min_manhattan }}</code> клеток</p>
+
+          <form method="post" action="{{ url_for('web.admin_world_spawn_settings', token=token) }}">
+            <input type="hidden" name="token" value="{{ token }}" />
+            <label>
+              Новый минимум (0–500):
+              <input type="number" min="0" max="500" step="1" name="player_spawn_min_manhattan" value="{{ data.player_spawn_min_manhattan }}" />
+            </label>
+            <button type="submit">Сохранить</button>
+          </form>
+        </div>
+
+        <div class="admin-card">
+          <h3>Один сол вручную</h3>
+          <p class="admin-muted" style="font-size:0.88rem;line-height:1.45;">
+            Один дискретный шаг мира для всех игроков (то же, что делает игровой API при тике): производство, ордера, исследования и т.д. Раньше была кнопка «Сол» в HUD — теперь только здесь или через автосол.
+          </p>
+          <p class="admin-muted" style="margin-bottom:8px;">Текущий сол до шага: <code>{{ data.current_tick }}</code></p>
+          <form method="post" action="{{ url_for('web.admin_world_tick_once', token=token) }}">
+            <input type="hidden" name="token" value="{{ token }}" />
+            <button type="submit">Провести один сол</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <section id="admin-tab-accounts" class="admin-section-title" style="margin-top:28px;">
+      <h3 class="admin-muted" style="margin-bottom:10px;">Аккаунты ({{ players|length }})</h3>
+      <div class="card" style="background:rgba(10,19,36,0.72);border-color:rgba(255,255,255,0.12);">
+        <div class="events" style="max-height:520px;">
+          {% for p in players %}
+            <div class="event feedback-admin-item" style="border:none;padding-top:0;">
+              <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+                <div><b>{{ p.display_name }}</b> <span class="admin-muted">({{ p.id }})</span></div>
+                <div class="admin-muted">создан: {{ p.created_at.isoformat() }}{% if p.last_login_at %} • вход: {{ p.last_login_at.isoformat() }}{% endif %}</div>
+              </div>
+              <div class="admin-muted">key_hash: {{ p.access_code_hash[:12] }}… • планет: {{ p.planets_count }} • флотов: {{ p.fleets_count }} • аудит API: {% if p.feedback_audited %}<b>вкл.</b>{% else %}выкл.{% endif %}</div>
+              <div class="row" style="gap:8px;flex-wrap:wrap;">
+                <form method="post" action="{{ url_for('web.admin_toggle_playtest_audit', player_id=p.id) }}?token={{ token }}" style="display:flex;gap:6px;align-items:center;">
+                  <input type="hidden" name="token" value="{{ token }}" />
+                  {% if p.feedback_audited %}
+                    <input type="hidden" name="enabled" value="0" />
+                    <button type="submit">Отключить лог действий</button>
+                  {% else %}
+                    <input type="hidden" name="enabled" value="1" />
+                    <button type="submit" title="POST/PUT/PATCH/DELETE в отдельную таблицу">Включить лог действий</button>
+                  {% endif %}
+                </form>
+                <form method="post" action="{{ url_for('web.admin_regenerate_player_access_code', player_id=p.id) }}?token={{ token }}" onsubmit="return confirm('Сбросить ключ доступа для {{ p.display_name }}?');">
+                  <input type="hidden" name="token" value="{{ token }}" />
+                  <button type="submit">Сбросить ключ</button>
+                </form>
+                <form method="post" action="{{ url_for('web.admin_delete_player', player_id=p.id) }}?token={{ token }}" onsubmit="return confirm('Удалить аккаунт {{ p.display_name }}?');">
+                  <input type="hidden" name="token" value="{{ token }}" />
+                  <button type="submit" style="border-color:#7a1f3c;color:#ff6f91;">Удалить</button>
+                </form>
+              </div>
+            </div>
+          {% endfor %}
+          {% if players|length == 0 %}
+            <div class="admin-muted">Пока нет аккаунтов.</div>
+          {% endif %}
+        </div>
+      </div>
+    </section>
+
+    <section id="admin-tab-feedback" class="admin-section-title" style="margin-top:28px;margin-bottom:48px;">
+      <h3 class="admin-muted" style="margin-bottom:10px;">Обратная связь (последние записи)</h3>
+      <div class="card" style="background:rgba(10,19,36,0.72);border-color:rgba(255,255,255,0.12);">
+        {% if feedback_messages|length == 0 %}
+          <div class="admin-muted">Пока нет сообщений.</div>
+        {% endif %}
+        {% for m in feedback_messages %}
+          <div class="feedback-admin-item">
+            <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+              <div><b>#{{ m.id }}</b> · {{ m.category }} · <b>{{ m.pilot_name }}</b>{% if m.player_id %} <span class="admin-muted">({{ m.player_id }})</span>{% endif %}</div>
+              <div class="admin-muted">{{ m.created_at.isoformat() }}{% if m.current_tick is not none %} · сол {{ m.current_tick }}{% endif %}</div>
+            </div>
+            <pre>{{ m.body }}</pre>
+            <form method="post" action="{{ url_for('web.admin_feedback_delete', message_id=m.id) }}?token={{ token }}" onsubmit="return confirm('Удалить сообщение #{{ m.id }}?');">
+              <input type="hidden" name="token" value="{{ token }}" />
+              <button type="submit" style="border-color:#7a1f3c;color:#ff6f91;">Удалить</button>
+            </form>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <script>
+      document.addEventListener("DOMContentLoaded", function () {
+        var tab = {{ tab | tojson }};
+        var el = document.getElementById("admin-tab-" + tab);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    </script>
+  {% endif %}
+{% endblock %}

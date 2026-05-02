@@ -7,8 +7,16 @@
   let currentZ = Number.isInteger(initial.z) ? initial.z : 0;
   const home = initial.home || { x: 0, y: 0 };
   const playerId = initial.player || null;
-  const FLEET_ADJUST_KEYS = ["scout", "fighter", "engineer"];
-  const FLEET_UNIT_LABELS = { scout: "Разведчик", fighter: "Истребитель", engineer: "Инженер" };
+  /** Резерв если баланс ещё не подгрузился. Реальный список типов берётся из `aliases.unit_aliases` в `/api/balance`. */
+  const DEFAULT_FLEET_QTY_KEYS = ["scout", "fighter", "engineer"];
+  const DEFAULT_FLEET_UNIT_LABELS = {
+    scout: "Разведчик",
+    fighter: "Истребитель",
+    engineer: "Инженер",
+    corvette: "Корвет",
+    supplier: "Снабженец",
+    freighter: "Фрахтовщик",
+  };
   const TERRAIN_RU = {
     empty: "Пустой космос",
     planet: "Планета",
@@ -146,6 +154,11 @@
   const fleetCreateBody = document.getElementById("fleet-create-body");
   const fleetCreateTitle = document.getElementById("fleet-create-title");
   const fleetCreateClose = document.getElementById("fleet-create-close");
+  const fleetSubOverlay = document.getElementById("fleet-sub-overlay");
+  const fleetSubTitle = document.getElementById("fleet-sub-title");
+  const fleetSubBody = document.getElementById("fleet-sub-body");
+  const fleetSubFoot = document.getElementById("fleet-sub-foot");
+  const fleetSubClose = document.getElementById("fleet-sub-close");
   const techModalOverlay = document.getElementById("tech-modal-overlay");
   const techModalBody = document.getElementById("tech-modal-body");
   const techModalOpenBtn = document.getElementById("tech-modal-open");
@@ -154,7 +167,6 @@
   const economyModalBody = document.getElementById("economy-modal-body");
   const economyModalOpenBtn = document.getElementById("economy-modal-open");
   const economyModalCloseBtn = document.getElementById("economy-modal-close");
-  const manualTickBtn = document.getElementById("manual-tick-btn");
   const uiSettingsBtn = document.getElementById("ui-settings-btn");
   const uiSettingsOverlay = document.getElementById("ui-settings-overlay");
   const uiSettingsClose = document.getElementById("ui-settings-close");
@@ -178,6 +190,7 @@
   const topFuelEl = document.getElementById("top-fuel");
   const topFoodEl = document.getElementById("top-food");
   const topWaterEl = document.getElementById("top-water");
+  const topRpEl = document.getElementById("top-rp");
   const overlayEl = document.getElementById("confirm-overlay");
   const cfFromEl = document.getElementById("cf-from");
   const cfToEl = document.getElementById("cf-to");
@@ -253,29 +266,107 @@
     return worldState && worldState.fleet ? worldState.fleet : null;
   };
 
-  const engineerFleetForCell = (cell) => {
-    if (!cell) return null;
-    const direct = (cell.objects || []).find(
-      (o) =>
+  const engineerFleetsForCell = (cell) => {
+    if (!cell) return [];
+    const out = [];
+    const seen = new Set();
+    for (const o of cell.objects || []) {
+      if (
         o &&
         o.type === "fleet" &&
         String(o.owner) === String(playerId) &&
         o.composition &&
-        Number(o.composition.engineer || 0) > 0,
-    );
-    if (direct) return direct;
+        Number(o.composition.engineer || 0) > 0
+      ) {
+        out.push(o);
+        if (o.id) seen.add(String(o.id));
+      }
+    }
     const fleets = Array.isArray(worldState && worldState.fleets) ? worldState.fleets : [];
-    return (
-      fleets.find(
-        (f) =>
-          f &&
-          f.x === cell.x &&
-          f.y === cell.y &&
-          f.z === cell.z &&
-          f.composition &&
-          Number(f.composition.engineer || 0) > 0,
-      ) || null
-    );
+    for (const f of fleets) {
+      if (!f || !f.id || seen.has(String(f.id))) continue;
+      if (
+        f.x === cell.x &&
+        f.y === cell.y &&
+        f.z === cell.z &&
+        f.composition &&
+        Number(f.composition.engineer || 0) > 0
+      ) {
+        out.push(f);
+        seen.add(String(f.id));
+      }
+    }
+    return out;
+  };
+
+  const engineerFleetForCell = (cell) => {
+    const arr = engineerFleetsForCell(cell);
+    return arr.length ? arr[0] : null;
+  };
+
+  const escHtml = (s) =>
+    String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/"/g, "&quot;");
+
+  /** Общий кэш `/api/balance` (переиспользуется исследованиями, и составом флота). */
+  const fetchBalanceCached = async () => {
+    if (!window.__guardstarBalanceCache)
+      window.__guardstarBalanceCache = { ts: 0, body: null, backoffUntil: 0 };
+    const cache = window.__guardstarBalanceCache;
+    const now = Date.now();
+    if (cache.backoffUntil && now < cache.backoffUntil) return cache.body;
+    let balBody = cache.body;
+    if (!balBody || now - cache.ts > 30000) {
+      const balResp = await fetch("/api/balance");
+      balBody = await balResp.json();
+      cache.ts = now;
+      cache.body = balBody;
+      if (!balResp.ok || !balBody || !balBody.ok) cache.backoffUntil = now + 15000;
+      else cache.backoffUntil = 0;
+    }
+    return balBody;
+  };
+
+  const fleetLogicalKeysBalanceOnly = () => {
+    const bb = window.__guardstarBalanceCache && window.__guardstarBalanceCache.body;
+    if (!bb || !bb.ok) return DEFAULT_FLEET_QTY_KEYS.slice();
+    const ua = bb.aliases && bb.aliases.unit_aliases;
+    if (!ua || typeof ua !== "object") return DEFAULT_FLEET_QTY_KEYS.slice();
+    const keys = Object.keys(ua).filter((k) => typeof k === "string" && k.trim());
+    return keys.length ? keys.sort((a, b) => a.localeCompare(b)) : DEFAULT_FLEET_QTY_KEYS.slice();
+  };
+
+  /** Строки в модалке флота: все алиасы из баланса + типы с ненулевым количеством в текущем составе. */
+  const fleetQtyKeysForUi = (comp) => {
+    const merged = new Set(fleetLogicalKeysBalanceOnly());
+    if (comp && typeof comp === "object") {
+      for (const [k, raw] of Object.entries(comp)) {
+        if (!k) continue;
+        if (Number(raw) > 0) merged.add(String(k));
+      }
+    }
+    return Array.from(merged).sort((a, b) => a.localeCompare(b));
+  };
+
+  const fleetUnitLabel = (logicalKey) => {
+    const k = String(logicalKey || "");
+    if (!k) return k;
+    if (DEFAULT_FLEET_UNIT_LABELS[k]) return DEFAULT_FLEET_UNIT_LABELS[k];
+    const bb = window.__guardstarBalanceCache && window.__guardstarBalanceCache.body;
+    if (!bb || !bb.ok) return k;
+    const ua = bb.aliases && bb.aliases.unit_aliases;
+    const uid =
+      ua && typeof ua === "object" && Object.prototype.hasOwnProperty.call(ua, k)
+        ? ua[k]
+        : null;
+    if (!uid || typeof uid !== "string") return k;
+    const units = Array.isArray(bb.units) ? bb.units : [];
+    let hit = units.find((u) => u && String(u.id) === String(uid));
+    if (!hit) hit = units.find((u) => u && String(u.id) === String(k));
+    const nm = hit && typeof hit.name === "string" && hit.name.trim() ? hit.name.trim() : null;
+    return nm || k;
   };
 
   const formatComposition = (com) => {
@@ -284,10 +375,25 @@
     if (!parts.length) return "";
     return parts
       .map(([k, q]) => {
-        const lab = FLEET_UNIT_LABELS[k] || k;
+        const lab = fleetUnitLabel(k);
         return `${lab}×${q}`;
       })
       .join(" · ");
+  };
+
+  const buildingLabelRu = (logicalType) => {
+    const k = String(logicalType || "").trim().toLowerCase();
+    if (!k) return String(logicalType || "");
+    const bb = window.__guardstarBalanceCache && window.__guardstarBalanceCache.body;
+    if (!bb || !bb.ok) return k;
+    const ba = bb.aliases && bb.aliases.building_aliases;
+    const bid =
+      ba && typeof ba === "object" && Object.prototype.hasOwnProperty.call(ba, k)
+        ? ba[k]
+        : k;
+    const buildings = Array.isArray(bb.buildings) ? bb.buildings : [];
+    const hit = buildings.find((b) => b && String(b.id) === String(bid));
+    return hit && hit.name ? String(hit.name) : k;
   };
 
   const fleetOptionLabel = (f) => {
@@ -298,11 +404,114 @@
     return `${nm} — ${core} @ (${f.x},${f.y},${f.z})`;
   };
 
-  const escHtml = (s) =>
-    String(s ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/"/g, "&quot;");
+  const FLEET_UNIT_GLYPH = {
+    scout: "🛰",
+    fighter: "⚔",
+    engineer: "🛠",
+    supplier: "📦",
+    freighter: "🚚",
+    corvette: "🚀",
+  };
+
+  const resolveBalanceUnit = (logicalKey) => {
+    const k = String(logicalKey || "");
+    if (!k) return null;
+    const bb = window.__guardstarBalanceCache && window.__guardstarBalanceCache.body;
+    if (!bb || !bb.ok) return null;
+    const ua = bb.aliases && bb.aliases.unit_aliases;
+    const uid =
+      ua && typeof ua === "object" && Object.prototype.hasOwnProperty.call(ua, k) ? ua[k] : k;
+    const units = Array.isArray(bb.units) ? bb.units : [];
+    return (
+      units.find((u) => u && String(u.id) === String(uid)) ||
+      units.find((u) => u && String(u.id) === String(k)) ||
+      null
+    );
+  };
+
+  const fleetUnitGlyph = (logicalKey) => FLEET_UNIT_GLYPH[String(logicalKey)] || "⬡";
+
+  const fleetUiRoleGroup = (logicalKey) => {
+    const u = resolveBalanceUnit(logicalKey);
+    const role = u && u.role ? String(u.role) : "";
+    if (role === "scout") return "recon";
+    if (role === "combat") return "combat";
+    return "tech";
+  };
+
+  const unitBuildCostParts = (logicalKey) => {
+    const u = resolveBalanceUnit(logicalKey);
+    const bc = (u && u.build) || {};
+    const cst = bc.cost || {};
+    const out = { metal: 0, crystal: 0, energy: 0, fuel: 0 };
+    for (const rk of Object.keys(out)) {
+      if (typeof cst[rk] === "number") out[rk] = Math.floor(Number(cst[rk]));
+    }
+    return out;
+  };
+
+  const fleetCompositionNet = (cur, newd) => {
+    const pay = { metal: 0, crystal: 0, energy: 0, fuel: 0 };
+    const refund = { metal: 0, crystal: 0, energy: 0, fuel: 0 };
+    const keys = new Set([...Object.keys(cur || {}), ...Object.keys(newd || {})]);
+    for (const k of keys) {
+      const oldN = Math.max(0, Math.floor(Number((cur || {})[k]) || 0));
+      const newN = Math.max(0, Math.floor(Number((newd || {})[k]) || 0));
+      const diff = newN - oldN;
+      if (diff === 0) continue;
+      const cst = unitBuildCostParts(k);
+      if (diff > 0) {
+        for (const rk of Object.keys(pay)) pay[rk] += (Number(cst[rk]) || 0) * diff;
+      } else {
+        for (const rk of Object.keys(refund))
+          refund[rk] += Math.floor((Number(cst[rk]) || 0) * Math.abs(diff) * 0.5);
+      }
+    }
+    const net = {
+      metal: pay.metal - refund.metal,
+      crystal: pay.crystal - refund.crystal,
+      energy: pay.energy - refund.energy,
+      fuel: pay.fuel - refund.fuel,
+    };
+    return { pay, refund, net };
+  };
+
+  const formatImpWarehouseNetHtml = (net) => {
+    const parts = [];
+    const one = (k, lab) => {
+      const v = Math.floor(Number(net[k]) || 0);
+      if (!v) return;
+      if (v > 0) parts.push(`${lab}: <b>−${v}</b> со склада`);
+      else parts.push(`${lab}: <b>+${-v}</b> возврат`);
+    };
+    one("metal", "Металл");
+    one("crystal", "Кристалл");
+    one("energy", "Энергия");
+    one("fuel", "Топливо");
+    return parts.length ? parts.join(" · ") : "Без изменений по складу домашней планеты.";
+  };
+
+  const closeFleetSubModal = () => {
+    if (fleetSubOverlay) fleetSubOverlay.classList.add("hidden");
+    if (fleetSubFoot) fleetSubFoot.innerHTML = "";
+    if (fleetSubBody) fleetSubBody.innerHTML = "";
+  };
+
+  const openFleetSubModal = ({ title, bodyHtml, confirmLabel, onConfirm }) => {
+    if (!fleetSubOverlay || !fleetSubTitle || !fleetSubBody || !fleetSubFoot) return;
+    fleetSubTitle.textContent = title;
+    fleetSubBody.innerHTML = bodyHtml;
+    fleetSubFoot.innerHTML = `<button type="button" class="btn-primary fleet-sub-ok">${escHtml(confirmLabel)}</button><button type="button" class="btn-secondary fleet-sub-cancel">Отмена</button>`;
+    const ok = fleetSubFoot.querySelector(".fleet-sub-ok");
+    const cancel = fleetSubFoot.querySelector(".fleet-sub-cancel");
+    if (cancel) cancel.addEventListener("click", () => closeFleetSubModal());
+    if (ok) {
+      ok.addEventListener("click", async () => {
+        await onConfirm();
+      });
+    }
+    fleetSubOverlay.classList.remove("hidden");
+  };
 
   const setStatus = (text, kind) => {
     if (!statusEl) return;
@@ -324,7 +533,7 @@
     return { x: home.x, y: home.y, z: currentZ };
   };
 
-  const unitLabelCombat = (k) => FLEET_UNIT_LABELS[k] || k;
+  const unitLabelCombat = (k) => fleetUnitLabel(k);
 
   const formatFleetCombatPayloadRu = (p) => {
     if (!p || typeof p !== "object") return "";
@@ -437,10 +646,15 @@
 
   const bindBuildButtons = (root, x, y, z, fleetId = null) => {
     if (!root) return;
+    const resolveBuildFleetId = () => {
+      const sel = root.querySelector("#sector-builder-fleet");
+      if (sel && sel.value) return String(sel.value);
+      return fleetId;
+    };
     for (const btn of root.querySelectorAll("button[data-b]")) {
       btn.addEventListener("click", async () => {
         const bt = btn.getAttribute("data-b");
-        await placeBuilding(x, y, z, bt, fleetId);
+        await placeBuilding(x, y, z, bt, resolveBuildFleetId());
       });
     }
     for (const btn of root.querySelectorAll("button[data-demolish]")) {
@@ -461,10 +675,15 @@
 
   const bindOutpostButtons = (root, ctx) => {
     if (!root || !ctx) return;
+    const resolveCtxFleetId = () => {
+      const sel = root.querySelector("#sector-builder-fleet");
+      if (sel && sel.value) return String(sel.value);
+      return ctx.fleetId || null;
+    };
     for (const btn of root.querySelectorAll("button[data-outpost]")) {
       btn.addEventListener("click", async () => {
         const outpostType = btn.getAttribute("data-outpost");
-        await buildOutpost(ctx.x, ctx.y, ctx.z, outpostType, ctx.fleetId || null);
+        await buildOutpost(ctx.x, ctx.y, ctx.z, outpostType, resolveCtxFleetId());
       });
     }
     for (const btn of root.querySelectorAll("button[data-outpost-upgrade]")) {
@@ -737,7 +956,7 @@
           }
           if (o.type === "building") {
             const bt = o.building_type ? String(o.building_type) : "постройка";
-            return bt;
+            return buildingLabelRu(bt);
           }
           return o.type || "объект";
         };
@@ -748,7 +967,8 @@
           const counts = {};
           for (const b of buildings) {
             const bt = b && b.building_type ? String(b.building_type) : "постройка";
-            counts[bt] = (counts[bt] || 0) + 1;
+            const label = buildingLabelRu(bt);
+            counts[label] = (counts[label] || 0) + 1;
           }
           const top = Object.entries(counts)
             .sort((a, b) => b[1] - a[1])
@@ -1098,15 +1318,17 @@
     const outpostOwn = (sector.objects || []).find((o) => o && o.type === "outpost" && String(o.owner) === String(playerId));
 
     if (planetOwn && planetOwn.details) {
+      await fetchBalanceCached();
       const d = planetOwn.details;
       const unitsNz = (d.units || []).filter((it) => it && Number(it.qty) > 0);
-      const u = unitsNz.map((it) => `${it.unit_type}×${it.qty}`).join(", ") || "нет";
-      const mp = d.production ? d.production.metal_per_tick : 0;
-      const cp = d.production ? d.production.crystal_per_tick : 0;
-      const ep = d.production ? d.production.energy_per_tick : 0;
-      const fp = d.production ? d.production.fuel_per_tick : 0;
-      const fdp = d.production ? d.production.food_per_tick : 0;
-      const wp = d.production ? d.production.water_per_tick : 0;
+      const u = unitsNz.map((it) => `${fleetUnitLabel(it.unit_type)}×${it.qty}`).join(", ") || "нет";
+      const pr = d.production || {};
+      const mp = pr.metal_per_sol != null ? pr.metal_per_sol : pr.metal_per_tick || 0;
+      const cp = pr.crystal_per_sol != null ? pr.crystal_per_sol : pr.crystal_per_tick || 0;
+      const ep = pr.energy_per_sol != null ? pr.energy_per_sol : pr.energy_per_tick || 0;
+      const fp = pr.fuel_per_sol != null ? pr.fuel_per_sol : pr.fuel_per_tick || 0;
+      const fdp = pr.food_per_sol != null ? pr.food_per_sol : pr.food_per_tick || 0;
+      const wp = pr.water_per_sol != null ? pr.water_per_sol : pr.water_per_tick || 0;
       const ownName = planetOwn.owner_name ? ` • ${planetOwn.owner_name}` : "";
       const cls = d.planet_class ? String(d.planet_class) : "—";
       const slotsLine =
@@ -1129,7 +1351,7 @@
       } else if (cellBuildings.length && cell.terrain !== "planet") {
         const b = cellBuilding;
         const bid = b && b.id ? String(b.id) : "";
-        buildHtml = `<div>На клетке: <b>${escHtml(b && b.building_type ? b.building_type : "постройка")}</b> (ур. ${Number((b && b.level) || 1) || 1}).</div>`;
+        buildHtml = `<div>На клетке: <b>${escHtml(buildingLabelRu(b && b.building_type ? String(b.building_type) : "постройка"))}</b> (ур. ${Number((b && b.level) || 1) || 1}).</div>`;
         if (bid) {
           buildHtml += `<div class="row" style="gap:8px;margin-top:8px;"><button type="button" data-demolish="${escHtml(bid)}">Снести постройку</button></div>`;
         }
@@ -1139,7 +1361,7 @@
           const lines = cellBuildings
             .map((b) => {
               const bid = b && b.id ? String(b.id) : "";
-              const nm = b && b.building_type ? String(b.building_type) : "постройка";
+              const nm = buildingLabelRu(b && b.building_type ? String(b.building_type) : "");
               const lvl = Number(b && b.level ? b.level : 1) || 1;
               const btnDm = bid ? `<button type="button" data-demolish="${escHtml(bid)}">Снести</button>` : "";
               const btnUp = bid ? `<button type="button" data-bupgrade="${escHtml(bid)}">Улучшить</button>` : "";
@@ -1242,7 +1464,10 @@
           const pid = btn.getAttribute("data-planet-id");
           if (!pid) return;
           closePlanetModal();
-          openFleetCreateModal({ planetId: pid, title: planetOwn.name || "Планета" });
+          void openFleetCreateModal({
+            planetId: pid,
+            title: planetOwn.name || "Планета",
+          });
         });
       }
       return;
@@ -1283,17 +1508,32 @@
       return;
     }
 
-    const fleetBuilder = engineerFleetForCell(cell);
+    const engFleets = engineerFleetsForCell(cell);
+    const fleetBuilder = engFleets[0] || null;
     const buildingHere = (cell.objects || []).find((o) => o && o.type === "building");
     const outpostHere = (cell.objects || []).find((o) => o && o.type === "outpost");
     if (fleetBuilder) {
       const fleetLabel = fleetBuilder.name && String(fleetBuilder.name).trim() ? String(fleetBuilder.name).trim() : "Флот";
       const engineerQty = Number(fleetBuilder.composition?.engineer || 0);
+      let engineerPickHtml = "";
+      if (engFleets.length > 1) {
+        engineerPickHtml = `
+          <div class="muted" style="margin:10px 0 4px;font-size:90%;"><b>Инженерный флот</b> (на клетке несколько — выберите, с кого списывать инженера):</div>
+          <select id="sector-builder-fleet" style="width:100%;max-width:440px;padding:6px 8px;margin-bottom:4px;">
+            ${engFleets
+              .map((fl) => {
+                const opt = fleetOptionLabel(fl);
+                const sel = String(fl.id) === String(fleetBuilder.id) ? "selected" : "";
+                return `<option value="${escHtml(String(fl.id))}" ${sel}>${escHtml(opt)}</option>`;
+              })
+              .join("")}
+          </select>`;
+      }
       let buildHtml = "";
       if (outpostHere) {
         buildHtml = `<div>На клетке уже стоит <b>${escHtml(outpostHere.name || "форпост")}</b>.</div>`;
       } else if (buildingHere) {
-        buildHtml = `<div>На клетке уже стоит <b>${escHtml(buildingHere.building_type || "постройка")}</b>.</div>`;
+        buildHtml = `<div>На клетке уже стоит <b>${escHtml(buildingLabelRu(buildingHere.building_type || "постройка"))}</b>.</div>`;
       } else {
         buildHtml = `
           <div class="section-title">Форпосты</div>
@@ -1301,19 +1541,27 @@
           <div class="muted" style="margin-top:8px;">Форпосты дают влияние, обзор, слоты модулей и базовую оборону.</div>
           <div class="section-title">Обычные постройки</div>
           ${buildButtonsHtml()}
-          <div class="muted" style="margin-top:8px;">Строит флот с инженерами; ресурсы списываются с домашней планеты.</div>
+          <div class="muted" style="margin-top:8px;">Строит выбранный флот с инженерами; ресурсы списываются с домашней планеты.</div>
         `;
       }
       planetModalBody.innerHTML = `
         <div class="section-title">Строительство в секторе</div>
         <div><b>${fleetLabel}</b> (${x}, ${y}, ${z})</div>
-        <div class="muted" style="margin-top:6px;">Инженеров во флоте: <b>${engineerQty}</b></div>
+        ${engineerPickHtml}
+        <div class="muted" style="margin-top:6px;">Инженеров в выбранном флоте: <b>${engineerQty}</b></div>
         <div class="muted" style="margin-top:6px;">Ландшафт: ${formatTerrainRu(cell.terrain)}</div>
         ${buildHtml}
       `;
-      bindBuildButtons(planetModalBody, x, y, z, fleetBuilder.id || null);
-      bindOutpostButtons(planetModalBody, { x, y, z, fleetId: fleetBuilder.id || null });
-      await updateBuildButtonsAvailability(x, y, z, fleetBuilder.id || null);
+      const defaultBid = fleetBuilder.id || null;
+      bindBuildButtons(planetModalBody, x, y, z, defaultBid);
+      bindOutpostButtons(planetModalBody, { x, y, z, fleetId: defaultBid });
+      const selEng = planetModalBody.querySelector("#sector-builder-fleet");
+      const runPlacementChecks = () => {
+        const fid = selEng && selEng.value ? String(selEng.value) : defaultBid;
+        void updateBuildButtonsAvailability(x, y, z, fid);
+      };
+      if (selEng) selEng.addEventListener("change", runPlacementChecks);
+      await runPlacementChecks();
       return;
     }
 
@@ -1338,9 +1586,10 @@
   const renderFleetCreateModal = () => {
     if (!fleetCreateBody || !fleetCreateContext) return;
     const nmVal = fleetCreateContext.nameDraft != null ? String(fleetCreateContext.nameDraft) : "";
-    const rows = FLEET_ADJUST_KEYS.map((k) => {
+    const qtyKeys = fleetLogicalKeysBalanceOnly();
+    const rows = qtyKeys.map((k) => {
       const q = Number(fleetCreateDraft[k]) || 0;
-      const lab = FLEET_UNIT_LABELS[k] || k;
+      const lab = fleetUnitLabel(k);
       return `
         <div class="row fleet-qty-row" style="justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px;flex-wrap:wrap;">
           <span><b>${escHtml(lab)}</b> <span class="muted">(${escHtml(k)})</span></span>
@@ -1397,7 +1646,7 @@
         const inp = fleetCreateBody.querySelector(".fleet-create-name");
         const nm = inp ? inp.value.trim() : "";
         const comp = {};
-        for (const k of FLEET_ADJUST_KEYS) {
+        for (const k of fleetLogicalKeysBalanceOnly()) {
           const el = fleetCreateBody.querySelector(`input.fleet-create-qty-input[data-u="${k}"]`);
           const n = el ? Math.max(0, Math.floor(Number(el.value) || 0)) : 0;
           fleetCreateDraft[k] = n;
@@ -1438,17 +1687,19 @@
     if (can) can.addEventListener("click", closeFleetCreateModal);
   };
 
-  const openFleetCreateModal = ({ planetId, title }) => {
+  const openFleetCreateModal = async ({ planetId, title }) => {
     if (!fleetCreateOverlay || !fleetCreateBody || !planetId) return;
+    await fetchBalanceCached();
     fleetCreateContext = { planetId: String(planetId), nameDraft: "" };
     fleetCreateDraft = {};
-    for (const k of FLEET_ADJUST_KEYS) fleetCreateDraft[k] = 0;
+    for (const k of fleetLogicalKeysBalanceOnly()) fleetCreateDraft[k] = 0;
     if (fleetCreateTitle) fleetCreateTitle.textContent = title ? `Новый флот — ${title}` : "Новый флот";
     renderFleetCreateModal();
     fleetCreateOverlay.classList.remove("hidden");
   };
 
   const closeFleetModal = () => {
+    closeFleetSubModal();
     if (fleetModalOverlay) fleetModalOverlay.classList.add("hidden");
   };
 
@@ -1461,7 +1712,10 @@
       setStatus("Введите имя флота", "err");
       return;
     }
-    const total = FLEET_ADJUST_KEYS.reduce((s, k) => s + (Number(composition[k]) || 0), 0);
+    const total = Object.values(composition || {}).reduce(
+      (s, v) => s + Math.max(0, Math.floor(Number(v) || 0)),
+      0
+    );
     if (total < 1) {
       setStatus("В сумме должно быть хотя бы один корабль (или расформируйте флот).", "err");
       return;
@@ -1510,6 +1764,7 @@
         return;
       }
       setStatus("Флот расформирован, ресурсы частично возвращены на домашнюю планету.", "ok");
+      closeFleetSubModal();
       closeFleetModal();
       await loadWorldState();
       const ownedAfter = (Array.isArray(worldState.fleets) ? worldState.fleets : []).filter((x) => x && x.id);
@@ -1535,6 +1790,7 @@
         return;
       }
       setStatus("Флоты объединены", "ok");
+      closeFleetSubModal();
       closeFleetModal();
       await loadWorldState();
       await refreshWindow();
@@ -1559,6 +1815,7 @@
       }
       setStatus(`Создан новый флот (${body.new_fleet_id || ""})`, "ok");
       if (body.new_fleet_id) activeFleetId = body.new_fleet_id;
+      closeFleetSubModal();
       closeFleetModal();
       await loadWorldState();
       await refreshWindow();
@@ -1576,10 +1833,10 @@
       fleetModalBody.innerHTML = "<div class='muted'>Нет активного флота (выберите в списке).</div>";
       return;
     }
-    const comp = f.composition && typeof f.composition === "object" ? f.composition : {};
+    const comp = f.composition && typeof f.composition === "object" ? { ...f.composition } : {};
+    const qtyKeys = fleetQtyKeysForUi(comp);
     const fn = (f.name && String(f.name).trim()) || "Флот";
-    if (fleetModalTitle)
-      fleetModalTitle.textContent = `${fn} (${f.x}, ${f.y}, ${f.z})`;
+    if (fleetModalTitle) fleetModalTitle.textContent = `${fn} (${f.x}, ${f.y}, ${f.z})`;
     const blocked = f.status === "moving";
     const dis = blocked ? "disabled" : "";
     const others = fleets.filter((x) => x && x.id && x.id !== f.id);
@@ -1592,57 +1849,98 @@
               return `<option value="${escHtml(o.id)}">${escHtml(on)} (${escHtml(o.id).slice(0, 8)}…)</option>`;
             })
             .join("")}`;
+
+    const shipCard = (k) => {
+      const q = Number(comp[k]) || 0;
+      const lab = fleetUnitLabel(k);
+      const gl = fleetUnitGlyph(k);
+      const u = resolveBalanceUnit(k);
+      const cost = unitBuildCostParts(k);
+      const costBits = [];
+      if (cost.metal) costBits.push(`M ${cost.metal}`);
+      if (cost.crystal) costBits.push(`C ${cost.crystal}`);
+      if (cost.energy) costBits.push(`E ${cost.energy}`);
+      if (cost.fuel) costBits.push(`F ${cost.fuel}`);
+      const costLine = costBits.length ? costBits.join(" · ") : "—";
+      const hp = u && u.hp != null ? u.hp : "—";
+      const dmg = u && u.damage != null ? u.damage : "—";
+      const spd = u && u.speed_cells_per_tick != null ? u.speed_cells_per_tick : "—";
+      const fu = u && u.travel_fuel_per_cell != null ? u.travel_fuel_per_cell : "—";
+      const desc =
+        u && typeof u.description === "string" && u.description.trim()
+          ? escHtml(u.description.trim())
+          : "Корабль из баланса: стоимость набора и возврат при уменьшении совпадают с сервером при сохранении.";
+      return `
+        <div class="fleet-ship-card" data-unit-card="${escHtml(k)}">
+          <div class="fleet-ship-card-head">
+            <span class="fleet-ship-glyph" aria-hidden="true">${gl}</span>
+            <div style="flex:1;min-width:0;">
+              <div style="font-weight:700;">${escHtml(lab)} <span class="muted" style="font-weight:500;">(${escHtml(k)})</span></div>
+              <div class="fleet-ship-meta">Цена 1 шт: ${escHtml(costLine)}</div>
+              <div class="fleet-ship-meta">HP ${escHtml(String(hp))} · урон ${escHtml(String(dmg))} · клеток/сол ${escHtml(String(spd))} · топл./клетку ${escHtml(String(fu))}</div>
+            </div>
+          </div>
+          <div class="fleet-ship-desc">${desc}</div>
+          <div class="fleet-ship-qty">
+            <button type="button" class="fleet-qty-step" data-u="${escHtml(k)}" data-s="-1" ${dis}>−</button>
+            <input type="number" class="fleet-qty-input" data-u="${escHtml(k)}" min="0" max="99999" step="1" value="${q}" style="width:72px;padding:5px 6px;" ${blocked ? "disabled" : ""}/>
+            <button type="button" class="fleet-qty-step" data-u="${escHtml(k)}" data-s="1" ${dis}>+</button>
+          </div>
+        </div>`;
+    };
+
+    const byRole = { recon: [], combat: [], tech: [] };
+    for (const k of qtyKeys) {
+      byRole[fleetUiRoleGroup(k)].push(k);
+    }
+    const roleSection = (keys, title) =>
+      keys.length
+        ? `<div class="fleet-role-title">${title}</div><div class="fleet-ship-grid">${keys.map(shipCard).join("")}</div>`
+        : "";
+
     fleetModalBody.innerHTML = `
       <div class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center;">
         <label class="muted" style="flex:100%;margin:0;font-size:90%;"><b>Имя флота</b></label>
         <input type="text" class="fleet-rename-input" maxlength="64" value="${escHtml(fn)}" style="flex:1;min-width:140px;padding:6px 8px;" />
-        <button type="button" class="fleet-modal-save" ${dis}>Сохранить</button>
-        <button type="button" class="fleet-locate-this" title="Показать на карте и выделить">На карте</button>
+        <button type="button" class="fleet-modal-save btn-primary" ${dis}>Сохранить</button>
+        <button type="button" class="fleet-locate-this btn-secondary" title="Показать на карте и выделить">На карте</button>
       </div>
-      <div class="muted" style="margin-bottom:12px;font-size:90%;">
-        Состав: увеличение — по цене постройки; уменьшение — возврат ~50% на склад домашней планеты. Поле числа — для крупных партий.
+      <div class="muted" style="margin-bottom:10px;font-size:90%;">
+        Набор кораблей оплачивается со склада домашней планеты по цене постройки; при уменьшении числа — возврат примерно <b>50%</b> стоимости в ресурсах.
       </div>
-      ${
-        blocked
-          ? "<div style='margin-bottom:10px;color:#e88'><b>В пути</b> — нельзя менять состав.</div>"
-          : ""
-      }
-      ${FLEET_ADJUST_KEYS.map((k) => {
-        const q = Number(comp[k]) || 0;
-        const lab = FLEET_UNIT_LABELS[k] || k;
-        return `
-          <div class="row fleet-qty-row" style="justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px;flex-wrap:wrap;">
-            <span><b>${escHtml(lab)}</b> <span class="muted">(${escHtml(k)})</span></span>
-            <span style="display:inline-flex;align-items:center;gap:6px;">
-              <button type="button" class="fleet-qty-step" data-u="${k}" data-s="-1" ${dis}>−</button>
-              <input type="number" class="fleet-qty-input" data-u="${k}" min="0" max="99999" step="1" value="${q}" style="width:80px;padding:6px 8px;" ${blocked ? "disabled" : ""}/>
-              <button type="button" class="fleet-qty-step" data-u="${k}" data-s="1" ${dis}>+</button>
-            </span>
-          </div>`;
-      }).join("")}
-      <div class="row" style="flex-wrap:wrap;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,.12);align-items:center;">
-        <button type="button" class="fleet-modal-disband" ${dis}>Расформировать…</button>
-      </div>
-      <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.12);">
-        <div class="muted" style="margin-bottom:8px;font-size:90%;"><b>Слить в этот флот</b> — выбранный флот исчезнет, корабли перейдут сюда.</div>
-        <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center;">
-          <select class="fleet-merge-select" style="flex:1;min-width:180px;padding:6px 8px;" ${dis}>${mergeOpts}</select>
-          <button type="button" class="fleet-merge-do" ${dis}>Слить</button>
-        </div>
-      </div>
-      <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.12);">
-        <div class="muted" style="margin-bottom:8px;font-size:90%;"><b>Разделить</b> — укажите, сколько кораблей каждого типа уходит в новый флот (остаток остаётся здесь).</div>
-        ${FLEET_ADJUST_KEYS.map((k) => {
-          const lab = FLEET_UNIT_LABELS[k] || k;
-          return `
-          <div class="row fleet-split-row" style="justify-content:space-between;align-items:center;margin-bottom:8px;gap:10px;flex-wrap:wrap;">
-            <span><b>${escHtml(lab)}</b></span>
-            <input type="number" class="fleet-split-qty" data-u="${k}" min="0" max="99999" value="0" style="width:80px;padding:6px 8px;" ${blocked ? "disabled" : ""}/>
-          </div>`;
-        }).join("")}
-        <button type="button" class="fleet-split-do" style="margin-top:8px;" ${dis}>Создать отделение</button>
+      ${blocked ? "<div style='margin-bottom:10px;color:#e88'><b>В пути</b> — нельзя менять состав, слияние и разделение.</div>" : ""}
+      ${roleSection(byRole.recon, "Разведка")}
+      ${roleSection(byRole.combat, "Боевой состав")}
+      ${roleSection(byRole.tech, "Техника и логистика")}
+      <div id="fleet-comp-net-preview" class="fleet-comp-net-preview"></div>
+      <div class="fleet-modal-actions-muted">
+        <button type="button" class="btn-secondary fleet-open-merge" ${dis}>Слить другой флот сюда…</button>
+        <button type="button" class="btn-secondary fleet-open-split" ${dis}>Разделить флот…</button>
+        <button type="button" class="btn-secondary fleet-open-disband" ${dis}>Расформировать этот флот…</button>
       </div>
     `;
+
+    const readCompositionFromInputs = () => {
+      const o = {};
+      for (const k of qtyKeys) {
+        const inp = fleetModalBody.querySelector(`input.fleet-qty-input[data-u="${k}"]`);
+        o[k] = inp ? Math.max(0, Math.floor(Number(inp.value) || 0)) : 0;
+      }
+      return o;
+    };
+
+    const refreshNetPreview = () => {
+      const el = fleetModalBody.querySelector("#fleet-comp-net-preview");
+      if (!el) return;
+      const next = readCompositionFromInputs();
+      const { net } = fleetCompositionNet(comp, next);
+      el.innerHTML = `<div><b>Склад домашней планеты</b> (оценка до сохранения)</div><div style="margin-top:6px;">${formatImpWarehouseNetHtml(net)}</div>`;
+    };
+    refreshNetPreview();
+    fleetModalBody.oninput = (ev) => {
+      if (ev.target && ev.target.classList && ev.target.classList.contains("fleet-qty-input")) refreshNetPreview();
+    };
+
     for (const btn of fleetModalBody.querySelectorAll("button.fleet-qty-step")) {
       btn.addEventListener("click", () => {
         const u = btn.getAttribute("data-u");
@@ -1652,87 +1950,93 @@
         if (!inp || inp.disabled) return;
         const v = Math.max(0, Math.floor(Number(inp.value) || 0) + s);
         inp.value = String(v);
+        refreshNetPreview();
       });
     }
+
     const saveBtn = fleetModalBody.querySelector(".fleet-modal-save");
     const rInp = fleetModalBody.querySelector(".fleet-rename-input");
     if (saveBtn && rInp) {
       saveBtn.addEventListener("click", async () => {
-        const composition = {};
-        for (const k of FLEET_ADJUST_KEYS) {
-          const inp = fleetModalBody.querySelector(`input.fleet-qty-input[data-u="${k}"]`);
-          composition[k] = inp ? Math.max(0, Math.floor(Number(inp.value) || 0)) : 0;
-        }
+        const composition = readCompositionFromInputs();
         await saveFleetModalAll(f.id, rInp.value, composition);
       });
     }
-    const disBtn = fleetModalBody.querySelector(".fleet-modal-disband");
+
+    const mergeBtn = fleetModalBody.querySelector(".fleet-open-merge");
+    if (mergeBtn) {
+      mergeBtn.addEventListener("click", () => {
+        if (others.length === 0) {
+          setStatus("Нет других флотов для слияния", "err");
+          return;
+        }
+        openFleetSubModal({
+          title: `Слить во флот «${fn}»`,
+          confirmLabel: "Слить",
+          bodyHtml: `<p class="muted" style="margin-top:0;">Флот-источник будет удалён, все его корабли перейдут в <b>${escHtml(fn)}</b>.</p>
+            <label class="muted" style="font-size:90%;display:block;margin-bottom:6px;">Флот-источник</label>
+            <select id="fleet-merge-sub-sel" style="width:100%;padding:6px 8px;">${mergeOpts}</select>`,
+          onConfirm: async () => {
+            const sel = fleetSubBody && fleetSubBody.querySelector("#fleet-merge-sub-sel");
+            const sid = sel ? String(sel.value || "").trim() : "";
+            if (!sid) {
+              setStatus("Выберите флот для слияния", "err");
+              return;
+            }
+            await mergeFleetsApi(f.id, sid);
+          },
+        });
+      });
+    }
+
+    const disBtn = fleetModalBody.querySelector(".fleet-open-disband");
     if (disBtn) {
-      disBtn.addEventListener("click", async () => {
-        if (
-          !confirm(
-            "Расформировать этот флот? Корабли будут списаны; на склад домашней планеты вернётся примерно 50% их стоимости в ресурсах."
-          )
-        )
-          return;
-        await disbandFleetApi(f.id);
+      disBtn.addEventListener("click", () => {
+        openFleetSubModal({
+          title: "Расформировать флот",
+          confirmLabel: "Расформировать",
+          bodyHtml: `<p class="muted" style="margin-top:0;">Флот <b>${escHtml(fn)}</b> будет удалён. Корабли списываются; на склад домашней планеты вернётся примерно <b>50%</b> их стоимости в металле, кристалле, энергии и топливе.</p>`,
+          onConfirm: async () => {
+            await disbandFleetApi(f.id);
+          },
+        });
       });
     }
-    const mergeDo = fleetModalBody.querySelector(".fleet-merge-do");
-    const mergeSel = fleetModalBody.querySelector(".fleet-merge-select");
-    if (mergeDo && mergeSel) {
-      mergeDo.addEventListener("click", async () => {
-        const sid = String(mergeSel.value || "").trim();
-        if (!sid) {
-          setStatus("Выберите флот для слияния", "err");
-          return;
-        }
-        if (
-          !confirm(
-            "Выбранный флот будет удалён, все его корабли перейдут в текущий. Продолжить?"
-          )
-        )
-          return;
-        await mergeFleetsApi(f.id, sid);
+
+    const splitBtn = fleetModalBody.querySelector(".fleet-open-split");
+    if (splitBtn) {
+      splitBtn.addEventListener("click", () => {
+        const rows = qtyKeys
+          .map((k) => {
+            const lab = fleetUnitLabel(k);
+            return `<div class="row fleet-split-row" style="justify-content:space-between;align-items:center;margin-bottom:8px;gap:10px;flex-wrap:wrap;">
+              <span><b>${escHtml(lab)}</b> <span class="muted">(${escHtml(k)})</span></span>
+              <input type="number" class="fleet-split-qty" data-u="${escHtml(k)}" min="0" max="99999" value="0" style="width:80px;padding:6px 8px;" ${blocked ? "disabled" : ""}/>
+            </div>`;
+          })
+          .join("");
+        openFleetSubModal({
+          title: `Разделить «${fn}»`,
+          confirmLabel: "Создать отделение",
+          bodyHtml: `<p class="muted" style="margin-top:0;">Укажите, сколько кораблей каждого типа уходит в <b>новый</b> флот. Остаток остаётся здесь. Сумма по типам не должна равняться всему текущему составу.</p>${rows}`,
+          onConfirm: async () => {
+            const take = {};
+            for (const k of qtyKeys) {
+              const inp = fleetSubBody && fleetSubBody.querySelector(`input.fleet-split-qty[data-u="${k}"]`);
+              take[k] = inp ? Math.max(0, Math.floor(Number(inp.value) || 0)) : 0;
+            }
+            await splitFleetApi(f.id, take);
+          },
+        });
       });
     }
-    const splitDo = fleetModalBody.querySelector(".fleet-split-do");
-    if (splitDo) {
-      splitDo.addEventListener("click", async () => {
-        const take = {};
-        for (const k of FLEET_ADJUST_KEYS) {
-          const inp = fleetModalBody.querySelector(`input.fleet-split-qty[data-u="${k}"]`);
-          take[k] = inp ? Math.max(0, Math.floor(Number(inp.value) || 0)) : 0;
-        }
-        if (!confirm("Создать новый флот с указанным составом и уменьшить текущий?")) return;
-        await splitFleetApi(f.id, take);
-      });
-    }
+
     const lBtn = fleetModalBody.querySelector(".fleet-locate-this");
     if (lBtn)
       lBtn.addEventListener("click", async () => {
         await focusFleetOnMap(f.id);
         closeFleetModal();
       });
-  };
-
-  const doManualTick = async () => {
-    setStatus("Сол…");
-    try {
-      const r = await fetch("/api/world/tick", { method: "POST" });
-      const body = await r.json();
-      if (!r.ok || !body.ok) {
-        setStatus(`Ошибка шага: ${body.error || "tick_failed"}`, "err");
-        return;
-      }
-      setStatus(
-        `Сол ${body.current_sol ?? body.current_tick}: событий ${body.events.length}`,
-        "ok",
-      );
-      await refreshWindow();
-    } catch (_e) {
-      setStatus("Сетевая ошибка при проведении сола", "err");
-    }
   };
 
   const loadWorldState = async () => {
@@ -1742,6 +2046,7 @@
       const body = await r.json();
       worldState = body || worldState;
       if (body && body.player_id) worldState.player_id = body.player_id;
+      await fetchBalanceCached();
       if (tickEl) tickEl.textContent = String(body.current_sol ?? body.current_tick ?? 0);
       if (body.home_planet) {
         const elP = document.getElementById("hud-pop");
@@ -1757,6 +2062,26 @@
         if (topFuelEl) topFuelEl.textContent = String(body.economy.fuel ?? "—");
         if (topFoodEl) topFoodEl.textContent = String(body.economy.food ?? "—");
         if (topWaterEl) topWaterEl.textContent = String(body.economy.water ?? "—");
+        if (topRpEl) {
+          const rp = body.economy.research_points;
+          const rpp = body.economy.research_points_per_sol;
+          if (rp != null && Number.isFinite(Number(rp))) {
+            const main = Math.round(Number(rp) * 100) / 100;
+            const rppNum = Number(rpp);
+            const extra =
+              rpp != null && Number.isFinite(rppNum) && rppNum > 0
+                ? ` +${Math.round(rppNum * 1000) / 1000}/сол`
+                : "";
+            topRpEl.textContent = `${main}${extra}`;
+            topRpEl.title =
+              rpp != null && Number.isFinite(rppNum) && rppNum > 0
+                ? `Наука (RP): ${main}, прирост +${Math.round(rppNum * 10000) / 10000} за сол`
+                : "Наука (RP)";
+          } else {
+            topRpEl.textContent = "—";
+            topRpEl.title = "";
+          }
+        }
         const einf = body.economy.influence;
         if (hudInfluenceHomeEl) {
           hudInfluenceHomeEl.textContent = einf ? formatInfluenceHud(einf) : "—";
@@ -1879,6 +2204,9 @@
       const binfo = body.buildings || {};
       const fleets = Array.isArray(body.fleets) ? body.fleets : [];
       const fd = body.field_data || {};
+      const cref = body.construction_reference || {};
+      const crefB = cref.buildings_replacement_cost || {};
+      const crefF = cref.fleet_ships_replacement_cost || {};
 
       const fmt = (n) => (Number.isFinite(Number(n)) ? String(Number(n)) : "0");
       const fmtSigned = (n) => {
@@ -1886,77 +2214,141 @@
         const s = v > 0 ? "+" : "";
         return `${s}${v}`;
       };
-      const row = (label, map, keys) =>
-        `<div class="row" style="gap:10px;flex-wrap:wrap;"><span class="muted" style="min-width:180px;">${escHtml(label)}</span>${keys
-          .map((k) => `<span><b>${escHtml(fmt(map && map[k]))}</b> ${escHtml(k)}</span>`)
+      const resIcons = {
+        metal: "⛏",
+        crystal: "💎",
+        energy: "⚡",
+        fuel: "⛽",
+        food: "🍲",
+        water: "💧",
+      };
+      const resKeys = ["metal", "crystal", "energy", "fuel", "food", "water"];
+      const resGrid = (map, useSigned = false) => {
+        const f = useSigned ? fmtSigned : fmt;
+        return `<div class="econ-resource-grid">${resKeys
+          .map((k) => {
+            const ic = resIcons[k] || k;
+            return `<span>${ic} <b>${escHtml(f(map && map[k]))}</b></span>`;
+          })
+          .join("")}</div>`;
+      };
+      const costRow = (label, map, keys) => {
+        const parts = keys.map((k) => {
+          const ic = resIcons[k] || k;
+          return `<span>${ic} <b>${escHtml(fmt(map && map[k]))}</b></span>`;
+        });
+        return `<div class="econ-cost-row"><span class="econ-row-label">${escHtml(label)}</span>${parts.join("")}</div>`;
+      };
+      const resKeys4 = ["metal", "crystal", "energy", "fuel"];
+      const resGridFour = (map) =>
+        `<div class="econ-resource-grid" style="grid-template-columns:repeat(4,1fr)">${resKeys4
+          .map((k) => {
+            const ic = resIcons[k];
+            return `<span>${ic} <b>${escHtml(fmt(map && map[k]))}</b></span>`;
+          })
           .join("")}</div>`;
 
-      const showExtChk = `<label class="row" style="gap:8px;align-items:center;margin:6px 0 10px 0;"><input type="checkbox" id="econ-show-ext" ${
-        showExt ? "checked" : ""
-      }/> <span class="muted">Учитывать/показывать внешние постройки</span></label>`;
+      const showExtChk = `<div class="econ-card">
+        <label class="econ-toggle"><input type="checkbox" id="econ-show-ext" ${showExt ? "checked" : ""} />
+        <span>Учитывать/показывать внешние постройки</span></label>
+      </div>`;
 
       const fleetsHtml = fleets.length
-        ? `<div class="section-title">Флоты</div>
-           <div class="muted" style="margin-bottom:6px;">Расформирование возвращает часть ресурсов на домашнюю планету.</div>
+        ? `<p class="econ-muted">Расформирование возвращает часть ресурсов на домашнюю планету.</p>
            ${fleets
              .map(
-               (f) => `<div class="row" style="gap:10px;align-items:center;">
+               (f) => `<div class="econ-fleet-row">
                  <span><b>${escHtml(f.name || "Флот")}</b> • кораблей: ${escHtml(String(f.ships || 0))} • (${escHtml(
                  `${f.pos && f.pos.x != null ? f.pos.x : "?"},${f.pos && f.pos.y != null ? f.pos.y : "?"},${f.pos && f.pos.z != null ? f.pos.z : 0}`
                )})</span>
-                 <button type="button" data-econ-disband="${escHtml(String(f.id))}" style="margin-left:auto;">Расформировать</button>
+                 <button type="button" class="btn-danger" data-econ-disband="${escHtml(String(f.id))}">Расформировать</button>
                </div>`
              )
              .join("")}`
-        : `<div class="section-title">Флоты</div><div class="muted">Нет активных флотов.</div>`;
+        : `<p class="econ-muted">Нет активных флотов.</p>`;
 
       economyModalBody.innerHTML = `
-        <div class="muted" style="margin-bottom:10px;">Текущий сол: <b>${escHtml(String(body.current_sol ?? body.current_tick ?? 0))}</b></div>
-        ${showExtChk}
-        <div class="section-title">Склад</div>
-        <div class="muted" style="margin-bottom:6px;">Еда/вода копятся на планетах, автоперевоза между планетами нет. Поэтому «дом» может быть 0 при положительном балансе по империи.</div>
-        <div><span class="muted">Дом:</span> ⛏ <b>${escHtml(fmt(tHome.metal))}</b> • 💎 <b>${escHtml(fmt(tHome.crystal))}</b> • ⚡ <b>${escHtml(fmt(tHome.energy))}</b> • ⛽ <b>${escHtml(
-        fmt(tHome.fuel)
-      )}</b> • 🍲 <b>${escHtml(fmt(tHome.food))}</b> • 💧 <b>${escHtml(fmt(tHome.water))}</b></div>
-        <div><span class="muted">Империя (сумма планет):</span> ⛏ <b>${escHtml(fmt(tEmp.metal))}</b> • 💎 <b>${escHtml(fmt(tEmp.crystal))}</b> • ⚡ <b>${escHtml(fmt(tEmp.energy))}</b> • ⛽ <b>${escHtml(
-        fmt(tEmp.fuel)
-      )}</b> • 🍲 <b>${escHtml(fmt(tEmp.food))}</b> • 💧 <b>${escHtml(fmt(tEmp.water))}</b></div>
+        <div class="econ-modal">
+          <div class="econ-lead">Текущий сол: <b>${escHtml(String(body.current_sol ?? body.current_tick ?? 0))}</b> • Наука: <b>${escHtml(
+        String(body.research_points ?? 0)
+      )}</b> <span class="muted">(+${escHtml(String(body.research_points_per_sol ?? 0))}/сол)</span></div>
+          ${showExtChk}
 
-        <div class="section-title">Итоговый баланс (за сол, оценка)</div>
-        <div>⛏ <b>${escHtml(fmtSigned(net.metal))}</b> • 💎 <b>${escHtml(fmtSigned(net.crystal))}</b> • ⚡ <b>${escHtml(fmtSigned(net.energy))}</b> • ⛽ <b>${escHtml(
-        fmtSigned(net.fuel)
-      )}</b> • 🍲 <b>${escHtml(fmtSigned(net.food))}</b> • 💧 <b>${escHtml(fmtSigned(net.water))}</b></div>
-        <div class="muted" style="margin-top:6px;font-size:88%;">Баланс «домашней» планеты (за сол): ⛏ ${escHtml(fmtSigned(netHome.metal))} • 💎 ${escHtml(
-        fmtSigned(netHome.crystal)
-      )} • ⚡ ${escHtml(fmtSigned(netHome.energy))} • ⛽ ${escHtml(fmtSigned(netHome.fuel))} • 🍲 ${escHtml(fmtSigned(netHome.food))} • 💧 ${escHtml(
-        fmtSigned(netHome.water)
-      )}</div>
+          <section class="econ-section">
+            <h4 class="econ-section-title">Строительство (справочно)</h4>
+            <div class="econ-card">
+              <p class="econ-muted">${escHtml(String(cref.note || ""))}</p>
+              <div class="econ-section-title" style="margin-top:0;font-size:0.76rem;">Постройки (сумма цен по балансу, ×уровень)</div>
+              ${resGridFour(crefB)}
+              <div class="econ-section-title" style="margin-top:12px;">Корабли во флотах (сумма цен по балансу)</div>
+              ${resGridFour(crefF)}
+            </div>
+          </section>
 
-        <div class="section-title">Доходы (за сол)</div>
-        <div class="muted" style="margin-bottom:6px;">Сумма по всем вашим планетам (включая постройки/техи/расу/влияние).</div>
-        <div>⛏ <b>${escHtml(fmt(prod.metal))}</b> • 💎 <b>${escHtml(fmt(prod.crystal))}</b> • ⚡ <b>${escHtml(fmt(prod.energy))}</b> • ⛽ <b>${escHtml(
-        fmt(prod.fuel)
-      )}</b> • 🍲 <b>${escHtml(fmt(prod.food))}</b> • 💧 <b>${escHtml(fmt(prod.water))}</b></div>
+          <section class="econ-section">
+            <h4 class="econ-section-title">Склад</h4>
+            <div class="econ-card">
+              <p class="econ-muted">Еда/вода копятся на планетах, автоперевоза между планетами нет. Поэтому «дом» может быть 0 при положительном балансе по империи.</p>
+              <div class="econ-section-title" style="margin-top:0;font-size:0.76rem;">Дом</div>
+              ${resGrid(tHome)}
+              <div class="econ-section-title" style="margin-top:12px;">Империя (сумма планет)</div>
+              ${resGrid(tEmp)}
+            </div>
+          </section>
 
-        <div class="section-title">Расходы (за сол)</div>
-        ${row("Население", costs.population_vitals, ["food", "water"])}
-        ${row("Логистика форпостов", (costs.outpost_supply_logistics || {}), ["food", "water"])}
-        ${row("Содержание форпостов", costs.outpost_upkeep, ["metal", "crystal", "energy", "fuel"])}
-        ${row("Имперские расходы флотов", costs.fleet_empire_upkeep, ["metal", "crystal"])}
-        ${row("Энергия флотов (upkeep)", costs.fleet_energy_upkeep, ["energy"])}
+          <section class="econ-section">
+            <h4 class="econ-section-title">Баланс за сол</h4>
+            <div class="econ-card">
+              <div class="econ-section-title" style="margin-top:0;font-size:0.76rem;">Итог по империи</div>
+              ${resGrid(net, true)}
+              <p class="econ-muted" style="margin-top:10px;margin-bottom:0;">Домашняя планета (за сол)</p>
+              ${resGrid(netHome, true)}
+            </div>
+          </section>
 
-        <div class="section-title">Постройки</div>
-        <div>На планетах: <b>${escHtml(String(binfo.planet_buildings ?? 0))}</b> • Внешние: <b>${escHtml(
+          <section class="econ-section">
+            <h4 class="econ-section-title">Доходы за сол</h4>
+            <div class="econ-card">
+              <p class="econ-muted">Сумма по всем вашим планетам (включая постройки/техи/расу/влияние).</p>
+              ${resGrid(prod)}
+            </div>
+          </section>
+
+          <section class="econ-section">
+            <h4 class="econ-section-title">Расходы за сол</h4>
+            <div class="econ-card">
+              ${costRow("Население", costs.population_vitals, ["food", "water"])}
+              ${costRow("Логистика форпостов", costs.outpost_supply_logistics || {}, ["food", "water"])}
+              ${costRow("Содержание форпостов", costs.outpost_upkeep, ["metal", "crystal", "energy", "fuel"])}
+              ${costRow("Имперские расходы флотов", costs.fleet_empire_upkeep, ["metal", "crystal"])}
+              ${costRow("Энергия флотов (upkeep)", costs.fleet_energy_upkeep, ["energy"])}
+            </div>
+          </section>
+
+          <section class="econ-section">
+            <h4 class="econ-section-title">Постройки</h4>
+            <div class="econ-card">
+              На планетах: <b>${escHtml(String(binfo.planet_buildings ?? 0))}</b> • Внешние: <b>${escHtml(
         String(binfo.external_buildings ?? 0)
-      )}</b>${binfo.external_buildings_hidden ? ` <span class="muted">(скрыто: ${escHtml(String(binfo.external_buildings_hidden))})</span>` : ""}</div>
+      )}</b>${binfo.external_buildings_hidden ? ` <span class="muted">(скрыто: ${escHtml(String(binfo.external_buildings_hidden))})</span>` : ""}
+            </div>
+          </section>
 
-        <div class="section-title">Полевые данные</div>
-        <div class="muted">Нужно для части исследований.</div>
-        <div>ruin_archives: <b>${escHtml(String(fd.ruin_archives ?? 0))}</b> • anomaly_data: <b>${escHtml(
+          <section class="econ-section">
+            <h4 class="econ-section-title">Полевые данные</h4>
+            <div class="econ-card">
+              <p class="econ-muted">Нужно для части исследований.</p>
+              <div>ruin_archives: <b>${escHtml(String(fd.ruin_archives ?? 0))}</b> • anomaly_data: <b>${escHtml(
         String(fd.anomaly_data ?? 0)
       )}</b> • research_fragments: <b>${escHtml(String(fd.research_fragments ?? 0))}</b></div>
+            </div>
+          </section>
 
-        ${fleetsHtml}
+          <section class="econ-section">
+            <h4 class="econ-section-title">Флоты</h4>
+            <div class="econ-card">${fleetsHtml}</div>
+          </section>
+        </div>
       `;
 
       const chk = economyModalBody.querySelector("#econ-show-ext");
@@ -2052,22 +2444,16 @@
   const loadTechModalContent = async () => {
     if (!techModalBody) return;
     try {
-      if (!window.__guardstarBalanceCache) window.__guardstarBalanceCache = { ts: 0, body: null, backoffUntil: 0 };
-      const cache = window.__guardstarBalanceCache;
-      const now = Date.now();
-      if (cache.backoffUntil && now < cache.backoffUntil) {
-        techModalBody.innerHTML = "<div class='muted'>Баланс временно недоступен. Повторите через несколько секунд.</div>";
+      if (!window.__guardstarBalanceCache)
+        window.__guardstarBalanceCache = { ts: 0, body: null, backoffUntil: 0 };
+      const bc = window.__guardstarBalanceCache;
+      const nowTs = Date.now();
+      if (bc.backoffUntil && nowTs < bc.backoffUntil) {
+        techModalBody.innerHTML =
+          "<div class='muted'>Баланс временно недоступен. Повторите через несколько секунд.</div>";
         return;
       }
-      let balBody = cache.body;
-      if (!balBody || now - cache.ts > 30000) {
-        const balResp = await fetch("/api/balance");
-        balBody = await balResp.json();
-        cache.ts = now;
-        cache.body = balBody;
-        if (!balResp.ok || !balBody.ok) cache.backoffUntil = now + 15000;
-        else cache.backoffUntil = 0;
-      }
+      const balBody = await fetchBalanceCached();
       if (!balBody || !balBody.ok) {
         techModalBody.innerHTML = "<div class='muted'>Баланс недоступен.</div>";
         return;
@@ -2084,6 +2470,8 @@
         : Number.isInteger(stBody.current_tick)
           ? stBody.current_tick
           : 0;
+      const rpPlayerBal = Number(stBody.research_points) || 0;
+      const rpPlayerPerSol = Number(stBody.research_points_per_sol);
       const rows = Array.isArray(stBody.techs) ? stBody.techs : [];
       const byId = {};
       for (const r of rows) byId[r.tech_id] = r;
@@ -2104,7 +2492,8 @@
       }
 
       const prefs = readTechUiPrefs();
-      let activeTab = prefs.tab === "available" || prefs.tab === "in_progress" || prefs.tab === "done" || prefs.tab === "all" ? prefs.tab : "all";
+      const validTechTabs = new Set(["all", "available", "in_progress", "done"]);
+      let activeTab = validTechTabs.has(prefs.tab) ? prefs.tab : "available";
       let hideDone = prefs.hideDone !== false;
 
       const techStatus = (t) => {
@@ -2112,28 +2501,44 @@
         return st0 && st0.status ? st0.status : "none";
       };
 
+      const techPrereqMissing = (t) => {
+        const prereqArr = Array.isArray(t.prereq) ? t.prereq.filter((x) => typeof x === "string" && x.trim()) : [];
+        return prereqArr.filter((id) => !doneSet.has(String(id)));
+      };
+      const techFieldDataMissing = (t) => {
+        const fdReq = Array.isArray(t.field_data_requirements)
+          ? t.field_data_requirements.filter((x) => typeof x === "string" && x.trim())
+          : [];
+        const effs = effectsBody && Array.isArray(effectsBody.effects) ? effectsBody.effects : [];
+        const effCount = (k) => effs.filter((e) => e && e.effect_type === k && e.used_at_tick == null).length;
+        return fdReq.filter((k) => effCount(k) < 1);
+      };
+      const techCanStart = (t) => {
+        if (techStatus(t) !== "none") return false;
+        return techPrereqMissing(t).length === 0 && techFieldDataMissing(t).length === 0;
+      };
+
       const renderCardInner = (t) => {
         const st0 = byId[t.id] || null;
         const status = st0 ? st0.status : "none";
         const rem = st0 && Number.isInteger(st0.remaining_ticks) ? st0.remaining_ticks : null;
-        const prereqArr = Array.isArray(t.prereq) ? t.prereq.filter((x) => typeof x === "string" && x.trim()) : [];
-        const missingPrereq = prereqArr.filter((id) => !doneSet.has(String(id)));
         const fdReq = Array.isArray(t.field_data_requirements)
           ? t.field_data_requirements.filter((x) => typeof x === "string" && x.trim())
           : [];
         const effs = effectsBody && Array.isArray(effectsBody.effects) ? effectsBody.effects : [];
         const effCount = (k) => effs.filter((e) => e && e.effect_type === k && e.used_at_tick == null).length;
         const missingFd = fdReq.filter((k) => effCount(k) < 1);
+        const missingPrereq = techPrereqMissing(t);
         const blockedReason =
           missingPrereq.length
-            ? `Нужны исследования: ${missingPrereq.join(", ")}`
+            ? `Нужны исследования: ${formatPrereqNames(missingPrereq, byTechId)}`
             : missingFd.length
               ? `Нужны полевые данные: ${missingFd.join(", ")}`
               : null;
         const canStart = status === "none" && !blockedReason;
         const btn =
           status === "none"
-            ? `<button type="button" data-tech="${escHtml(t.id)}" ${canStart ? "" : "disabled"} title="${escHtml(blockedReason || "")}">${
+            ? `<button type="button" class="btn-primary" data-tech="${escHtml(t.id)}" ${canStart ? "" : "disabled"} title="${escHtml(blockedReason || "")}">${
                 canStart ? "Старт" : "Недоступно"
               }</button>`
             : "";
@@ -2144,8 +2549,15 @@
               ? `<span class="muted">Завершено.</span>`
               : `<span class="muted">Не начато.</span>`;
         const tickN = Number(t.time_ticks);
-        const dur = Number.isFinite(tickN) && tickN > 0 ? `${Math.round(tickN)} ${solWord(tickN)}` : "—";
+        const residualN = Number(t.residual_time_ticks);
+        const workTicks = Number.isFinite(residualN) && residualN > 0 ? residualN : tickN;
+        const dur = Number.isFinite(workTicks) && workTicks > 0 ? `${Math.round(workTicks)} ${solWord(workTicks)}` : "—";
         const costStr = formatTechCost(t.cost);
+        const rpNeed = Number(t.research_points_cost);
+        const payBits = [];
+        if (Number.isFinite(rpNeed) && rpNeed > 0) payBits.push(`наука ${rpNeed}`);
+        if (costStr && costStr !== "—") payBits.push(costStr);
+        const payLine = payBits.length ? payBits.join(" · ") : "—";
         const prereqStr = formatPrereqNames(t.prereq, byTechId);
         const fdLine = fdReq.length ? `<div class="tech-item-meta" style="margin-top:8px;">Полевые данные: <b>${escHtml(fdReq.join(", "))}</b></div>` : "";
         const effLines = formatTechEffectsRu(t.effects);
@@ -2165,7 +2577,7 @@
               <div><b>${escHtml(t.name || t.id)}</b> <span class="muted">(${escHtml(t.id)})</span></div>
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">${statusLine}${btn}</div>
             </div>
-            <div class="tech-item-meta">Тир ${escHtml(String(t.tier ?? "—"))} • длительность: <b>${escHtml(dur)}</b> • стоимость: ${escHtml(costStr)}</div>
+            <div class="tech-item-meta">Тир ${escHtml(String(t.tier ?? "—"))} • длительность работы: <b>${escHtml(dur)}</b> • оплата при старте: ${escHtml(payLine)}</div>
             <div class="tech-item-desc">${desc}</div>
             ${effBlock}
             <div class="tech-item-meta" style="margin-top:8px;">Предпосылки: ${escHtml(prereqStr)}</div>
@@ -2183,7 +2595,8 @@
             <div class="tech-item-details-inner">${inner}</div>
           </details>`;
         }
-        return `<div class="tech-item">${inner}</div>`;
+        const activeCls = status === "in_progress" ? " tech-item-active" : "";
+        return `<div class="tech-item${activeCls}">${inner}</div>`;
       };
 
       const matchesSearch = (t, q) => {
@@ -2198,7 +2611,7 @@
         return enabled.filter((t) => {
           const st = techStatus(t);
           if (!matchesSearch(t, q)) return false;
-          if (activeTab === "available") return st === "none";
+          if (activeTab === "available") return techCanStart(t);
           if (activeTab === "in_progress") return st === "in_progress";
           if (activeTab === "done") return st === "done";
           if (activeTab === "all") {
@@ -2241,12 +2654,16 @@
       };
 
       techModalBody.innerHTML = `
-        <div class="muted" style="margin-bottom:10px;">Текущий сол: <b>${currentTick}</b></div>
+        <div class="muted" style="margin-bottom:10px;">Текущий сол: <b>${currentTick}</b> • Наука: <b>${escHtml(String(Math.round(rpPlayerBal * 100) / 100))}</b>${
+        Number.isFinite(rpPlayerPerSol) && rpPlayerPerSol > 0
+          ? ` <span class="muted">(+${escHtml(String(Math.round(rpPlayerPerSol * 1000) / 1000))}/сол)</span>`
+          : ""
+      }</div>
         <div id="tech-effects" class="tech-effects"></div>
         <div class="tech-toolbar">
           <div class="tech-tabs" role="tablist">
-            <button type="button" class="tech-tab${activeTab === "all" ? " is-active" : ""}" data-tech-tab="all">Все</button>
             <button type="button" class="tech-tab${activeTab === "available" ? " is-active" : ""}" data-tech-tab="available">Доступные</button>
+            <button type="button" class="tech-tab${activeTab === "all" ? " is-active" : ""}" data-tech-tab="all">Все</button>
             <button type="button" class="tech-tab${activeTab === "in_progress" ? " is-active" : ""}" data-tech-tab="in_progress">В процессе</button>
             <button type="button" class="tech-tab${activeTab === "done" ? " is-active" : ""}" data-tech-tab="done">Завершённые</button>
           </div>
@@ -2287,7 +2704,7 @@
 
       for (const tabBtn of techModalBody.querySelectorAll("button[data-tech-tab]")) {
         tabBtn.addEventListener("click", () => {
-          activeTab = tabBtn.getAttribute("data-tech-tab") || "all";
+          activeTab = tabBtn.getAttribute("data-tech-tab") || "available";
           writeTechUiPrefs({ tab: activeTab });
           for (const b of techModalBody.querySelectorAll("button[data-tech-tab]")) b.classList.toggle("is-active", b.getAttribute("data-tech-tab") === activeTab);
           paint(searchInput ? searchInput.value : "");
@@ -2364,7 +2781,9 @@
         if (zoneVisionSelf) btn.classList.add("zone-vision-self");
         if (zoneBuildEnemy) btn.classList.add("zone-build-enemy");
         if (zoneBuildSelf) btn.classList.add("zone-build-self");
-        if (!isVisible) {
+        if (isVisible) {
+          btn.classList.add("cell-visible");
+        } else {
           if (fogState === "memory") btn.classList.add("cell-memory");
           else if (fogState === "stale") btn.classList.add("cell-stale");
           else btn.classList.add("cell-fog");
@@ -2386,6 +2805,16 @@
         }
         if (selectedCell && c.x === selectedCell.x && c.y === selectedCell.y && c.z === selectedCell.z) {
           btn.classList.add("cell-selected");
+        }
+        if (
+          scout &&
+          Number.isFinite(scout.x) &&
+          Number.isFinite(scout.y) &&
+          c.x === scout.x &&
+          c.y === scout.y &&
+          (c.z ?? 0) === (scout.z ?? 0)
+        ) {
+          btn.classList.add("cell-active-fleet");
         }
         const showSupplyBlocked =
           supplyHint &&
@@ -3434,9 +3863,6 @@
   if (radius4Btn) radius4Btn.addEventListener("click", async () => setRadius(4));
   if (radius10Btn) radius10Btn.addEventListener("click", async () => setRadius(10));
 
-
-  if (manualTickBtn) manualTickBtn.addEventListener("click", doManualTick);
-
   if (planetModalClose) planetModalClose.addEventListener("click", closePlanetModal);
   if (planetModalOverlay) {
     planetModalOverlay.addEventListener("click", (e) => {
@@ -3446,14 +3872,23 @@
 
   if (fleetEditBtn) {
     fleetEditBtn.addEventListener("click", () => {
-      renderFleetCompositionModal();
-      if (fleetModalOverlay) fleetModalOverlay.classList.remove("hidden");
+      void (async () => {
+        await fetchBalanceCached();
+        renderFleetCompositionModal();
+        if (fleetModalOverlay) fleetModalOverlay.classList.remove("hidden");
+      })();
     });
   }
   if (fleetModalClose) fleetModalClose.addEventListener("click", closeFleetModal);
   if (fleetModalOverlay) {
     fleetModalOverlay.addEventListener("click", (e) => {
       if (e.target === fleetModalOverlay) closeFleetModal();
+    });
+  }
+  if (fleetSubClose) fleetSubClose.addEventListener("click", () => closeFleetSubModal());
+  if (fleetSubOverlay) {
+    fleetSubOverlay.addEventListener("click", (e) => {
+      if (e.target === fleetSubOverlay) closeFleetSubModal();
     });
   }
   if (fleetCreateClose) fleetCreateClose.addEventListener("click", closeFleetCreateModal);

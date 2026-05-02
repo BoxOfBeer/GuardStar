@@ -29,4 +29,12 @@ if __name__ == "__main__":
         except Exception:
             pass
 
-    app.run(host=host, port=port, debug=True, use_reloader=False)
+    # Автоперезапуск при правках `.py` (иначе новые маршруты не подхватятся, пока не остановите процесс).
+    # При проблемах на Windows с двойным процессом: `set GUARDSTAR_NO_RELOADER=1`.
+    use_reloader = os.environ.get("GUARDSTAR_NO_RELOADER", "").lower() not in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    app.run(host=host, port=port, debug=True, use_reloader=use_reloader)

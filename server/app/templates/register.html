@@ -1,22 +1,80 @@
 {% extends "base.html" %}
 {% block body %}
-  <div class="card">
+  <div class="card register-card">
     <h2>Создать пилота</h2>
-    <form method="post">
-      <label>Имя (любое):</label>
-      <input name="display_name" placeholder="например, Molot" maxlength="64" />
-      <label style="margin-top:10px;">Раса:</label>
-      <select name="race_id">
+    <form method="post" class="register-form">
+      <label for="reg-display-name">Имя (любое):</label>
+      <input id="reg-display-name" name="display_name" placeholder="например, Molot" maxlength="64" />
+
+      <fieldset class="race-fieldset">
+        <legend class="race-legend">Раса</legend>
         {% set list = races if races is defined and races else [] %}
+        {% set ids = list|map(attribute='id')|list if list else [] %}
+        {% set sel = selected_race_id if selected_race_id is defined and selected_race_id else none %}
         {% if not list %}
-          <option value="human">Human Union</option>
+          <div class="race-grid">
+            <div class="race-grid-cell">
+              <input type="radio" name="race_id" id="reg_race_human" value="human" class="race-radio" checked />
+              <label class="race-select-card" for="reg_race_human">
+                <span class="race-card-face">
+                  <span class="race-glyph" aria-hidden="true">◇</span>
+                  <span class="race-title">Human Union</span>
+                  <ul class="race-perks"><li>Базовая раса</li></ul>
+                </span>
+              </label>
+              <details class="race-lore">
+                <summary class="race-lore-summary">Подробнее</summary>
+                <div class="race-lore-body">Солнечный Союз Людей — сбалансированный старт для пилота.</div>
+              </details>
+            </div>
+          </div>
         {% else %}
-          {% for r in list %}
-            <option value="{{ r.id }}">{{ r.name or r.id }}</option>
-          {% endfor %}
+          <div class="race-grid">
+            {% for r in list %}
+              {% set rid = r.id %}
+              {% set perks = r.perks if r.perks is defined else [] %}
+              {% if not perks and r.description is defined %}
+                {% set perks = [r.description] %}
+              {% endif %}
+              {% set lore = r.lore if r.lore is defined and r.lore else (r.description or '') %}
+              {% set glyph = r.glyph if r.glyph is defined and r.glyph else '◆' %}
+              <div class="race-grid-cell">
+                <input
+                  type="radio"
+                  name="race_id"
+                  id="reg_race_{{ rid }}"
+                  value="{{ rid }}"
+                  class="race-radio"
+                  {% if sel and sel == rid %}checked
+                  {% elif not sel and rid == 'human' %}checked
+                  {% elif not sel and 'human' not in ids and loop.first %}checked{% endif %}
+                />
+                <label class="race-select-card" for="reg_race_{{ rid }}">
+                  <span class="race-card-face">
+                    <span class="race-glyph" aria-hidden="true">{{ glyph }}</span>
+                    <span class="race-title">{{ r.name or rid }}</span>
+                    <ul class="race-perks">
+                      {% for line in perks %}
+                        <li>{{ line }}</li>
+                      {% endfor %}
+                    </ul>
+                  </span>
+                </label>
+                {% if lore %}
+                <details class="race-lore">
+                  <summary class="race-lore-summary">Подробнее</summary>
+                  <div class="race-lore-body">{{ lore }}</div>
+                </details>
+                {% endif %}
+              </div>
+            {% endfor %}
+          </div>
         {% endif %}
-      </select>
-      <button type="submit">Создать</button>
+      </fieldset>
+
+      <div class="register-submit-wrap">
+        <button type="submit" class="btn-primary">Создать пилота</button>
+      </div>
     </form>
     {% if error %}<div class="error">{{ error }}</div>{% endif %}
     <p class="muted">Почта не нужна. Для входа будет выдан код доступа.</p>
