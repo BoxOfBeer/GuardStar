@@ -10,6 +10,7 @@ from sqlalchemy import select
 from app.db.engine import db_session
 from app.db.models.player import Player
 from app.routes.api.blueprint import api_bp
+from app.services.player_presence import touch_player_game_activity_if_due
 
 _SKIP_ACCOUNT_DISABLED = frozenset(
     {
@@ -39,9 +40,10 @@ def _api_reject_disabled_accounts() -> None:
         row = s.execute(
             select(Player.account_disabled).where(Player.id == uid)
         ).scalar_one_or_none()
-    if row is True:
-        session.clear()
-        return jsonify({"error": "account_disabled"}), 403
+        if row is True:
+            session.clear()
+            return jsonify({"error": "account_disabled"}), 403
+        touch_player_game_activity_if_due(s, uid)
     return None
 
 

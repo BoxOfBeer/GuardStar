@@ -31,6 +31,10 @@ class Player(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    #: Последняя активность по игровому API (poll и др.), для админки «онлайн».
+    last_game_activity_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     # Включить запись API-действий (POST/PUT/PATCH/DELETE) в feedback_playtest_api_logs
     feedback_audited: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, index=True

@@ -29,6 +29,11 @@ class WorldState(Base):
         Integer, nullable=False, default=25
     )
 
+    #: Окно «онлайн» в админке: игрок считается активным, если был API-запрос за последние N минут.
+    admin_presence_window_minutes: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=10
+    )
+
     #: Тест/админ: не создавать новые флоты (игроки, NPC-транзит, корсары) — см. API dev.
     test_block_new_fleets: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False

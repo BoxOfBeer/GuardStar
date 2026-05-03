@@ -22,10 +22,10 @@
 | `outposts` / `outpost_modules` | Аванпосты | Ревизии outpost + **`028` parity** |
 | `game_clock` auto_tick_* | Автотик | **`028`** |
 | `resources` fuel, food, water | Экономика | **`028`** |
-| `world_state` таблица + admin_*, test_*, spawn + **economy_base_food_per_sol / economy_base_water_per_sol** | Глобальные флаги и база еды/воды | **`028` parity** + **`20260518_000029`** |
+| `world_state` таблица + admin_*, test_*, spawn + **economy_base_*** + **admin_presence_window_minutes** | Глобальные флаги, база еды/воды, окно онлайн в админке | **`028` parity** + **`20260518_000029`** + **`20260519_000030`** |
 | `admin_config` | Админка | **`028`** |
 | `buildings` полная таблица или planet_id / capture_* | Захват / привязка к планете | **`028`** + **`028` parity** для старых таблиц без колонок |
-| `players` race_id, feedback_audited, research_points | Регистрация / фидбек / RP | **`028`** + **`028` parity** |
+| `players` race_id, feedback_audited, research_points, **last_game_activity_at** | Регистрация / фидбек / RP / админ-онлайн | **`028` parity** + **`20260519_000030`** |
 | `fleet_ships` + backfill из `fleets` | Нормализация состава | **`028`** |
 | `player_techs` + индекс по status (если нужен) | Исследования | **`028`** + **`028` parity** |
 | `player_effects` | Эффекты игрока | **`028` parity** |

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime, timedelta, timezone
+from time import monotonic
 
 from flask import abort, current_app, redirect, render_template, request, session, url_for
 from sqlalchemy import delete, func, select
@@ -16,6 +18,7 @@ from app.services.world_research_runtime import (
 )
 from app.services.world_service.constants import DEFAULT_MAX_FLEET_UNITS
 from app.db.models.admin_config import AdminConfig
+from app.db.models.building import Building
 from app.db.models.event import Event
 from app.db.models.feedback_message import FeedbackMessage
 from app.db.models.fleet import Fleet
@@ -31,6 +34,47 @@ from app.routes.web.common import (
 from app.services.auth_service import AuthService
 from app.services.feedback_playtest_audit import invalidate_feedback_audited_cache
 from app.services.world_service import WorldService
+
+
+def _admin_geo_buildings_homes(
+    s, ids: list[uuid.UUID]
+) -> tuple[dict[uuid.UUID, int], dict[uuid.UUID, tuple[int, int]]]:
+    """Кэш ~10 мин: число полевых построек и координаты дома (первая планета по created_at)."""
+    cache = current_app.extensions.setdefault(
+        "_admin_accounts_geo_cache",
+        {"mono": -1.0, "buildings": {}, "homes": {}},
+    )
+    now_m = monotonic()
+    if not ids:
+        return {}, {}
+    if cache["mono"] >= 0.0 and now_m - cache["mono"] <= 600.0:
+        return cache["buildings"], cache["homes"]
+    bmap = dict(
+        s.execute(
+            select(Building.owner_player_id, func.count(Building.id))
+            .where(Building.owner_player_id.in_(ids))
+            .group_by(Building.owner_player_id)
+        ).all()
+    )
+    rn = func.row_number().over(
+        partition_by=Planet.owner_player_id,
+        order_by=Planet.created_at.asc(),
+    ).label("rn")
+    subq = (
+        select(Planet.owner_player_id, Planet.pos_x, Planet.pos_y, rn)
+        .where(Planet.owner_player_id.in_(ids))
+        .subquery()
+    )
+    hrows = s.execute(
+        select(subq.c.owner_player_id, subq.c.pos_x, subq.c.pos_y).where(
+            subq.c.rn == 1
+        )
+    ).all()
+    hmap = {row[0]: (int(row[1]), int(row[2])) for row in hrows}
+    cache["mono"] = now_m
+    cache["buildings"] = bmap
+    cache["homes"] = hmap
+    return bmap, hmap
 
 
 def _db_connection_label(database_url: str) -> str:
@@ -209,7 +253,26 @@ def admin_hub():
                     int(getattr(ws, "economy_base_water_per_sol", 10) or 10),
                 ),
             ),
+            "admin_presence_window_minutes": max(
+                1,
+                min(
+                    120,
+                    int(getattr(ws, "admin_presence_window_minutes", 10) or 10),
+                ),
+            ),
         }
+        presence_min = int(data["admin_presence_window_minutes"])
+        since = datetime.now(timezone.utc) - timedelta(minutes=presence_min)
+        data["players_online_api"] = int(
+            s.execute(
+                select(func.count())
+                .select_from(Player)
+                .where(
+                    Player.last_game_activity_at.is_not(None),
+                    Player.last_game_activity_at >= since,
+                )
+            ).scalar_one()
+        )
 
         players = (
             s.execute(select(Player).order_by(Player.created_at.desc())).scalars().all()
@@ -234,8 +297,17 @@ def admin_hub():
                 ).all()
             )
 
+        bmap, hmap = _admin_geo_buildings_homes(s, ids)
+        now_utc = datetime.now(timezone.utc)
         payload = []
         for p in players:
+            la = getattr(p, "last_game_activity_at", None)
+            live = bool(
+                la is not None and la >= (now_utc - timedelta(minutes=presence_min))
+            )
+            xy = hmap.get(p.id)
+            coord_s = f"{xy[0]}, {xy[1]}" if xy else ""
+            bcnt = int(bmap.get(p.id, 0))
             payload.append(
                 {
                     "id": str(p.id),
@@ -250,6 +322,9 @@ def admin_hub():
                     "is_game_admin": bool(getattr(p, "is_game_admin", False)),
                     "is_game_moderator": bool(getattr(p, "is_game_moderator", False)),
                     "account_disabled": bool(getattr(p, "account_disabled", False)),
+                    "recent_api_active": live,
+                    "approx_coords": coord_s,
+                    "field_buildings_count": bcnt,
                 }
             )
 
@@ -348,6 +423,27 @@ def admin_world_spawn_settings():
         ws.player_spawn_min_manhattan = int(v)
         s.commit()
 
+    return redirect(url_for("web.admin_hub", token=token, tab="world"))
+
+
+@web_bp.post("/admin/world/presence-ui")
+def admin_world_presence_ui():
+    """Окно минут для «онлайн» в админке (по last_game_activity_at)."""
+    token = _require_admin_token()
+    raw = (request.form.get("admin_presence_window_minutes") or "").strip()
+    try:
+        v = int(raw)
+    except ValueError:
+        v = 10
+    v = max(1, min(v, 120))
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        ws = world.get_or_create_world_state(s)
+        ws.admin_presence_window_minutes = int(v)
+        s.commit()
     return redirect(url_for("web.admin_hub", token=token, tab="world"))
 
 

@@ -187,18 +187,21 @@ def _apply_safety_net_parity_sql(conn) -> None:
         "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS admin_economy_overrides_json TEXT",
         "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS economy_base_food_per_sol INTEGER NOT NULL DEFAULT 10",
         "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS economy_base_water_per_sol INTEGER NOT NULL DEFAULT 10",
+        "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS admin_presence_window_minutes INTEGER NOT NULL DEFAULT 10",
         """
         INSERT INTO world_state (
           id, current_tick, updated_at,
           auto_tick_enabled, auto_tick_interval_seconds, player_spawn_min_manhattan,
           test_block_new_fleets, admin_block_player_fleet_create, admin_block_npc_transit,
           admin_block_bandit_mines, admin_block_bandit_outposts, admin_block_bandit_fleets,
-          admin_max_fleet_units, economy_base_food_per_sol, economy_base_water_per_sol
+          admin_max_fleet_units, economy_base_food_per_sol, economy_base_water_per_sol,
+          admin_presence_window_minutes
         ) VALUES (
           1, 0, now(),
           false, 10.0, 25,
           false, false, false, false, false, false,
-          0, 10, 10
+          0, 10, 10,
+          10
         ) ON CONFLICT (id) DO NOTHING
         """,
         "UPDATE world_state SET player_spawn_min_manhattan = 25 WHERE id = 1 AND player_spawn_min_manhattan IS NULL",
@@ -212,6 +215,8 @@ def _apply_safety_net_parity_sql(conn) -> None:
         "ALTER TABLE players ADD COLUMN IF NOT EXISTS feedback_audited BOOLEAN NOT NULL DEFAULT false",
         "CREATE INDEX IF NOT EXISTS ix_players_feedback_audited ON players (feedback_audited)",
         "ALTER TABLE players ADD COLUMN IF NOT EXISTS research_points NUMERIC(16,6) NOT NULL DEFAULT 0",
+        "ALTER TABLE players ADD COLUMN IF NOT EXISTS last_game_activity_at TIMESTAMPTZ NULL",
+        "CREATE INDEX IF NOT EXISTS ix_players_last_game_activity_at ON players (last_game_activity_at)",
         # player_techs
         "CREATE INDEX IF NOT EXISTS ix_player_techs_status ON player_techs (status)",
         # player_effects

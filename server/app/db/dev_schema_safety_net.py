@@ -510,6 +510,7 @@ def apply_dev_schema_safety_net() -> None:
                     "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS admin_economy_overrides_json TEXT",
                     "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS economy_base_food_per_sol INTEGER NOT NULL DEFAULT 10",
                     "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS economy_base_water_per_sol INTEGER NOT NULL DEFAULT 10",
+                    "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS admin_presence_window_minutes INTEGER NOT NULL DEFAULT 10",
                 ):
                     conn.execute(text(sql))
 
@@ -590,6 +591,17 @@ def apply_dev_schema_safety_net() -> None:
                     conn.execute(
                         text(
                             "ALTER TABLE players ADD COLUMN IF NOT EXISTS research_points NUMERIC(16,6) NOT NULL DEFAULT 0"
+                        )
+                    )
+                if "last_game_activity_at" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE players ADD COLUMN IF NOT EXISTS last_game_activity_at TIMESTAMPTZ NULL"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "CREATE INDEX IF NOT EXISTS ix_players_last_game_activity_at ON players (last_game_activity_at)"
                         )
                     )
 

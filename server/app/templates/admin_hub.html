@@ -35,6 +35,15 @@
     .err-flash { color: #ff8a9e; margin-bottom: 10px; }
     .admin-tab-panel { display: none; margin-top: 18px; }
     .admin-tab-panel.is-active { display: block; }
+    .admin-presence-dot {
+      display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+      margin-right: 7px; vertical-align: middle; flex-shrink: 0;
+    }
+    .admin-presence-dot--live {
+      background: #3ecf8e;
+      box-shadow: 0 0 8px rgba(62, 207, 142, 0.45);
+    }
+    .admin-presence-dot--off { background: rgba(120, 140, 150, 0.42); }
   </style>
 {% endblock %}
 {% block body %}
@@ -150,6 +159,20 @@
         </div>
 
         <div class="admin-card">
+          <h3>Админка: «онлайн» по API</h3>
+          <p class="admin-muted">Счётчик и зелёные точки в списке аккаунтов: игрок дергал игровой JSON API (кроме login/version) в последние <b>N</b> минут. Обновление метки в БД не чаще ~90 сек на игрока.</p>
+          <p>Сейчас онлайн: <code>{{ data.players_online_api }}</code> из {{ players|length }}</p>
+          <form method="post" action="{{ url_for('web.admin_world_presence_ui', token=token) }}">
+            <input type="hidden" name="token" value="{{ token }}" />
+            <label>
+              Окно (1–120 мин):
+              <input type="number" min="1" max="120" step="1" name="admin_presence_window_minutes" value="{{ data.admin_presence_window_minutes }}" />
+            </label>
+            <button type="submit" style="margin-top:10px;">Сохранить окно</button>
+          </form>
+        </div>
+
+        <div class="admin-card">
           <h3>Один сол вручную</h3>
           <p class="admin-muted" style="font-size:0.88rem;line-height:1.45;">
             Один дискретный шаг мира для всех игроков (то же, что делает игровой API при тике): производство, ордера, исследования и т.д. Раньше была кнопка «Сол» в HUD — теперь только здесь или через автосол.
@@ -253,15 +276,24 @@
 
     <div id="admin-panel-accounts" class="admin-tab-panel {% if tab == 'accounts' %}is-active{% endif %} admin-section-title">
     <section id="admin-tab-accounts" style="margin-top:0;">
-      <h3 class="admin-muted" style="margin-bottom:10px;">Аккаунты ({{ players|length }})</h3>
+      <h3 class="admin-muted" style="margin-bottom:10px;">
+        Аккаунты ({{ players|length }})
+        · онлайн по API: <code>{{ data.players_online_api }}</code>
+        <span class="admin-muted">(окно {{ data.admin_presence_window_minutes }} мин)</span>
+      </h3>
+      <p class="admin-muted" style="margin-top:-6px;margin-bottom:10px;">Зелёный кружок у ника — был запрос к игре в окне. Дом (x, y) и число полевых построек обновляются с сервера примерно раз в 10 минут.</p>
       <div class="card" style="background:rgba(10,19,36,0.72);border-color:rgba(255,255,255,0.12);">
         <div class="events" style="max-height:520px;">
           {% for p in players %}
             <div class="event feedback-admin-item" style="border:none;padding-top:0;">
-              <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;">
-                <div><b>{{ p.display_name }}</b> <span class="admin-muted">({{ p.id }})</span></div>
+              <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;">
+                <div style="display:flex;align-items:center;gap:0;min-width:0;">
+                  <span class="admin-presence-dot {% if p.recent_api_active %}admin-presence-dot--live{% else %}admin-presence-dot--off{% endif %}" title="{% if p.recent_api_active %}Был игровой API за последние {{ data.admin_presence_window_minutes }} мин{% else %}Нет игрового API в этом окне{% endif %}"></span>
+                  <span style="min-width:0;"><b>{{ p.display_name }}</b> <span class="admin-muted">({{ p.id }})</span></span>
+                </div>
                 <div class="admin-muted">создан: {{ p.created_at.isoformat() }}{% if p.last_login_at %} • вход: {{ p.last_login_at.isoformat() }}{% endif %}</div>
               </div>
+              <div class="admin-muted">дом (x,y): <code>{{ p.approx_coords or '—' }}</code> · полевые постройки: <code>{{ p.field_buildings_count }}</code></div>
               <div class="admin-muted">key_hash: {{ p.access_code_hash[:12] }}… • планет: {{ p.planets_count }} • флотов: {{ p.fleets_count }} • аудит API: {% if p.feedback_audited %}<b>вкл.</b>{% else %}выкл.{% endif %} • игнор в чатах не скрывает: {% if p.staff_chat_exempt %}<b>да</b> (staff){% else %}нет{% endif %} • <b>админ игры</b>: {% if p.is_game_admin %}да{% else %}нет{% endif %} • <b>модератор</b>: {% if p.is_game_moderator %}да{% else %}нет{% endif %} • <b>аккаунт отключён</b>: {% if p.account_disabled %}<b>да</b>{% else %}нет{% endif %}</div>
               <div class="row" style="gap:8px;flex-wrap:wrap;">
                 <form method="post" action="{{ url_for('web.admin_toggle_game_admin', player_id=p.id) }}?token={{ token }}" style="display:flex;gap:6px;align-items:center;">
