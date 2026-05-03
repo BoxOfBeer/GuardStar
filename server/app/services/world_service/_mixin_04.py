@@ -532,6 +532,92 @@ class WorldServiceMixin04:
         if not gate.get("ok"):
             return {**gate, "meta": meta}
 
+        planet = self._resolve_owning_planet_for_build_site(
+            s, owner_id=pid, x=x, y=y, z=z
+        )
+        if not planet:
+            planet = s.execute(
+                select(Planet)
+                .where(Planet.owner_player_id == pid)
+                .order_by(Planet.created_at.asc())
+            ).scalar_one_or_none()
+        if not planet:
+            return {"ok": False, "error": "no_controlling_planet", "meta": meta}
+
+        on_planet_tile = self._cell_has_planet(s, x=int(x), y=int(y), z=int(z))
+        if on_planet_tile:
+            slots_total = int(getattr(planet, "build_slots_total", 55) or 55)
+            built_surface = int(
+                self._surface_slot_buildings_count_for_planet(s, planet=planet)
+            )
+            if built_surface >= slots_total:
+                return {
+                    "ok": False,
+                    "error": "planet_slots_full",
+                    "built": built_surface,
+                    "built_surface": built_surface,
+                    "total": slots_total,
+                    "meta": meta,
+                }
+
+        if not on_planet_tile:
+            exists = (
+                s.execute(
+                    select(Building).where(
+                        Building.x == x, Building.y == y, Building.z == z
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if exists:
+                return {"ok": False, "error": "cell_already_built", "meta": meta}
+
+        home = s.execute(
+            select(Planet).where(Planet.owner_player_id == pid)
+        ).scalar_one_or_none()
+        if not home:
+            return {"ok": False, "error": "no_home_planet", "meta": meta}
+        res_row = s.execute(
+            select(Resource).where(Resource.planet_id == home.id)
+        ).scalar_one_or_none()
+        if not res_row:
+            return {"ok": False, "error": "no_resources", "meta": meta}
+
+        cost = {"metal": 0, "crystal": 0, "energy": 0, "fuel": 0}
+        if self._balance:
+            bobj = build_def or self._balance.get_building(btype)
+            bc = bobj.get("build") if isinstance(bobj, dict) else {}
+            cst = bc.get("cost") if isinstance(bc.get("cost"), dict) else {}
+            for k in ("metal", "crystal", "energy", "fuel"):
+                if isinstance(cst.get(k), (int, float)):
+                    cost[k] = int(cst[k])
+        else:
+            cost = {"metal": 120, "crystal": 60, "energy": 0, "fuel": 0}
+            if btype == "reactor":
+                cost = {"metal": 160, "crystal": 40, "energy": 0, "fuel": 0}
+            elif btype == "crystal_farm":
+                cost = {"metal": 100, "crystal": 90, "energy": 0, "fuel": 0}
+
+        if (
+            int(res_row.metal) < cost["metal"]
+            or int(res_row.crystal) < cost["crystal"]
+            or int(res_row.energy) < cost["energy"]
+            or int(getattr(res_row, "fuel", 0)) < cost["fuel"]
+        ):
+            return {
+                "ok": False,
+                "error": "not_enough_resources",
+                "need": cost,
+                "have": {
+                    "metal": int(res_row.metal),
+                    "crystal": int(res_row.crystal),
+                    "energy": int(res_row.energy),
+                    "fuel": int(getattr(res_row, "fuel", 0)),
+                },
+                "meta": meta,
+            }
+
         return {
             "ok": True,
             "builder_fleet_id": gate.get("builder_fleet_id"),
@@ -688,13 +774,29 @@ class WorldServiceMixin04:
 
         cost = up.get("cost") if isinstance(up.get("cost"), dict) else {}
         need = {k: int(cost.get(k, 0)) for k in ("metal", "crystal", "energy", "fuel")}
+        have_res = {
+            "metal": int(res.metal),
+            "crystal": int(res.crystal),
+            "energy": int(res.energy),
+            "fuel": int(getattr(res, "fuel", 0)),
+        }
         if int(res.metal) < need["metal"] or int(res.crystal) < need["crystal"]:
-            return {"ok": False, "error": "not_enough_resources", "need": need}
+            return {
+                "ok": False,
+                "error": "not_enough_resources",
+                "need": need,
+                "have": have_res,
+            }
         if (
             int(res.energy) < need["energy"]
             or int(getattr(res, "fuel", 0)) < need["fuel"]
         ):
-            return {"ok": False, "error": "not_enough_resources", "need": need}
+            return {
+                "ok": False,
+                "error": "not_enough_resources",
+                "need": need,
+                "have": have_res,
+            }
 
         res.metal -= need["metal"]
         res.crystal -= need["crystal"]

@@ -537,6 +537,20 @@
   /** Только последние строки в DOM — без бесконечного роста ленты. */
   const MAX_CHAT_FEED_LINES = 100;
 
+  /** Порядок сообщений как у ленты API: старые выше, новые ниже — держим низ, если игрок не листает историю вверх. */
+  const CHAT_FEED_BOTTOM_SLACK_PX = 96;
+  const chatFeedNearBottom = (feedEl) => {
+    if (!feedEl) return true;
+    return feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight <= CHAT_FEED_BOTTOM_SLACK_PX;
+  };
+  const scrollChatFeedToBottom = (feedEl, opts = {}) => {
+    const force = Boolean(opts.force);
+    if (!feedEl) return;
+    requestAnimationFrame(() => {
+      if (force) feedEl.scrollTop = feedEl.scrollHeight;
+    });
+  };
+
   const escChatTxt = (s) =>
     String(s ?? "")
       .replace(/&/g, "&amp;")
@@ -558,6 +572,7 @@
     const reset = Boolean(opts.reset);
     const privateDm = Boolean(opts.privateDm);
     if (!feedEl || !Array.isArray(messages)) return;
+    const stickBottom = reset || chatFeedNearBottom(feedEl);
     if (reset) feedEl.innerHTML = "";
     const readClockShort = (iso) => {
       if (!iso) return "";
@@ -601,12 +616,12 @@
       feedEl.appendChild(row);
     }
     trimChatFeedToMaxLines(feedEl);
-    /* column-reverse: новые сообщения сверху — держим прокрутку у «верха» ленты */
-    feedEl.scrollTop = 0;
+    scrollChatFeedToBottom(feedEl, { force: stickBottom });
   };
 
   const appendGlobalChatLines = (feedEl, messages, { reset } = { reset: false }) => {
     if (!feedEl || !Array.isArray(messages)) return;
+    const stickBottom = reset || chatFeedNearBottom(feedEl);
     if (reset) feedEl.innerHTML = "";
     const senderIsSelf = (sid) => playerId && String(sid || "") === String(playerId);
     for (const m of messages) {
@@ -679,7 +694,7 @@
       feedEl.appendChild(row);
     }
     trimChatFeedToMaxLines(feedEl);
-    feedEl.scrollTop = 0;
+    scrollChatFeedToBottom(feedEl, { force: stickBottom });
   };
 
   const fetchGlobalChat = async () => {
@@ -2046,6 +2061,9 @@
     "atmospheric_reclaim",
   ];
 
+  /** Типы форпостов в меню полевой стройки — синхронизировать с кнопками `data-outpost`. */
+  const OUTPOST_BUILD_MENU_TYPES = ["outpost_t1"];
+
   let showAllBuildOptions = false;
 
   const TERRAIN_RU_SHORT = {
@@ -2060,6 +2078,54 @@
     if (!Array.isArray(arr) || arr.length === 0) return "";
     const pretty = arr.map((t) => (TERRAIN_RU_SHORT[t] ? TERRAIN_RU_SHORT[t] : String(t)));
     return pretty.join("/");
+  };
+
+  /** Потребность vs склад дома — тултипы, статус и баннер в модалке. */
+  const formatCostVsHaveRuTip = (need, have) => {
+    const keys = ["metal", "crystal", "energy", "fuel"];
+    const ru = { metal: "металл", crystal: "кристаллы", energy: "энергия", fuel: "топливо" };
+    const parts = [];
+    for (const k of keys) {
+      const n = Number(need && need[k]);
+      if (!Number.isFinite(n) || n <= 0) continue;
+      const h = Number(have && have[k]);
+      const hv = Number.isFinite(h) ? h : "?";
+      parts.push(`${ru[k] || k}: нужно ${n}, на складе ${hv}`);
+    }
+    return parts.length ? parts.join("; ") : "Недостаточно ресурсов на складе домашней планеты.";
+  };
+
+  const refreshPlanetBuildPlacementBanner = (results) => {
+    const el = planetModalBody && planetModalBody.querySelector("#planet-build-placement-summary");
+    if (!el || !results || typeof results !== "object") return;
+    let shortfall = false;
+    let slotsFull = false;
+    let cellBusy = false;
+    for (const bt of BUILD_MENU_BUTTON_TYPES) {
+      const res = results[bt];
+      if (!res || res.ok) continue;
+      if (res.error === "not_enough_resources") shortfall = true;
+      if (res.error === "planet_slots_full") slotsFull = true;
+      if (res.error === "cell_already_built") cellBusy = true;
+    }
+    const bits = [];
+    if (slotsFull) {
+      bits.push(
+        `<span class="hud-warn">Поверхность колонии заполнена.</span> Свободных слотов на этом тайле больше нет; полевые постройки на других клетках считаются отдельно.`,
+      );
+    }
+    if (cellBusy) {
+      bits.push(
+        `<span class="hud-warn">На клетке уже стоит постройка.</span> Вне тайла колонии допускается одна постройка на клетку.`,
+      );
+    }
+    if (shortfall) {
+      bits.push(
+        `<span class="hud-warn">Не хватает ресурсов на складе дома</span> для части вариантов ниже. Наведите на затемнённую кнопку — там «нужно / есть». Включите «Показать все варианты», если список скрыт.`,
+      );
+    }
+    el.innerHTML = bits.join("<br />");
+    el.classList.toggle("planet-build-placement-summary--warn", bits.length > 0);
   };
 
   const updateBuildButtonsAvailability = async (x, y, z, fleetId) => {
@@ -2128,11 +2194,134 @@
             btn.title = [baseTip, "Не хватает инженеров в этом флоте."].filter(Boolean).join("\n");
           } else if (err === "inside_enemy_control_zone") {
             btn.title = [baseTip, "Нельзя: клетка под подтверждённым вражеским контролем."].filter(Boolean).join("\n");
+          } else if (err === "not_enough_resources") {
+            const tip = formatCostVsHaveRuTip(res.need, res.have);
+            btn.title = [baseTip, tip].filter(Boolean).join("\n");
+          } else if (err === "planet_slots_full") {
+            btn.title = [
+              baseTip,
+              `Слоты поверхности колонии заняты (${res.built_surface ?? res.built ?? "?"}/${res.total ?? "?"}).`,
+            ]
+              .filter(Boolean)
+              .join("\n");
+          } else if (err === "cell_already_built") {
+            btn.title = [
+              baseTip,
+              "На этой клетке уже есть постройка (вне тайла колонии допускается одна постройка на клетку).",
+            ]
+              .filter(Boolean)
+              .join("\n");
+          } else if (err === "no_home_planet" || err === "no_resources") {
+            btn.title = [baseTip, "Нет домашней планеты или склада ресурсов для списания."].filter(Boolean).join("\n");
           } else {
             btn.title = [baseTip, `Нельзя: ${err}`].filter(Boolean).join("\n");
           }
         }
       }
+      refreshPlanetBuildPlacementBanner(results);
+    } catch (_e) {
+      // ignore UI-only failures
+    }
+  };
+
+  const refreshOutpostBuildPlacementBanner = (results) => {
+    const el = planetModalBody && planetModalBody.querySelector("#outpost-build-placement-summary");
+    if (!el || !results || typeof results !== "object") return;
+    let shortfall = false;
+    let tooClose = false;
+    let noEng = false;
+    let tech = false;
+    let cellOut = false;
+    let cellBld = false;
+    for (const ot of OUTPOST_BUILD_MENU_TYPES) {
+      const res = results[ot];
+      if (!res || res.ok) continue;
+      if (res.error === "not_enough_resources") shortfall = true;
+      if (res.error === "outpost_too_close") tooClose = true;
+      if (res.error === "engineer_required" || res.error === "not_enough_engineers") noEng = true;
+      if (res.error === "tech_required") tech = true;
+      if (res.error === "cell_already_has_outpost") cellOut = true;
+      if (res.error === "cell_already_built") cellBld = true;
+    }
+    const bits = [];
+    if (cellOut) bits.push(`<span class="hud-warn">На клетке уже есть активный форпост.</span>`);
+    if (cellBld)
+      bits.push(
+        `<span class="hud-warn">На клетке уже стоит постройка.</span> Форпост на эту же клетку не ставится.`,
+      );
+    if (tooClose)
+      bits.push(
+        `<span class="hud-warn">Слишком близко к вашему другому форпосту.</span> Расшифровка — в подсказке на кнопке «Форпост».`,
+      );
+    if (noEng)
+      bits.push(`<span class="hud-warn">Нужен инженер</span> на выбранном флоте в этой клетке (−1 при постройке).`);
+    if (tech) bits.push(`<span class="hud-warn">Не хватает исследований</span> для этого типа форпоста (см. подсказку на кнопке).`);
+    if (shortfall)
+      bits.push(
+        `<span class="hud-warn">Не хватает ресурсов на складе дома</span> для форпоста. Наведите на кнопку — «нужно / есть».`,
+      );
+    el.innerHTML = bits.join("<br />");
+    el.classList.toggle("planet-build-placement-summary--warn", bits.length > 0);
+  };
+
+  const updateOutpostBuildButtonsAvailability = async (x, y, z, fleetId) => {
+    try {
+      if (!planetModalBody) return;
+      if (!OUTPOST_BUILD_MENU_TYPES.length) return;
+      const r = await fetch("/api/outposts/build_checks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          x,
+          y,
+          z,
+          fleet_id: fleetId,
+          outpost_types: OUTPOST_BUILD_MENU_TYPES,
+        }),
+      });
+      if (!r.ok) return;
+      const body = await r.json();
+      if (!body || !body.ok) return;
+      const results = body.results || {};
+      const btns = planetModalBody.querySelectorAll("button[data-outpost]");
+      for (const btn of btns) {
+        const ot = btn.getAttribute("data-outpost");
+        const res = results[ot];
+        if (!btn.getAttribute("data-label")) btn.setAttribute("data-label", btn.textContent || ot || "");
+        const baseLabel = btn.getAttribute("data-label") || ot || "Форпост";
+        btn.textContent = baseLabel;
+
+        const tipOk =
+          "Построить форпост. Ресурсы списываются с домашней планеты, с выбранного флота — один инженер.";
+        if (res && res.ok) {
+          btn.disabled = false;
+          btn.title = tipOk;
+        } else {
+          btn.disabled = true;
+          const err = res ? res.error : "not_allowed";
+          if (err === "tech_required") {
+            const missing = Array.isArray(res.missing_techs) ? res.missing_techs.join(", ") : "—";
+            btn.title = `Нужны исследования: ${missing}`;
+          } else if (err === "engineer_required") {
+            btn.title = "Нужен ваш инженерный флот в этой клетке (выберите флот выше).";
+          } else if (err === "not_enough_engineers") {
+            btn.title = "В выбранном флоте нет инженеров.";
+          } else if (err === "outpost_too_close") {
+            btn.title = `Слишком близко к вашему форпосту: нужно расстояние ≥ ${res.need_distance ?? "?"}, сейчас ${res.nearest ?? "?"}.`;
+          } else if (err === "not_enough_resources") {
+            btn.title = formatCostVsHaveRuTip(res.need, res.have);
+          } else if (err === "cell_already_has_outpost") {
+            btn.title = "На клетке уже стоит активный форпост.";
+          } else if (err === "cell_already_built") {
+            btn.title = "На клетке уже есть постройка — форпост сюда не ставится.";
+          } else if (err === "no_home_planet" || err === "no_resources") {
+            btn.title = "Нет домашней планеты или склада для списания.";
+          } else {
+            btn.title = `Нельзя: ${err}`;
+          }
+        }
+      }
+      refreshOutpostBuildPlacementBanner(results);
     } catch (_e) {
       // ignore UI-only failures
     }
@@ -2541,7 +2730,13 @@
       const body = await r.json();
       if (!r.ok || !body.ok) {
         if (body.error === "not_enough_resources") {
-          setStatus(`Не хватает ресурсов: нужно M${body.need?.metal}/C${body.need?.crystal}`, "err");
+          const resHuman = formatCostVsHaveRuTip(body.need || {}, body.have || {});
+          setStatus(`Не хватает ресурсов: ${resHuman}`, "err");
+          const ban = planetModalBody && planetModalBody.querySelector("#planet-build-placement-summary");
+          if (ban) {
+            ban.innerHTML = `<span class="hud-warn">Не хватает ресурсов.</span> ${resHuman}`;
+            ban.classList.add("planet-build-placement-summary--warn");
+          }
         } else if (body.error === "engineer_required") {
           setStatus("Для стройки вне колонии нужен ваш флот с инженерами на этой клетке", "err");
         } else if (body.error === "outpost_too_close") {
@@ -2642,9 +2837,15 @@
             await refreshWindow();
           }
         }
-        else if (body.error === "not_enough_resources")
-          setStatus(`Не хватает ресурсов (нужно ${JSON.stringify(body.need || {})})`, "err");
-        else setStatus(`Ошибка: ${(body.error || "outpost_build_failed")} ${body.detail ? `(${body.detail})` : ""}`, "err");
+        else if (body.error === "not_enough_resources") {
+          const resHuman = formatCostVsHaveRuTip(body.need || {}, body.have || {});
+          setStatus(`Не хватает ресурсов: ${resHuman}`, "err");
+          const ban = planetModalBody && planetModalBody.querySelector("#outpost-build-placement-summary");
+          if (ban) {
+            ban.innerHTML = `<span class="hud-warn">Не хватает ресурсов для форпоста.</span> ${resHuman}`;
+            ban.classList.add("planet-build-placement-summary--warn");
+          }
+        } else setStatus(`Ошибка: ${(body.error || "outpost_build_failed")} ${body.detail ? `(${body.detail})` : ""}`, "err");
         return;
       }
       await handleOutpostResult(body, `Форпост построен: ${body.outpost?.name || outpostType}`);
@@ -2775,7 +2976,7 @@
         } else if (body.error === "tech_required") {
           setStatus(`Нужны исследования: ${techIdsToRuCsv(body.missing_techs || [])}`, "err");
         } else if (body.error === "not_enough_resources") {
-          setStatus("Не хватает ресурсов на улучшение", "err");
+          setStatus(`Не хватает ресурсов: ${formatCostVsHaveRuTip(body.need || {}, body.have || {})}`, "err");
         } else if (body.error === "planet_type_cap") {
           setStatus("Достигнут лимит таких построек на планете", "err");
         } else if (body.error === "inside_enemy_control_zone") {
@@ -2816,8 +3017,31 @@
     }
   };
 
+  const preservePlanetModalDetailsState = () => {
+    const openBySummary = {};
+    if (!planetModalBody) return openBySummary;
+    for (const det of planetModalBody.querySelectorAll("details.game-modal-details")) {
+      const sum = det.querySelector(":scope > summary");
+      const label = sum ? String(sum.textContent || "").trim().replace(/\s+/g, " ") : "";
+      if (label) openBySummary[label] = Boolean(det.open);
+    }
+    return openBySummary;
+  };
+
+  const restorePlanetModalDetailsState = (openBySummary) => {
+    if (!planetModalBody || !openBySummary || typeof openBySummary !== "object") return;
+    for (const det of planetModalBody.querySelectorAll("details.game-modal-details")) {
+      const sum = det.querySelector(":scope > summary");
+      const label = sum ? String(sum.textContent || "").trim().replace(/\s+/g, " ") : "";
+      if (label && Object.prototype.hasOwnProperty.call(openBySummary, label)) {
+        det.open = Boolean(openBySummary[label]);
+      }
+    }
+  };
+
   const fillPlanetModalFromApi = async (cell) => {
     if (!planetModalBody) return;
+    const preservedDetailsOpen = preservePlanetModalDetailsState();
     const x = cell.x;
     const y = cell.y;
     const z = cell.z ?? 0;
@@ -2939,6 +3163,7 @@
         }`;
       } else {
         buildDetailsInner = `
+          <div id="planet-build-placement-summary" class="planet-build-placement-summary" aria-live="polite" role="status"></div>
           <label class="row" style="gap:8px;align-items:center;margin:6px 0 0 0;">
             <input type="checkbox" id="show-all-build" />
             <span class="muted">Показать все варианты</span>
@@ -2993,7 +3218,7 @@
             </div>
             ${
               planetSurfaceBuildingsActions
-                ? `<details class="game-modal-details">
+                ? `<details class="game-modal-details game-modal-details--construction">
               <summary class="game-modal-details-summary">Постройки на поверхности · действия</summary>
               <div class="game-modal-details-inner">
                 <div class="muted" style="font-size:82%;line-height:1.4;margin:0 0 12px;">Одна строка — один тип здания (×сколько есть). ♻ убирает одну постройку, 🔧 улучшает одну до следующего шага из баланса, 🔧∞ — оплатить улучшение для всех в строке по очереди (ресурсы с домашней планеты каждый шаг).</div>
@@ -3002,7 +3227,7 @@
             </details>`
                 : ""
             }
-            <details class="game-modal-details">
+            <details class="game-modal-details game-modal-details--construction">
               <summary class="game-modal-details-summary">Строительство</summary>
               <div class="game-modal-details-inner">${buildDetailsInner}</div>
             </details>
@@ -3010,6 +3235,8 @@
           </div>
         </div>
       `;
+
+      restorePlanetModalDetailsState(preservedDetailsOpen);
 
       bindBuildButtons(planetModalBody, x, y, z, null);
       const showAllEl = planetModalBody.querySelector("#show-all-build");
@@ -3367,6 +3594,8 @@
       } else {
         const outpostCostHtml = await outpostBuildCostBlockHtml("outpost_t1");
         buildHtml = `
+          <div id="planet-build-placement-summary" class="planet-build-placement-summary" aria-live="polite" role="status"></div>
+          <div id="outpost-build-placement-summary" class="planet-build-placement-summary" aria-live="polite" role="status"></div>
           <div class="section-title">Форпосты</div>
           ${outpostButtonsHtml()}
           ${outpostCostHtml}
@@ -3384,15 +3613,17 @@
         <div class="muted" style="margin-top:6px;">Ландшафт: ${formatTerrainRu(cell.terrain)}</div>
         ${buildHtml}
       `;
+      restorePlanetModalDetailsState(preservedDetailsOpen);
       const defaultBid = fleetBuilder.id || null;
       bindBuildButtons(planetModalBody, x, y, z, defaultBid);
       bindOutpostButtons(planetModalBody, { x, y, z, fleetId: defaultBid });
       const selEng = planetModalBody.querySelector("#sector-builder-fleet");
-      const runPlacementChecks = () => {
+      const runPlacementChecks = async () => {
         const fid = selEng && selEng.value ? String(selEng.value) : defaultBid;
-        void updateBuildButtonsAvailability(x, y, z, fid);
+        await updateBuildButtonsAvailability(x, y, z, fid);
+        await updateOutpostBuildButtonsAvailability(x, y, z, fid);
       };
-      if (selEng) selEng.addEventListener("change", runPlacementChecks);
+      if (selEng) selEng.addEventListener("change", () => void runPlacementChecks());
       await runPlacementChecks();
       return;
     }

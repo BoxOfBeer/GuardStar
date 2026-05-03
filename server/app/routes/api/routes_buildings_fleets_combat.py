@@ -223,6 +223,51 @@ def api_outposts_build():
         return jsonify(result)
 
 
+@api_bp.post("/outposts/build_checks")
+def api_outposts_build_checks():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    x = payload.get("x")
+    y = payload.get("y")
+    z = payload.get("z", 0)
+    fleet_id = payload.get("fleet_id")
+    outpost_types = payload.get("outpost_types") or []
+
+    if (
+        not isinstance(x, int)
+        or not isinstance(y, int)
+        or not isinstance(z, int)
+        or (fleet_id is not None and not isinstance(fleet_id, str))
+        or not isinstance(outpost_types, list)
+        or not all(isinstance(t, str) for t in outpost_types)
+    ):
+        return jsonify({"error": "invalid_payload"}), 400
+
+    outpost_types = [
+        t.strip() for t in outpost_types if isinstance(t, str) and t.strip()
+    ]
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        results: dict[str, dict] = {}
+        for ot in outpost_types:
+            results[ot] = world.check_outpost_placement(
+                s,
+                player_id=player_id,
+                x=x,
+                y=y,
+                z=z,
+                outpost_type=ot,
+                fleet_id=fleet_id,
+            )
+        return jsonify({"ok": True, "results": results})
+
+
 @api_bp.post("/outposts/upgrade")
 def api_outposts_upgrade():
     player_id = _current_player_id()

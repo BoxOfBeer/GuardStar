@@ -33,7 +33,7 @@ DATABASE_URL=postgresql+psycopg://guardstar:ПАРОЛЬ@127.0.0.1:5432/guardsta
 TEST_DATABASE_URL=postgresql+psycopg://guardstar:ПАРОЛЬ@127.0.0.1:5432/guardstar_test
 ```
 
-Прод: **`GUARDSTAR_DB_SAFETY_NET=false`** — только Alembic, без dev `create_all` на проде.
+Прод: **`GUARDSTAR_DB_SAFETY_NET=false`** — только Alembic, без dev `create_all` на проде. Тогда схема должна полностью соответствовать миграциям до **`alembic upgrade head`** (часть полей раньше жила только в **`dev_schema_safety_net`** или в боковой ветке Alembic **`20260530_000012`**, например **`players.race_id`**, **`fleets.name`**, **`resources.fuel`/`food`/`water`**, таблицы **`fleet_ships`**, **`buildings`**, **`player_techs`**, колонки **`game_clock.auto_tick_*`**, **`admin_config`** — для этого в репозитории миграция **`20260517_000028`**).
 
 ## 2) DNS для `dev.guarddoc.ru`
 
@@ -122,15 +122,30 @@ sudo systemctl enable --now guardstar
 
 ## 5) Тесты на сервере
 
-Из `/opt/guardstar/server` с активированным venv:
+Из `/opt/guardstar/server` с активированным venv и **PYTHONPATH** (иначе `ModuleNotFoundError: app`):
 
 ```bash
-export TEST_DATABASE_URL='postgresql+psycopg://guardstar:ПАРОЛЬ@127.0.0.1:5432/guardstar_test'
-pytest -q tests/test_balance.py
-pytest -q
+cd /opt/guardstar/server
+export PYTHONPATH=/opt/guardstar/server
+set -a && . ./.env && set +a   # подхватить DATABASE_URL / TEST_DATABASE_URL / SECRET_KEY / …
+.venv/bin/pytest -q tests/test_balance.py
+.venv/bin/pytest -q
 ```
 
-Полный `pytest` требует `TEST_DATABASE_URL` (см. `server/tests/conftest.py`).
+Полный набор с `client` требует **`TEST_DATABASE_URL`** в `.env` (см. `server/tests/conftest.py`). Код на сервере должен совпадать с веткой, под которую писались тесты: после **`git pull`** перезапуск **`systemctl restart guardstar`**.
+
+## Что уже сделано на хосте (черновик 2026-05-03)
+
+На **`195.208.2.62`** (не трогая `school.guarddoc.ru` и БД **`guardschool`**):
+
+- Роль PostgreSQL **`guardstar`**, БД **`guardstar`** и **`guardstar_test`**.
+- Клон **`/opt/guardstar`** с GitHub, venv, **`/opt/guardstar/server/.env`** (секреты только на сервере), **`alembic upgrade head`** до ревизии из клона.
+- **Gunicorn** на **`127.0.0.1:8001`**, unit **`guardstar.service`**.
+- Nginx: **`/etc/nginx/sites-available/dev.guarddoc.ru`** — HTTP **80** для `dev.guarddoc.ru` → прокси на **8001**.
+
+Пока **нет записи DNS** на `dev`, снаружи сайт не откроется; локально: `curl http://127.0.0.1:8001/api/health`.
+
+На клоне с GitHub была одна строка с **`WorldService._planet…`** в миксине (в актуальном дереве разработки уже **`self._`**); после **`git pull`** убедитесь, что серверный файл совпадает с репозиторием (без «ручного» sed).
 
 ## Проверка после деплоя
 

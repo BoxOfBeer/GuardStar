@@ -475,7 +475,7 @@ pre { padding: 10px; overflow: auto; }
 }
 .comms-chat-feed {
   display: flex;
-  flex-direction: column-reverse;
+  flex-direction: column;
   justify-content: flex-start;
   gap: 6px;
   flex: 1;
@@ -2307,6 +2307,35 @@ details.game-modal-details > summary.game-modal-details-summary::-webkit-details
 details.game-modal-details .game-modal-details-inner {
   padding: 8px 12px 14px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+/* Строительство на планете: заметная «зелёная зона», чтобы блок не терялся на фоне модалки */
+details.game-modal-details.game-modal-details--construction {
+  border-color: color-mix(in srgb, var(--ok, #61eaa3) 42%, var(--border));
+  background: linear-gradient(
+    165deg,
+    color-mix(in srgb, var(--ok, #61eaa3) 14%, rgba(11, 19, 34, 0.92)) 0%,
+    rgba(11, 26, 22, 0.72) 48%,
+    rgba(11, 19, 34, 0.88) 100%
+  );
+}
+details.game-modal-details.game-modal-details--construction > summary.game-modal-details-summary {
+  background: color-mix(in srgb, var(--ok, #61eaa3) 12%, transparent);
+}
+details.game-modal-details.game-modal-details--construction .game-modal-details-inner {
+  border-top-color: color-mix(in srgb, var(--ok, #61eaa3) 28%, transparent);
+}
+.planet-build-placement-summary {
+  font-size: 0.84rem;
+  line-height: 1.45;
+  padding: 8px 10px;
+  border-radius: 8px;
+  margin-bottom: 10px;
+  border: 1px solid transparent;
+  box-sizing: border-box;
+}
+.planet-build-placement-summary.planet-build-placement-summary--warn {
+  border-color: color-mix(in srgb, var(--danger, #ff6f91) 55%, var(--border));
+  background: rgba(56, 14, 26, 0.42);
 }
 @media (max-width: 920px) {
   .game-modal-grid {

@@ -760,6 +760,152 @@ class WorldServiceMixin03:
         s.flush()
         return {"center": {"x": cx, "y": cy}, "radius": radius, "z": z, "cells": cells}
 
+    def check_outpost_placement(
+        self,
+        s: Session,
+        *,
+        player_id: str,
+        x: int,
+        y: int,
+        z: int,
+        outpost_type: str,
+        fleet_id: str | None = None,
+    ) -> dict:
+        """Проверка постройки форпоста без изменения БД (для UI до `/api/outposts/build`)."""
+        pid = uuid.UUID(player_id)
+        otype = str(outpost_type or "").strip()
+        try:
+            od = self._outpost_definition(otype)
+        except Exception:
+            return {"ok": False, "error": "invalid_outpost_type"}
+
+        vis = od.get("vision") if isinstance(od.get("vision"), dict) else {}
+        min_dist = int(vis.get("base_radius", 6) or 6)
+        if min_dist > 0:
+            nearby = (
+                s.execute(
+                    select(Outpost).where(
+                        Outpost.owner_player_id == pid,
+                        Outpost.z == int(z),
+                        Outpost.status.in_(["active", "offline"]),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            nearest = None
+            nearest_op: Outpost | None = None
+            for op in nearby:
+                d = abs(int(op.x) - int(x)) + abs(int(op.y) - int(y))
+                if nearest is None or d < nearest:
+                    nearest = d
+                    nearest_op = op
+            if nearest is not None and int(nearest) < int(min_dist):
+                return {
+                    "ok": False,
+                    "error": "outpost_too_close",
+                    "need_distance": int(min_dist),
+                    "nearest": int(nearest),
+                    "nearest_outpost": (
+                        {
+                            "id": str(nearest_op.id),
+                            "x": int(nearest_op.x),
+                            "y": int(nearest_op.y),
+                            "z": int(nearest_op.z),
+                            "status": str(getattr(nearest_op, "status", "") or ""),
+                            "outpost_type": str(
+                                getattr(nearest_op, "outpost_type", "") or ""
+                            ),
+                        }
+                        if nearest_op
+                        else None
+                    ),
+                }
+
+        gate = self._can_build_at(s, owner_id=pid, x=x, y=y, z=z, fleet_id=fleet_id)
+        if not gate.get("ok"):
+            return gate
+
+        eng_fleet = self._owned_engineer_fleet_at(
+            s, owner_id=pid, x=x, y=y, z=z, fleet_id=fleet_id
+        )
+        if not eng_fleet:
+            return {"ok": False, "error": "engineer_required"}
+        if int(self._fleet_units_map(s, eng_fleet).get("engineer", 0)) <= 0:
+            return {"ok": False, "error": "not_enough_engineers", "need_engineers": 1}
+        if (
+            s.execute(
+                select(Outpost.id).where(
+                    Outpost.x == x,
+                    Outpost.y == y,
+                    Outpost.z == z,
+                    Outpost.status == "active",
+                )
+            )
+            .scalars()
+            .first()
+        ):
+            return {"ok": False, "error": "cell_already_has_outpost"}
+        if (
+            s.execute(
+                select(Building.id).where(
+                    Building.x == x, Building.y == y, Building.z == z
+                )
+            )
+            .scalars()
+            .first()
+        ):
+            return {"ok": False, "error": "cell_already_built"}
+
+        req_techs = self._outpost_required_techs(otype)
+        if req_techs:
+            done = set(self._get_player_done_techs(s, player_id=pid))
+            missing = [tid for tid in req_techs if tid not in done]
+            if missing:
+                return {
+                    "ok": False,
+                    "error": "tech_required",
+                    "required_techs": req_techs,
+                    "missing_techs": missing,
+                }
+
+        home = s.execute(
+            select(Planet)
+            .where(Planet.owner_player_id == pid)
+            .order_by(Planet.created_at.asc())
+        ).scalar_one_or_none()
+        if not home:
+            return {"ok": False, "error": "no_home_planet"}
+        res = s.execute(
+            select(Resource).where(Resource.planet_id == home.id)
+        ).scalar_one_or_none()
+        if not res:
+            return {"ok": False, "error": "no_resources"}
+        cost = (od.get("build") if isinstance(od.get("build"), dict) else {}).get(
+            "cost", {}
+        )
+        need = {k: int(cost.get(k, 0)) for k in ("metal", "crystal", "energy", "fuel")}
+        have_res = {
+            "metal": int(res.metal),
+            "crystal": int(res.crystal),
+            "energy": int(res.energy),
+            "fuel": int(getattr(res, "fuel", 0)),
+        }
+        if (
+            int(res.metal) < need["metal"]
+            or int(res.crystal) < need["crystal"]
+            or int(res.energy) < need["energy"]
+            or int(getattr(res, "fuel", 0)) < need["fuel"]
+        ):
+            return {
+                "ok": False,
+                "error": "not_enough_resources",
+                "need": need,
+                "have": have_res,
+            }
+
+        return {"ok": True}
+
     def build_outpost(
         self,
         s: Session,
@@ -885,13 +1031,24 @@ class WorldServiceMixin03:
             "cost", {}
         )
         need = {k: int(cost.get(k, 0)) for k in ("metal", "crystal", "energy", "fuel")}
+        have_res = {
+            "metal": int(res.metal),
+            "crystal": int(res.crystal),
+            "energy": int(res.energy),
+            "fuel": int(getattr(res, "fuel", 0)),
+        }
         if (
             int(res.metal) < need["metal"]
             or int(res.crystal) < need["crystal"]
             or int(res.energy) < need["energy"]
             or int(getattr(res, "fuel", 0)) < need["fuel"]
         ):
-            return {"ok": False, "error": "not_enough_resources", "need": need}
+            return {
+                "ok": False,
+                "error": "not_enough_resources",
+                "need": need,
+                "have": have_res,
+            }
 
         eng_map = self._fleet_units_map(s, eng_fleet)
         eng_map["engineer"] = max(0, int(eng_map.get("engineer", 0)) - 1)

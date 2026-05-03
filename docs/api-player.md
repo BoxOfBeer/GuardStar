@@ -271,6 +271,10 @@
 
 Проверка нескольких типов сразу: `x`, `y`, `z`, `building_types` (массив строк), опционально `fleet_id`. Ответ: `results` по каждому типу.
 
+### `POST /api/outposts/build_checks`
+
+Те же координаты и опциональный **`fleet_id`**, плюс **`outpost_types`** (массив строк). Ответ: **`results`** по каждому типу — те же **`error`** / **`need`** / **`have`**, что у реального **`POST /api/outposts/build`**, без изменений в БД.
+
 ### `POST /api/buildings/dismantle` / `POST /api/buildings/upgrade`
 
 **Тело:** `{"building_id": "uuid"}`
@@ -357,6 +361,7 @@ curl -sS -b cookies.txt "https://example.com/api/me"
 | `GET /api/balance` | Справочник: допустимые **`building_type`**, стоимости, `build_on_terrain`, техмодули форпоста. |
 | `GET /api/world/window` | Сетка клеток под выбор координат для стройки/разведки. |
 | `POST /api/buildings/placement_checks` | Дёшево проверить кандидатов типов без списания ресурсов. |
+| `POST /api/outposts/build_checks` | То же для типов форпостов перед **`/outposts/build`**. |
 
 ### Откуда брать `building_type` для `POST /api/buildings/place`
 
