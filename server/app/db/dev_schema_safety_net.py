@@ -1,4 +1,7 @@
-"""MVP: догонка схемы БД без Alembic (только при GUARDSTAR_DB_SAFETY_NET)."""
+"""MVP: догонка схемы БД без Alembic (только при GUARDSTAR_DB_SAFETY_NET).
+
+Соответствие миграциям на проде: ``docs/safety-net-parity.md`` (миграция ``20260517_000028``).
+"""
 
 from __future__ import annotations
 
@@ -225,6 +228,7 @@ def apply_dev_schema_safety_net() -> None:
                         """
                     )
                 )
+            insp = inspect(engine)
         if "outposts" not in insp.get_table_names():
             with engine.begin() as conn:
                 conn.execute(
@@ -409,21 +413,6 @@ def apply_dev_schema_safety_net() -> None:
                         "CREATE INDEX IF NOT EXISTS ix_outpost_modules_finish_tick ON outpost_modules (finish_tick)"
                     )
                 )
-                conn.execute(
-                    text(
-                        "CREATE INDEX IF NOT EXISTS ix_explored_sectors_player_id ON explored_sectors (player_id)"
-                    )
-                )
-                conn.execute(
-                    text(
-                        "CREATE INDEX IF NOT EXISTS ix_explored_sectors_xyz ON explored_sectors (x, y, z)"
-                    )
-                )
-                conn.execute(
-                    text(
-                        "CREATE UNIQUE INDEX IF NOT EXISTS ux_explored_sectors_player_xyz ON explored_sectors (player_id, x, y, z)"
-                    )
-                )
 
         # Персистентные настройки автотика в game_clock (MVP).
         if "game_clock" in insp.get_table_names():
@@ -511,6 +500,8 @@ def apply_dev_schema_safety_net() -> None:
                     "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS admin_max_fleet_units INTEGER NOT NULL DEFAULT 0",
                     "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS admin_research_overrides_json TEXT",
                     "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS admin_economy_overrides_json TEXT",
+                    "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS economy_base_food_per_sol INTEGER NOT NULL DEFAULT 10",
+                    "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS economy_base_water_per_sol INTEGER NOT NULL DEFAULT 10",
                 ):
                     conn.execute(text(sql))
 
@@ -755,6 +746,21 @@ def apply_dev_schema_safety_net() -> None:
                             "ALTER TABLE explored_sectors ADD COLUMN IF NOT EXISTS discovery_seen_tick INTEGER NULL"
                         )
                     )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_explored_sectors_player_id ON explored_sectors (player_id)"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_explored_sectors_xyz ON explored_sectors (x, y, z)"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS ux_explored_sectors_player_xyz ON explored_sectors (player_id, x, y, z)"
+                    )
+                )
 
         if "player_effects" not in insp.get_table_names():
             with engine.begin() as conn:

@@ -195,6 +195,20 @@ def admin_hub():
                 ws, "admin_economy_overrides_json", None
             )
             or "",
+            "economy_base_food_per_sol": max(
+                0,
+                min(
+                    999,
+                    int(getattr(ws, "economy_base_food_per_sol", 10) or 10),
+                ),
+            ),
+            "economy_base_water_per_sol": max(
+                0,
+                min(
+                    999,
+                    int(getattr(ws, "economy_base_water_per_sol", 10) or 10),
+                ),
+            ),
         }
 
         players = (
@@ -396,6 +410,33 @@ def admin_world_balance_tuning():
         ws = world.get_or_create_world_state(s)
         ws.admin_max_fleet_units = int(max_v)
         ws.admin_research_overrides_json = j
+        s.commit()
+    return redirect(url_for("web.admin_hub", token=token, tab="balance"))
+
+
+@web_bp.post("/admin/world/economy-base-food-water")
+def admin_world_economy_base_food_water():
+    token = _require_admin_token()
+    raw_f = (request.form.get("economy_base_food_per_sol") or "").strip()
+    raw_w = (request.form.get("economy_base_water_per_sol") or "").strip()
+    try:
+        f = int(raw_f) if raw_f else 10
+    except ValueError:
+        f = 10
+    try:
+        w = int(raw_w) if raw_w else 10
+    except ValueError:
+        w = 10
+    f = max(0, min(f, 999))
+    w = max(0, min(w, 999))
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        ws = world.get_or_create_world_state(s)
+        ws.economy_base_food_per_sol = int(f)
+        ws.economy_base_water_per_sol = int(w)
         s.commit()
     return redirect(url_for("web.admin_hub", token=token, tab="balance"))
 

@@ -1,5 +1,5 @@
 {
-  "base_planet_production": { "metal": 6, "crystal": 5, "energy": 2, "fuel": 2, "food": 9, "water": 9 },
+  "base_planet_production": { "metal": 6, "crystal": 5, "energy": 2, "fuel": 2, "food": 10, "water": 10 },
   "population_maintenance": {
     "food_per_1000_pop_per_tick": 3,
     "water_per_1000_pop_per_tick": 3

@@ -64,3 +64,12 @@ class WorldState(Base):
     admin_economy_overrides_json: Mapped[str | None] = mapped_column(
         Text, nullable=True
     )
+
+    #: Базовая добыча еды с домашней планеты за один сол (перекрывает `base_planet_production.food` после merge).
+    economy_base_food_per_sol: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=10
+    )
+    #: Базовая добыча воды с домашней планеты за один сол (перекрывает `base_planet_production.water` после merge).
+    economy_base_water_per_sol: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=10
+    )

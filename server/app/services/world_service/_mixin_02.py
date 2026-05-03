@@ -77,7 +77,11 @@ class WorldServiceMixin02:
         return max(1, min(v, 500))
 
     def _merged_pack_economy(self, s: Session | None) -> dict:
-        """Копия `economy` из баланса + `world_state.admin_economy_overrides_json` (рекурсивно)."""
+        """Копия `economy` из баланса + `world_state.admin_economy_overrides_json` (рекурсивно).
+
+        Затем фиксированные поля админки: базовая еда/вода с планеты за сол (перекрывают
+        `base_planet_production` из файла и из JSON overrides).
+        """
         eco: dict = {}
         if self._balance and isinstance(
             getattr(self._balance, "pack", None), object
@@ -89,15 +93,25 @@ class WorldServiceMixin02:
             return eco
         ws = s.get(WorldState, 1)
         raw = getattr(ws, "admin_economy_overrides_json", None) if ws else None
-        if not raw or not str(raw).strip():
-            return eco
-        try:
-            patch = json.loads(raw)
-        except Exception:
-            return eco
-        if not isinstance(patch, dict):
-            return eco
-        return deep_merge_eco(eco, patch)
+        if raw and str(raw).strip():
+            try:
+                patch = json.loads(raw)
+            except Exception:
+                patch = None
+            else:
+                if isinstance(patch, dict):
+                    eco = deep_merge_eco(eco, patch)
+        if ws is not None:
+            bp = eco.get("base_planet_production")
+            if isinstance(bp, dict):
+                try:
+                    f = int(getattr(ws, "economy_base_food_per_sol", 10) or 10)
+                    w = int(getattr(ws, "economy_base_water_per_sol", 10) or 10)
+                except (TypeError, ValueError):
+                    f, w = 10, 10
+                bp["food"] = max(0, min(f, 999))
+                bp["water"] = max(0, min(w, 999))
+        return eco
 
     def get_or_create_world_state(self, s: Session) -> WorldState:
         ws = s.execute(
@@ -699,7 +713,13 @@ class WorldServiceMixin02:
         self, s: Session, *, planet: Planet, influence_sources: list[dict] | None = None
     ) -> dict[str, int]:
         if self._balance:
-            base = self._balance.get_base_production()
+            eco_m = self._merged_pack_economy(s)
+            bp = eco_m.get("base_planet_production")
+            if isinstance(bp, dict):
+                keys = ("metal", "crystal", "energy", "fuel", "food", "water")
+                base = {k: int(bp.get(k, 0)) for k in keys}
+            else:
+                base = self._balance.get_base_production()
         else:
             prod = calc_planet_production()
             base = {

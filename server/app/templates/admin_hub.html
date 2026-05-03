@@ -206,6 +206,17 @@
       {% endif %}
       <div class="admin-row">
         <div class="admin-card">
+          <h3>База еды и воды (домашняя планета / сол)</h3>
+          <p class="admin-muted">Числа из <code>world_state</code> перекрывают <code>base_planet_production</code> в балансе и в JSON overrides ниже. Диапазон 0–999.</p>
+          <p class="admin-muted">Текущие: еда <code>{{ data.economy_base_food_per_sol }}</code> · вода <code>{{ data.economy_base_water_per_sol }}</code></p>
+          <form method="post" action="{{ url_for('web.admin_world_economy_base_food_water', token=token) }}">
+            <input type="hidden" name="token" value="{{ token }}" />
+            <label>Еда за сол: <input type="number" name="economy_base_food_per_sol" min="0" max="999" value="{{ data.economy_base_food_per_sol }}" /></label>
+            <label>Вода за сол: <input type="number" name="economy_base_water_per_sol" min="0" max="999" value="{{ data.economy_base_water_per_sol }}" /></label>
+            <button type="submit" style="margin-top:12px;">Сохранить базу еды/воды</button>
+          </form>
+        </div>
+        <div class="admin-card">
           <h3>Макс. кораблей в одном флоте</h3>
           <p class="admin-muted">0 = дефолт сервера (<code>{{ data.default_max_fleet_units }}</code>).</p>
           <form method="post" action="{{ url_for('web.admin_world_balance_tuning', token=token) }}">
