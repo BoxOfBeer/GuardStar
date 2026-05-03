@@ -175,7 +175,6 @@ def _apply_safety_net_parity_sql(conn) -> None:
           player_spawn_min_manhattan INTEGER NOT NULL DEFAULT 25
         )
         """,
-        "INSERT INTO world_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING",
         "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS player_spawn_min_manhattan INTEGER NOT NULL DEFAULT 25",
         "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS test_block_new_fleets BOOLEAN NOT NULL DEFAULT false",
         "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS admin_block_player_fleet_create BOOLEAN NOT NULL DEFAULT false",
@@ -188,6 +187,21 @@ def _apply_safety_net_parity_sql(conn) -> None:
         "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS admin_economy_overrides_json TEXT",
         "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS economy_base_food_per_sol INTEGER NOT NULL DEFAULT 10",
         "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS economy_base_water_per_sol INTEGER NOT NULL DEFAULT 10",
+        """
+        INSERT INTO world_state (
+          id, current_tick, updated_at,
+          auto_tick_enabled, auto_tick_interval_seconds, player_spawn_min_manhattan,
+          test_block_new_fleets, admin_block_player_fleet_create, admin_block_npc_transit,
+          admin_block_bandit_mines, admin_block_bandit_outposts, admin_block_bandit_fleets,
+          admin_max_fleet_units, economy_base_food_per_sol, economy_base_water_per_sol
+        ) VALUES (
+          1, 0, now(),
+          false, 10.0, 25,
+          false, false, false, false, false, false,
+          0, 10, 10
+        ) ON CONFLICT (id) DO NOTHING
+        """,
+        "UPDATE world_state SET player_spawn_min_manhattan = 25 WHERE id = 1 AND player_spawn_min_manhattan IS NULL",
         # buildings (если таблица старая, без колонок из новых миграций)
         "ALTER TABLE buildings ADD COLUMN IF NOT EXISTS planet_id UUID NULL REFERENCES planets(id) ON DELETE SET NULL",
         "CREATE INDEX IF NOT EXISTS ix_buildings_planet_id ON buildings (planet_id)",

@@ -472,7 +472,15 @@ def apply_dev_schema_safety_net() -> None:
                 # singleton row
                 conn.execute(
                     text(
-                        "INSERT INTO world_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING"
+                        """
+                        INSERT INTO world_state (
+                          id, current_tick, updated_at,
+                          auto_tick_enabled, auto_tick_interval_seconds, player_spawn_min_manhattan
+                        ) VALUES (
+                          1, 0, now(),
+                          false, 10.0, 25
+                        ) ON CONFLICT (id) DO NOTHING
+                        """
                     )
                 )
 
