@@ -37,9 +37,12 @@ class OutpostService:
         self._cell_is_owned_planet_tile = cell_is_owned_planet_tile
 
     def supply_route_logistics_costs(
-        self, *, hub: Planet, ox: int, oy: int
+        self, *, hub: Planet, ox: int, oy: int, tier_multiplier: float = 1.0
     ) -> tuple[int, int]:
-        """Еда/вода с хаба за содержание линии к форпосту за один сол (balance supply_route_upkeep)."""
+        """Еда/вода с хаба за содержание линии к форпосту за один сол (balance supply_route_upkeep).
+
+        tier_multiplier — множитель по уровню корпуса (масштаб «крупнее форпост → больше логистики»).
+        """
         food, water = 2, 2
         extra_f, extra_w = 0, 0
         if self._balance and isinstance(
@@ -60,7 +63,12 @@ class OutpostService:
                 cw = sr.get("water_per_manhattan_from_hub")
                 if isinstance(cw, (int, float)):
                     extra_w = int(cw) * max(0, d)
-        return max(0, food + extra_f), max(0, water + extra_w)
+        base_f = max(0, food + extra_f)
+        base_w = max(0, water + extra_w)
+        tm = float(tier_multiplier)
+        if tm <= 0 or tm == 1.0:
+            return base_f, base_w
+        return int(round(base_f * tm)), int(round(base_w * tm))
 
     def apply_supply_route_logistics_tick(self, s: Session, *, tick: int) -> None:
         """После выработки на планетах: логистика линий к форпостам (еда/вода с хаба)."""
@@ -85,8 +93,11 @@ class OutpostService:
             )
             if not hub:
                 continue
+            lvl = max(1, int(getattr(op, "level", 1) or 1))
+            cap = min(lvl, 3)
+            tier_mult = float(2 ** (cap - 1))
             need_f, need_w = self.supply_route_logistics_costs(
-                hub=hub, ox=int(op.x), oy=int(op.y)
+                hub=hub, ox=int(op.x), oy=int(op.y), tier_multiplier=tier_mult
             )
             # Расовые модификаторы (MVP): умножаем стоимость логистики снабжения.
             mul = 1.0

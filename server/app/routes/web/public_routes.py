@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import uuid
 
-from flask import current_app, redirect, render_template, request, session, url_for
+from flask import abort, current_app, redirect, render_template, request, session, url_for
 from sqlalchemy import delete, select
+from sqlalchemy.orm import Session
 
 from app.db.engine import db_session
 from app.db.models.event import Event
 from app.db.models.feedback_message import FeedbackMessage
 from app.db.models.player import Player
+from app.db.models.reserved_display_name import ReservedDisplayName
 from app.db.models.world_state import WorldState
 from app.routes.web.blueprint import web_bp
 from app.routes.web.common import (
@@ -18,8 +20,41 @@ from app.routes.web.common import (
     _FEEDBACK_CATEGORIES,
     _require_login,
 )
-from app.services.auth_service import AuthService
+from app.services.auth_service import (
+    AuthService,
+    DisplayNameInvalid,
+    normalized_operator_name,
+    prepare_operator_display_name,
+)
 from app.services.world_service import WorldService
+
+_REGISTER_NAME_MESSAGES: dict[str, str] = {
+    "empty": "Введите имя оператора.",
+    "too_short": "Имя не короче 3 символов (пробелы по краям не считаются).",
+    "too_long": "Имя не длиннее 64 символов.",
+    "taken": "Это имя уже занято. Ранее использованные позывные не освобождаются.",
+}
+
+
+def _past_operator_profile_names(session: Session, *, player: Player) -> list[str]:
+    """Исторические позывные (снимки), исключая текущий активный."""
+
+    cur_nn = normalized_operator_name(prepare_operator_display_name(player.display_name))
+    rows = session.execute(
+        select(ReservedDisplayName.display_snapshot, ReservedDisplayName.name_norm)
+        .where(ReservedDisplayName.player_id == player.id)
+        .order_by(ReservedDisplayName.created_at.desc())
+    ).all()
+    seen_nn: set[str] = set()
+    out: list[str] = []
+    for snapshot, nn in rows:
+        if nn == cur_nn:
+            continue
+        if nn in seen_nn:
+            continue
+        seen_nn.add(nn)
+        out.append(str(snapshot))
+    return out
 
 
 @web_bp.get("/favicon.ico")
@@ -100,16 +135,50 @@ def register():
     auth = AuthService(server_salt=current_app.config["SERVER_SALT"])
     world = WorldService(balance=balance)
 
-    with db_session() as s:
-        player, access_code = auth.register_player(
-            s, display_name=display_name, race_id=race_id
+    try:
+        with db_session() as s:
+            player, access_code = auth.register_player(
+                s, display_name=display_name, race_id=race_id
+            )
+            world.ensure_player_has_start(s, player_id=player.id)
+            s.commit()
+    except DisplayNameInvalid as exc:
+        return render_template(
+            "register.html",
+            error=_REGISTER_NAME_MESSAGES.get(
+                exc.code, "Не удалось зарезервировать имя."
+            ),
+            races=races,
+            selected_race_id=form_race,
+            display_name_value=display_name,
+            accept_pilot_rules_checked=True,
         )
-        world.ensure_player_has_start(s, player_id=player.id)
-        s.commit()
 
     session["player_id"] = str(player.id)
     return render_template(
-        "show_code.html", access_code=access_code, display_name=display_name
+        "show_code.html", access_code=access_code, display_name=player.display_name
+    )
+
+
+@web_bp.get("/operator/<uuid:pid>")
+def operator_public_profile(pid: uuid.UUID):
+    with db_session() as s:
+        pl = s.get(Player, pid)
+        if pl is None or bool(getattr(pl, "account_disabled", False)):
+            abort(404)
+        past = _past_operator_profile_names(s, player=pl)
+        profile_id = str(pl.id)
+        profile_name = pl.display_name
+
+    cid = session.get("player_id")
+    return render_template(
+        "operator_public.html",
+        profile={
+            "id": profile_id,
+            "display_name": profile_name,
+            "past_names": past,
+        },
+        current_player_id_str=str(cid) if cid else None,
     )
 
 
@@ -193,7 +262,13 @@ def account():
         if not player:
             session.clear()
             return redirect(url_for("web.index"))
-        return render_template("account.html", player=player, access_code=None)
+        rename_err = (request.args.get("rename_err") or "").strip() or None
+        return render_template(
+            "account.html",
+            player=player,
+            access_code=None,
+            rename_err=rename_err,
+        )
 
 
 @web_bp.post("/account/rename")
@@ -206,15 +281,19 @@ def account_rename():
     if not new_name:
         return redirect(url_for("web.account"))
 
-    with db_session() as s:
-        pid = uuid.UUID(player_id)
-        player = s.execute(select(Player).where(Player.id == pid)).scalar_one_or_none()
-        if not player:
-            session.clear()
-            return redirect(url_for("web.index"))
-        player.display_name = new_name[:64]
-        s.commit()
-        return redirect(url_for("web.account"))
+    auth = AuthService(server_salt=current_app.config["SERVER_SALT"])
+    try:
+        with db_session() as s:
+            pid = uuid.UUID(player_id)
+            player = s.execute(select(Player).where(Player.id == pid)).scalar_one_or_none()
+            if not player:
+                session.clear()
+                return redirect(url_for("web.index"))
+            auth.rename_player(s, player=player, new_display_name_raw=new_name)
+            s.commit()
+            return redirect(url_for("web.account"))
+    except DisplayNameInvalid as exc:
+        return redirect(url_for("web.account", rename_err=exc.code))
 
 
 @web_bp.post("/account/regenerate")
@@ -235,7 +314,12 @@ def account_regenerate():
             return redirect(url_for("web.index"))
         player.access_code_hash = access_code_hash
         s.commit()
-        return render_template("account.html", player=player, access_code=access_code)
+        return render_template(
+            "account.html",
+            player=player,
+            access_code=access_code,
+            rename_err=None,
+        )
 
 
 @web_bp.post("/account/delete")

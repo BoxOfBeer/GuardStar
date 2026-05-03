@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import uuid
 from dataclasses import dataclass
 
@@ -18,6 +19,18 @@ from app.db.models.resource import Resource
 class ResearchPointsInfo:
     balance: float
     per_sol: float
+
+
+def _runway_approx_sols(stock: int, net_per_sol: int) -> tuple[str, int | None]:
+    """Грубая оценка «хватит на N солов» по запасам империи и чистому потоку за сол."""
+    st = max(0, int(stock))
+    n = int(net_per_sol)
+    if n >= 0:
+        return "surplus", None
+    loss = -n
+    if loss <= 0:
+        return "surplus", None
+    return "drain", int(math.floor(st / loss))
 
 
 class EconomyService:
@@ -60,9 +73,20 @@ class EconomyService:
         return ResearchPointsInfo(balance=bal, per_sol=per)
 
     def get_economy_summary(
-        self, s: Session, *, player_id: str, include_external_buildings: bool = True
+        self,
+        s: Session,
+        *,
+        player_id: str,
+        include_external_buildings: bool = True,
+        influence_sources: list[dict] | None = None,
+        for_hud_poll: bool = False,
     ) -> dict:
-        """Сводка доходов/расходов по империи за один сол для UI."""
+        """Сводка доходов/расходов по империи за один сол для UI.
+
+        ``for_hud_poll=True`` — только потоки ``net_per_sol`` / ``net_home_per_sol`` (без
+        справочных затрат на «восстановление» построек/флота и без лишних агрегатов казны):
+        для частого ``GET /api/world/state``.
+        """
         pid = uuid.UUID(player_id)
         ws = getattr(self._world, "get_or_create_world_state")(s)
         tick = int(getattr(ws, "current_tick", 0) or 0)
@@ -72,23 +96,31 @@ class EconomyService:
             .where(Planet.owner_player_id == pid)
             .order_by(Planet.created_at.asc())
         ).scalar_one_or_none()
-        res = (
-            s.execute(
-                select(Resource).where(Resource.planet_id == home.id)
-            ).scalar_one_or_none()
-            if home
-            else None
-        )
-        treasury_home = {
-            "metal": int(getattr(res, "metal", 0) or 0),
-            "crystal": int(getattr(res, "crystal", 0) or 0),
-            "energy": int(getattr(res, "energy", 0) or 0),
-            "fuel": int(getattr(res, "fuel", 0) or 0),
-            "food": int(getattr(res, "food", 0) or 0),
-            "water": int(getattr(res, "water", 0) or 0),
-        }
-
-        rp = self._player_rp_info(s, player_id=pid)
+        if not for_hud_poll:
+            res = (
+                s.execute(
+                    select(Resource).where(Resource.planet_id == home.id)
+                ).scalar_one_or_none()
+                if home
+                else None
+            )
+            treasury_home = {
+                "metal": int(getattr(res, "metal", 0) or 0),
+                "crystal": int(getattr(res, "crystal", 0) or 0),
+                "energy": int(getattr(res, "energy", 0) or 0),
+                "fuel": int(getattr(res, "fuel", 0) or 0),
+                "food": int(getattr(res, "food", 0) or 0),
+                "water": int(getattr(res, "water", 0) or 0),
+            }
+        else:
+            treasury_home = {
+                "metal": 0,
+                "crystal": 0,
+                "energy": 0,
+                "fuel": 0,
+                "food": 0,
+                "water": 0,
+            }
 
         planets = (
             s.execute(select(Planet).where(Planet.owner_player_id == pid))
@@ -103,18 +135,19 @@ class EconomyService:
             "food": 0,
             "water": 0,
         }
-        for p in planets:
-            rr = s.execute(
-                select(Resource).where(Resource.planet_id == p.id)
-            ).scalar_one_or_none()
-            if not rr:
-                continue
-            treasury_empire["metal"] += int(getattr(rr, "metal", 0) or 0)
-            treasury_empire["crystal"] += int(getattr(rr, "crystal", 0) or 0)
-            treasury_empire["energy"] += int(getattr(rr, "energy", 0) or 0)
-            treasury_empire["fuel"] += int(getattr(rr, "fuel", 0) or 0)
-            treasury_empire["food"] += int(getattr(rr, "food", 0) or 0)
-            treasury_empire["water"] += int(getattr(rr, "water", 0) or 0)
+        if not for_hud_poll:
+            for p in planets:
+                rr = s.execute(
+                    select(Resource).where(Resource.planet_id == p.id)
+                ).scalar_one_or_none()
+                if not rr:
+                    continue
+                treasury_empire["metal"] += int(getattr(rr, "metal", 0) or 0)
+                treasury_empire["crystal"] += int(getattr(rr, "crystal", 0) or 0)
+                treasury_empire["energy"] += int(getattr(rr, "energy", 0) or 0)
+                treasury_empire["fuel"] += int(getattr(rr, "fuel", 0) or 0)
+                treasury_empire["food"] += int(getattr(rr, "food", 0) or 0)
+                treasury_empire["water"] += int(getattr(rr, "water", 0) or 0)
 
         outposts = (
             s.execute(select(Outpost).where(Outpost.owner_player_id == pid))
@@ -125,7 +158,11 @@ class EconomyService:
             s.execute(select(Fleet).where(Fleet.owner_player_id == pid)).scalars().all()
         )
 
-        inf_src = getattr(self._world, "_collect_influence_sources")(s)
+        inf_src = (
+            influence_sources
+            if influence_sources is not None
+            else getattr(self._world, "_collect_influence_sources")(s)
+        )
 
         PLANET_STORE_KEYS = getattr(
             self._world,
@@ -147,18 +184,19 @@ class EconomyService:
             )
             pop_need["food"] += int(pf)
             pop_need["water"] += int(pw)
-            planet_rows.append(
-                {
-                    "planet_id": str(p.id),
-                    "name": p.name,
-                    "pos": {"x": int(p.pos_x), "y": int(p.pos_y)},
-                    "population": pop,
-                    "production_per_sol": {
-                        k: int(dlt.get(k, 0) or 0) for k in PLANET_STORE_KEYS
-                    },
-                    "population_upkeep_per_sol": {"food": int(pf), "water": int(pw)},
-                }
-            )
+            if not for_hud_poll:
+                planet_rows.append(
+                    {
+                        "planet_id": str(p.id),
+                        "name": p.name,
+                        "pos": {"x": int(p.pos_x), "y": int(p.pos_y)},
+                        "population": pop,
+                        "production_per_sol": {
+                            k: int(dlt.get(k, 0) or 0) for k in PLANET_STORE_KEYS
+                        },
+                        "population_upkeep_per_sol": {"food": int(pf), "water": int(pw)},
+                    }
+                )
 
         logistics = {"food": 0, "water": 0, "outposts_count": 0}
         for op in outposts:
@@ -179,8 +217,14 @@ class EconomyService:
             )
             if not hub:
                 continue
+            lvl = max(1, int(getattr(op, "level", 1) or 1))
+            cap = min(lvl, 3)
+            tier_mult = float(2 ** (cap - 1))
             need_f, need_w = getattr(self._world, "_supply_route_logistics_costs")(
-                hub=hub, ox=int(op.x), oy=int(op.y)
+                hub=hub,
+                ox=int(op.x),
+                oy=int(op.y),
+                outpost_supply_tier_multiplier=tier_mult,
             )
             logistics["food"] += int(need_f)
             logistics["water"] += int(need_w)
@@ -214,8 +258,9 @@ class EconomyService:
         fleet_count = 0
         ships_total = 0
         upkeep_energy = 0
+        empire_fleet_upkeep = {"metal": 0, "crystal": 0, "food": 0, "water": 0}
         for f in fleets:
-            if int(getattr(f, "qty", 0) or 0) <= 0:
+            if getattr(self._world, "_fleet_total_units")(s, f) <= 0:
                 continue
             fleet_count += 1
             um = getattr(self._world, "_fleet_units_map")(s, f)
@@ -227,36 +272,55 @@ class EconomyService:
                 if um
                 else 0
             )
-        empire_fleet_upkeep = getattr(self._world, "_fleet_empire_upkeep_costs")(
-            fleets=fleet_count, ships=ships_total
-        )
-
-        buildings = (
-            s.execute(select(Building).where(Building.owner_player_id == pid))
-            .scalars()
-            .all()
-        )
-        ext_buildings = 0
-        planet_buildings = 0
-        for b in buildings:
-            cell = getattr(self._world, "get_cell_terrain")(
-                x=int(b.x), y=int(b.y), z=int(b.z)
+            part = getattr(self._world, "_fleet_empire_supply_need_for_fleet")(
+                s, fleet=f
             )
-            if cell.get("terrain") == "planet":
-                planet_buildings += 1
-            else:
-                ext_buildings += 1
+            for k in empire_fleet_upkeep:
+                empire_fleet_upkeep[k] += int(part.get(k, 0) or 0)
+
+        if for_hud_poll:
+            buildings: list[Building] = []
+            ext_buildings = 0
+            planet_buildings = 0
+        else:
+            buildings = (
+                s.execute(select(Building).where(Building.owner_player_id == pid))
+                .scalars()
+                .all()
+            )
+            ext_buildings = 0
+            planet_buildings = 0
+            cell_planet_fn = getattr(self._world, "_cell_has_planet", None)
+            for b in buildings:
+                on_planet_tile = (
+                    cell_planet_fn(s, x=int(b.x), y=int(b.y), z=int(b.z))
+                    if callable(cell_planet_fn)
+                    else False
+                )
+                if on_planet_tile:
+                    planet_buildings += 1
+                else:
+                    ext_buildings += 1
 
         net = {k: int(prod_sum.get(k, 0) or 0) for k in PLANET_STORE_KEYS}
         net["food"] -= int(pop_need["food"])
         net["water"] -= int(pop_need["water"])
         net["food"] -= int(logistics["food"])
         net["water"] -= int(logistics["water"])
-        for k in ("metal", "crystal"):
+        for k in ("metal", "crystal", "food", "water"):
             net[k] -= int(empire_fleet_upkeep.get(k, 0) or 0)
         net["energy"] -= int(upkeep_energy)
         for k in ("metal", "crystal", "energy", "fuel"):
             net[k] -= int(outpost_upkeep.get(k, 0) or 0)
+
+        expenses_aggregate_per_sol = (
+            {
+                k: int(prod_sum.get(k, 0) or 0) - int(net.get(k, 0) or 0)
+                for k in PLANET_STORE_KEYS
+            }
+            if not for_hud_poll
+            else {}
+        )
 
         net_home = {
             "metal": 0,
@@ -278,6 +342,17 @@ class EconomyService:
             )
             net_home["food"] -= int(pf_h)
             net_home["water"] -= int(pw_h)
+
+        if for_hud_poll:
+            return {
+                "ok": True,
+                "current_tick": tick,
+                "current_sol": int(tick),
+                "net_per_sol": net,
+                "net_home_per_sol": net_home,
+            }
+
+        rp = self._player_rp_info(s, player_id=pid)
 
         buildings_info = {
             "planet_buildings": planet_buildings,
@@ -337,6 +412,13 @@ class EconomyService:
                 }
             )
 
+        runway_sols: dict[str, dict[str, object]] = {}
+        for k in PLANET_STORE_KEYS:
+            trend, approx = _runway_approx_sols(
+                int(treasury_empire.get(k, 0) or 0), int(net.get(k, 0) or 0)
+            )
+            runway_sols[k] = {"trend": trend, "approx_sols": approx}
+
         return {
             "ok": True,
             "current_tick": tick,
@@ -359,6 +441,8 @@ class EconomyService:
                 "fleet_empire_upkeep": {
                     "metal": empire_fleet_upkeep.get("metal", 0),
                     "crystal": empire_fleet_upkeep.get("crystal", 0),
+                    "food": empire_fleet_upkeep.get("food", 0),
+                    "water": empire_fleet_upkeep.get("water", 0),
                     "fleets": fleet_count,
                     "ships": ships_total,
                 },
@@ -367,6 +451,7 @@ class EconomyService:
                     "fleets": fleet_count,
                 },
             },
+            "expenses_aggregate_per_sol": expenses_aggregate_per_sol,
             "construction_reference": {
                 "note": "Справочно: сумма цен из баланса для текущих построек (×уровень) и кораблей во флотах; не ежесолевая статья расходов.",
                 "buildings_replacement_cost": stock_buildings,
@@ -375,6 +460,7 @@ class EconomyService:
             "planets": planet_rows,
             "buildings": buildings_info,
             "fleets": fleets_payload,
+            "runway_sols": runway_sols,
         }
 
     def apply_economy_tick(

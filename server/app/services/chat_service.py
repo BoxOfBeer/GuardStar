@@ -4,12 +4,13 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.db.models.chat_message import ChatMessage
 from app.db.models.player import Player
 from app.db.models.player_block import PlayerBlock
+from app.db.models.private_chat_peer_pref import PrivateChatPeerPref
 
 MAX_CHAT_BODY_LEN = 1000
 MAX_MESSAGES_PER_POLL = 100
@@ -192,6 +193,194 @@ def list_global_messages(
     return {"ok": True, "messages": out, "viewer_can_moderate": can_mod}
 
 
+def _pref_row(
+    s: Session, *, viewer: uuid.UUID, peer: uuid.UUID
+) -> PrivateChatPeerPref | None:
+    return s.execute(
+        select(PrivateChatPeerPref).where(
+            PrivateChatPeerPref.viewer_player_id == viewer,
+            PrivateChatPeerPref.peer_player_id == peer,
+        )
+    ).scalar_one_or_none()
+
+
+def _clear_peer_hidden_after_inbound(
+    s: Session, *, recipient_id: uuid.UUID, sender_id: uuid.UUID
+) -> None:
+    row = _pref_row(s, viewer=recipient_id, peer=sender_id)
+    if row and row.hidden_at is not None:
+        row.hidden_at = None
+
+
+def _unread_private_incoming(
+    s: Session, *, viewer_id: uuid.UUID, peer_id: uuid.UUID, pref: PrivateChatPeerPref | None
+) -> int:
+    cond = and_(
+        ChatMessage.channel_kind == "private",
+        ChatMessage.sender_id == peer_id,
+        ChatMessage.recipient_id == viewer_id,
+    )
+    if pref is not None and pref.welcomed_at is not None:
+        return int(
+            s.execute(
+                select(func.count())
+                .select_from(ChatMessage)
+                .where(cond, ChatMessage.id > int(pref.last_read_incoming_id or 0))
+            ).scalar_one()
+        )
+    return int(s.execute(select(func.count()).select_from(ChatMessage).where(cond)).scalar_one())
+
+
+def _needs_intro(pref: PrivateChatPeerPref | None) -> bool:
+    return pref is None or pref.welcomed_at is None
+
+
+def advance_private_incoming_read(
+    s: Session, *, viewer_id: uuid.UUID, peer_id: uuid.UUID
+) -> None:
+    """После загрузки ленты: отметить входящие прочитанными (если диалог уже «принят»)."""
+    pref = _pref_row(s, viewer=viewer_id, peer=peer_id)
+    if pref is None or pref.welcomed_at is None:
+        return
+    mx = s.execute(
+        select(func.max(ChatMessage.id)).where(
+            ChatMessage.channel_kind == "private",
+            ChatMessage.sender_id == peer_id,
+            ChatMessage.recipient_id == viewer_id,
+        )
+    ).scalar_one_or_none()
+    mx = int(mx or 0)
+    old = int(pref.last_read_incoming_id or 0)
+    if mx <= old:
+        return
+    now = _utcnow()
+    if pref.send_read_receipts:
+        s.execute(
+            update(ChatMessage)
+            .where(
+                ChatMessage.channel_kind == "private",
+                ChatMessage.sender_id == peer_id,
+                ChatMessage.recipient_id == viewer_id,
+                ChatMessage.id > old,
+                ChatMessage.id <= mx,
+                ChatMessage.read_receipt_at.is_(None),
+            )
+            .values(read_receipt_at=now)
+        )
+    pref.last_read_incoming_id = mx
+
+
+def private_inbox_badge_counts(s: Session, *, viewer_id: str) -> dict[str, Any]:
+    vid = _parse_uuid(viewer_id)
+    if not vid:
+        return {"ok": False, "error": "invalid_viewer"}
+    tl = list_private_threads(s, viewer_id=viewer_id)
+    if not tl.get("ok"):
+        return tl
+    threads = tl.get("threads") or []
+    new_c = sum(
+        1
+        for t in threads
+        if t.get("needs_intro") and int(t.get("unread_incoming") or 0) > 0
+    )
+    unrd = sum(int(t.get("unread_incoming") or 0) for t in threads)
+    return {"ok": True, "new_contacts": new_c, "unread_messages": unrd}
+
+
+def get_private_thread_meta(s: Session, *, viewer_id: str, peer_id: str) -> dict[str, Any]:
+    vid = _parse_uuid(viewer_id)
+    pid = _parse_uuid(peer_id)
+    if not vid or not pid:
+        return {"ok": False, "error": "invalid_player_id"}
+    if pid == vid:
+        return {"ok": False, "error": "cannot_message_self"}
+    peer = s.execute(select(Player).where(Player.id == pid)).scalar_one_or_none()
+    if not peer:
+        return {"ok": False, "error": "recipient_not_found"}
+    pref = _pref_row(s, viewer=vid, peer=pid)
+    needs_intro = pref is None or pref.welcomed_at is None
+    return {
+        "ok": True,
+        "needs_intro": needs_intro,
+        "send_read_receipts": bool(pref.send_read_receipts) if pref else False,
+        "peer_display_name": str(peer.display_name or "—"),
+    }
+
+
+def open_private_thread_intro(
+    s: Session, *, viewer_id: str, peer_id: str, send_read_receipts: bool
+) -> dict[str, Any]:
+    vid = _parse_uuid(viewer_id)
+    pid = _parse_uuid(peer_id)
+    if not vid or not pid:
+        return {"ok": False, "error": "invalid_player_id"}
+    if pid == vid:
+        return {"ok": False, "error": "cannot_message_self"}
+    peer = s.execute(select(Player).where(Player.id == pid)).scalar_one_or_none()
+    if not peer:
+        return {"ok": False, "error": "recipient_not_found"}
+    now = _utcnow()
+    pref = _pref_row(s, viewer=vid, peer=pid)
+    if not pref:
+        pref = PrivateChatPeerPref(
+            viewer_player_id=vid,
+            peer_player_id=pid,
+            welcomed_at=now,
+            send_read_receipts=bool(send_read_receipts),
+            last_read_incoming_id=0,
+        )
+        s.add(pref)
+    else:
+        pref.welcomed_at = now
+        pref.send_read_receipts = bool(send_read_receipts)
+    s.flush()
+    return {"ok": True}
+
+
+def set_private_send_read_receipts(
+    s: Session, *, viewer_id: str, peer_id: str, send_read_receipts: bool
+) -> dict[str, Any]:
+    vid = _parse_uuid(viewer_id)
+    pid = _parse_uuid(peer_id)
+    if not vid or not pid:
+        return {"ok": False, "error": "invalid_player_id"}
+    pref = _pref_row(s, viewer=vid, peer=pid)
+    if not pref:
+        pref = PrivateChatPeerPref(
+            viewer_player_id=vid,
+            peer_player_id=pid,
+            welcomed_at=_utcnow(),
+            send_read_receipts=bool(send_read_receipts),
+            last_read_incoming_id=0,
+        )
+        s.add(pref)
+    else:
+        pref.send_read_receipts = bool(send_read_receipts)
+    return {"ok": True}
+
+
+def hide_private_thread(s: Session, *, viewer_id: str, peer_id: str) -> dict[str, Any]:
+    vid = _parse_uuid(viewer_id)
+    pid = _parse_uuid(peer_id)
+    if not vid or not pid:
+        return {"ok": False, "error": "invalid_player_id"}
+    now = _utcnow()
+    pref = _pref_row(s, viewer=vid, peer=pid)
+    if not pref:
+        pref = PrivateChatPeerPref(
+            viewer_player_id=vid,
+            peer_player_id=pid,
+            welcomed_at=now,
+            send_read_receipts=False,
+            last_read_incoming_id=0,
+            hidden_at=now,
+        )
+        s.add(pref)
+    else:
+        pref.hidden_at = now
+    return {"ok": True}
+
+
 def post_private_message(
     s: Session, *, sender_id: str, recipient_id: str, body: str
 ) -> dict[str, Any]:
@@ -224,6 +413,7 @@ def post_private_message(
     )
     s.add(row)
     s.flush()
+    _clear_peer_hidden_after_inbound(s, recipient_id=rid, sender_id=sid)
     return {"ok": True, "id": int(row.id)}
 
 
@@ -272,22 +462,37 @@ def list_private_messages(
             sender_id=m.sender_id, viewer_id=vid, blocked=blocked, staff=staff
         ):
             continue
-        out.append(
-            {
-                "id": int(m.id),
-                "sender_id": str(m.sender_id),
-                "display_name": str(names.get(m.sender_id, "—")),
-                "body": m.body,
-                "created_at": m.created_at.isoformat() if m.created_at else None,
-            }
-        )
+        # Исходящие: отметка «прочитано» только если собеседник включает уведомления об этом ко мне
+        rr_at = getattr(m, "read_receipt_at", None)
+        item: dict[str, Any] = {
+            "id": int(m.id),
+            "sender_id": str(m.sender_id),
+            "display_name": str(names.get(m.sender_id, "—")),
+            "body": m.body,
+            "created_at": m.created_at.isoformat() if m.created_at else None,
+        }
+        if m.sender_id == vid:
+            rp = _pref_row(s, viewer=m.recipient_id, peer=vid) if m.recipient_id else None
+            if rp is not None and rp.send_read_receipts:
+                item["read_receipt_at"] = rr_at.isoformat() if rr_at else None
+            else:
+                item["read_receipt_at"] = None
+        out.append(item)
+
+    advance_private_incoming_read(s, viewer_id=vid, peer_id=pid)
     return {"ok": True, "messages": out}
 
 
 def list_private_threads(s: Session, *, viewer_id: str) -> dict[str, Any]:
     vid = _parse_uuid(viewer_id)
     if not vid:
-        return {"ok": False, "error": "invalid_viewer", "threads": []}
+        return {
+            "ok": False,
+            "error": "invalid_viewer",
+            "threads": [],
+            "badge_new_contacts": 0,
+            "badge_unread": 0,
+        }
     blocked = _blocked_ids_for_viewer(s, viewer_id=vid)
     staff_blocked = _staff_exempt_map(s, player_ids=list(blocked)) if blocked else {}
     q = (
@@ -310,21 +515,49 @@ def list_private_threads(s: Session, *, viewer_id: str) -> dict[str, Any]:
         if peer not in last_by_peer:
             last_by_peer[peer] = m
     if not last_by_peer:
-        return {"ok": True, "threads": []}
+        return {"ok": True, "threads": [], "badge_new_contacts": 0, "badge_unread": 0}
     peers = list(last_by_peer.keys())
+    prefs = {
+        r.peer_player_id: r
+        for r in s.execute(
+            select(PrivateChatPeerPref).where(
+                PrivateChatPeerPref.viewer_player_id == vid,
+                PrivateChatPeerPref.peer_player_id.in_(peers),
+            )
+        ).scalars().all()
+    }
     names = dict(s.execute(select(Player.id, Player.display_name).where(Player.id.in_(peers))).all())
     threads = []
+    badge_new = 0
+    badge_unread = 0
     for peer in sorted(peers, key=lambda p: last_by_peer[p].id, reverse=True):
+        pref = prefs.get(peer)
+        if pref is not None and pref.hidden_at is not None:
+            continue
         lm = last_by_peer[peer]
+        unread = _unread_private_incoming(s, viewer_id=vid, peer_id=peer, pref=pref)
+        intro = _needs_intro(pref)
+        if intro and unread > 0:
+            badge_new += 1
+        badge_unread += unread
         threads.append(
             {
                 "peer_id": str(peer),
                 "display_name": str(names.get(peer, "—")),
                 "last_preview": (lm.body or "")[:120],
                 "last_id": int(lm.id),
+                "last_message_at": lm.created_at.isoformat() if lm.created_at else None,
+                "unread_incoming": unread,
+                "needs_intro": intro,
+                "send_read_receipts": bool(pref.send_read_receipts) if pref else False,
             }
         )
-    return {"ok": True, "threads": threads}
+    return {
+        "ok": True,
+        "threads": threads,
+        "badge_new_contacts": badge_new,
+        "badge_unread": badge_unread,
+    }
 
 
 def list_blocks(s: Session, *, viewer_id: str) -> dict[str, Any]:

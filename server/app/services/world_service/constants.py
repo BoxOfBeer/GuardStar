@@ -36,3 +36,6 @@ PLANET_STORE_KEYS = ("metal", "crystal", "energy", "fuel", "food", "water")
 FLEET_ENERGY_MAX_UPKEEP_MULT = 12
 FLEET_ENERGY_MAX_ABS_CAP = 8000
 FLEET_ENERGY_MAX_FLOOR = 100
+
+# Максимум единиц в одном флоте (состав), если в world_state.admin_max_fleet_units = 0.
+DEFAULT_MAX_FLEET_UNITS = 50

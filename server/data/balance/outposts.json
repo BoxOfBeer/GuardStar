@@ -10,7 +10,7 @@
       "territory": { "influence_strength": 0.4, "influence_radius": 14 },
       "vision": { "base_radius": 6 },
       "combat": { "hp": 420, "attack": 8, "defense": 10, "range": 5 },
-      "upkeep_per_tick": { "metal": 1, "crystal": 1, "energy": 2, "fuel": 0 },
+      "upkeep_per_tick": { "metal": 1, "crystal": 1, "energy": 2, "fuel": 2 },
       "slots": { "module_slots": 1 },
       "upgrade": {
         "to": "outpost_t2",
@@ -29,7 +29,7 @@
       "territory": { "influence_strength": 0.7, "influence_radius": 17 },
       "vision": { "base_radius": 7 },
       "combat": { "hp": 650, "attack": 9, "defense": 12, "range": 5 },
-      "upkeep_per_tick": { "metal": 2, "crystal": 2, "energy": 3, "fuel": 0 },
+      "upkeep_per_tick": { "metal": 2, "crystal": 2, "energy": 3, "fuel": 3 },
       "slots": { "module_slots": 2 },
       "upgrade": {
         "to": "outpost_t3",
@@ -48,7 +48,7 @@
       "territory": { "influence_strength": 1.0, "influence_radius": 20 },
       "vision": { "base_radius": 8 },
       "combat": { "hp": 950, "attack": 10, "defense": 14, "range": 5 },
-      "upkeep_per_tick": { "metal": 3, "crystal": 3, "energy": 4, "fuel": 1 },
+      "upkeep_per_tick": { "metal": 3, "crystal": 3, "energy": 4, "fuel": 4 },
       "slots": { "module_slots": 3 },
       "upgrade": null
     }

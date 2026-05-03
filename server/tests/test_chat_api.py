@@ -65,3 +65,59 @@ def test_private_chat_and_block(client, _test_engine):
     finally:
         ih.delete_player_cascade(_test_engine, a["player_id"])
         ih.delete_player_cascade(_test_engine, b["player_id"])
+
+
+def test_private_read_receipt_intro_and_hide(client, _test_engine):
+    na = ih.display_name_pytest("rch_a")
+    nb = ih.display_name_pytest("rch_b")
+    ra = client.post("/api/register", json={"display_name": na})
+    rb = client.post("/api/register", json={"display_name": nb})
+    assert ra.status_code == 200 and rb.status_code == 200
+    a = ra.get_json()
+    b = rb.get_json()
+    try:
+        client.post("/api/logout")
+        assert client.post("/api/login", json={"access_code": a["access_code"]}).status_code == 200
+        assert (
+            client.post("/api/chat/private", json={"peer_id": b["player_id"], "body": "ping"}).status_code
+            == 200
+        )
+        client.post("/api/logout")
+        assert client.post("/api/login", json={"access_code": b["access_code"]}).status_code == 200
+
+        thr = client.get("/api/chat/private/threads").get_json()
+        assert thr.get("ok") is True
+        assert int(thr.get("badge_unread") or 0) >= 1
+
+        assert (
+            client.post(
+                "/api/chat/private/thread/open",
+                json={"peer_id": a["player_id"], "send_read_receipts": True},
+            ).status_code
+            == 200
+        )
+
+        inbox_b = client.get(f"/api/chat/private?peer_id={a['player_id']}").get_json()
+        assert inbox_b.get("ok") is True
+        msgs_b = inbox_b.get("messages") or []
+        assert any((m.get("body") or "") == "ping" for m in msgs_b)
+
+        client.post("/api/logout")
+        assert client.post("/api/login", json={"access_code": a["access_code"]}).status_code == 200
+        inbox_a = client.get(f"/api/chat/private?peer_id={b['player_id']}").get_json()
+        assert inbox_a.get("ok") is True
+        sent = [m for m in (inbox_a.get("messages") or []) if m.get("sender_id") == a["player_id"]]
+        assert sent
+        assert sent[-1].get("read_receipt_at")
+
+        hid = client.post(
+            "/api/chat/private/thread/hide", json={"peer_id": b["player_id"]}
+        ).get_json()
+        assert hid.get("ok") is True
+        thr2 = client.get("/api/chat/private/threads").get_json()
+        assert thr2.get("ok") is True
+        peers = [t.get("peer_id") for t in (thr2.get("threads") or [])]
+        assert b["player_id"] not in peers
+    finally:
+        ih.delete_player_cascade(_test_engine, a["player_id"])
+        ih.delete_player_cascade(_test_engine, b["player_id"])

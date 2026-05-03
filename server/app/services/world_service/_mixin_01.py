@@ -187,7 +187,9 @@ class WorldServiceMixin01:
         tot_rows = sum(pos.values())
         fq = int(fleet.qty) if fleet.qty else 0
         # Если строки fleet_ships неполные, а legacy qty больше — добиваем «невидимых»
-        # кораблей в доминантный тип (частая причина пропажи скаута после полевой стройки).
+        # кораблей только в результате этого чтения (без записи в БД). Любой путь с
+        # «write» обязан пройти через `_materialize_legacy_fleet_qty_into_ship_rows` или
+        # `_write_fleet_units`, иначе лог боёв и снимки «до/после» расходятся с реальными строками.
         if pos and fleet.unit_type and fq > tot_rows:
             ut = str(fleet.unit_type)
             pos[ut] = int(pos.get(ut, 0)) + (fq - tot_rows)
@@ -197,6 +199,63 @@ class WorldServiceMixin01:
             return {str(fleet.unit_type): fq}
         return {}
 
+    def _materialize_legacy_fleet_qty_into_ship_rows(
+        self, s: Session, fleet: Fleet
+    ) -> None:
+        """Синхронизирует `fleet.qty` с таблицей `fleet_ships` до боёв и снимков состава.
+
+        Раньше «лишнее» qty учитывалось только в памяти внутри `_fleet_units_map`; после боя
+        `_write_fleet_units` сохранял только строки — снимки «до/после» расходились и в логе
+        были гигантские «потери» при малом числе реально снятых строк.
+        """
+        rows = (
+            s.execute(select(FleetShip).where(FleetShip.fleet_id == fleet.id))
+            .scalars()
+            .all()
+        )
+        pos = {str(r.unit_type): int(r.qty) for r in rows if int(r.qty) > 0}
+        tot_rows = sum(pos.values())
+        fq = int(fleet.qty) if fleet.qty else 0
+        if pos and fq > tot_rows:
+            ut = (
+                str(fleet.unit_type)
+                if getattr(fleet, "unit_type", None)
+                else max(pos.keys(), key=lambda k: (pos[k], k))
+            )
+            pos[ut] = int(pos.get(ut, 0)) + (fq - tot_rows)
+            self._write_fleet_units(s, fleet, pos)
+            return
+        if pos and fq < tot_rows:
+            setattr(fleet, "qty", int(tot_rows))
+            s.flush()
+            return
+        if not pos and fq > 0 and getattr(fleet, "unit_type", None):
+            self._sync_fleet_ships_from_legacy(s, fleet)
+
+    def _fleet_total_units(self, s: Session, fleet: Fleet) -> int:
+        return sum(int(v) for v in self._fleet_units_map(s, fleet).values())
+
+    def _purge_shell_fleets_at_cell(self, s: Session, *, x: int, y: int, z: int) -> None:
+        """Удаляет флоты с нулевым составом в клетке.
+
+        Иначе «оболочка» в `fleets` блокирует занятость клетки, а снимок мира по
+        `fleet_ships` её не показывает — игрок видит один флот и ошибку «уже ваш флот».
+        """
+        rows = (
+            s.execute(
+                select(Fleet).where(
+                    Fleet.pos_x == int(x),
+                    Fleet.pos_y == int(y),
+                    Fleet.pos_z == int(z),
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for fleet in rows:
+            if self._fleet_total_units(s, fleet) <= 0:
+                self._write_fleet_units(s, fleet, {})
+
     def _cell_has_planet(self, s: Session, *, x: int, y: int, z: int) -> bool:
         if int(z) != 0:
             return False
@@ -204,6 +263,23 @@ class WorldServiceMixin01:
             select(Planet.id).where(Planet.pos_x == int(x), Planet.pos_y == int(y))
         ).first()
         return bool(row)
+
+    def _surface_slot_buildings_count_for_planet(
+        self, s: Session, *, planet: Planet
+    ) -> int:
+        """Только постройки на тайле колонии ограничиваются build_slots_total (рандом при спавне)."""
+        px, py = int(planet.pos_x), int(planet.pos_y)
+        return int(
+            s.execute(
+                select(func.count(Building.id)).where(
+                    Building.planet_id == planet.id,
+                    Building.x == px,
+                    Building.y == py,
+                    Building.z == 0,
+                )
+            ).scalar()
+            or 0
+        )
 
     def _write_fleet_units(
         self, s: Session, fleet: Fleet, units: dict[str, int]
@@ -498,78 +574,261 @@ class WorldServiceMixin01:
             .all()
         )
 
-    def _outpost_stats(self, s: Session, outpost: Outpost) -> dict:
+    _OUTPOST_UPKEEP_KEYS = ("metal", "crystal", "energy", "fuel")
+
+    @classmethod
+    def _outpost_normalize_upkeep(cls, raw: dict | None) -> dict[str, int]:
+        d = raw if isinstance(raw, dict) else {}
+        return {k: int(d.get(k, 0) or 0) for k in cls._OUTPOST_UPKEEP_KEYS}
+
+    @classmethod
+    def _outpost_accumulate_upkeep_effects(
+        cls, acc: dict[str, int], upkeep_eff: dict | None
+    ) -> dict[str, int]:
+        if not isinstance(upkeep_eff, dict):
+            return acc
+        out = dict(acc)
+        for key, delta in upkeep_eff.items():
+            if isinstance(key, str) and key.endswith("_add"):
+                nk = key[:-4]
+                if nk in cls._OUTPOST_UPKEEP_KEYS and isinstance(
+                    delta, (int, float)
+                ):
+                    out[nk] = out.get(nk, 0) + int(delta)
+        return out
+
+    def _outpost_stats(
+        self,
+        s: Session,
+        outpost: Outpost,
+        *,
+        viewer_player_id: str | uuid.UUID | None = None,
+    ) -> dict:
         od = self._outpost_definition(outpost.outpost_type)
         territory = od.get("territory") if isinstance(od.get("territory"), dict) else {}
         vision = od.get("vision") if isinstance(od.get("vision"), dict) else {}
         combat = od.get("combat") if isinstance(od.get("combat"), dict) else {}
         modules = self._outpost_module_rows(s, outpost_id=outpost.id)
 
+        owner_view = bool(
+            viewer_player_id is not None
+            and str(viewer_player_id) == str(outpost.owner_player_id)
+        )
+        viewer_done: set[str] = set()
+        if owner_view:
+            viewer_done = set(
+                self._get_player_done_techs(s, player_id=outpost.owner_player_id)
+            )
+
         vision_radius = int(vision.get("base_radius", 0) or 0)
+        base_vision_radius = vision_radius
         hp = int(combat.get("hp", 0) or 0)
         attack = int(combat.get("attack", 0) or 0)
         defense = int(combat.get("defense", 0) or 0)
         attack_range = int(combat.get("range", 5) or 5)
+        base_hp, base_attack, base_defense, base_range = hp, attack, defense, attack_range
         territory_strength = float(territory.get("influence_strength", 0.0) or 0.0)
         territory_radius = int(territory.get("influence_radius", 0) or 0)
 
+        upkeep_base = self._outpost_normalize_upkeep(
+            od.get("upkeep_per_tick") if isinstance(od.get("upkeep_per_tick"), dict) else {}
+        )
+        upkeep_module_delta = {k: 0 for k in self._OUTPOST_UPKEEP_KEYS}
+
         payload_modules: list[dict] = []
+        ws_cur = self.get_or_create_world_state(s)
+        now_tick = int(ws_cur.current_tick)
         for mod in modules:
+            pending_to = getattr(mod, "pending_module_type", None)
+            stat = str(getattr(mod, "status", "") or "")
+            contributes = stat == "active" or (
+                stat == "in_progress" and bool(pending_to)
+            )
+
             md = self._outpost_module_definition(mod.module_type)
             eff = md.get("effects") if isinstance(md.get("effects"), dict) else {}
             vis = eff.get("vision") if isinstance(eff.get("vision"), dict) else {}
             cmb = eff.get("combat") if isinstance(eff.get("combat"), dict) else {}
-            if isinstance(vis.get("radius_add"), (int, float)):
-                vision_radius += int(vis.get("radius_add", 0))
-            if isinstance(cmb.get("attack_add"), (int, float)):
-                attack += int(cmb.get("attack_add", 0))
-            if isinstance(cmb.get("defense_add"), (int, float)):
-                defense += int(cmb.get("defense_add", 0))
-            if isinstance(cmb.get("hp_add"), (int, float)):
-                hp += int(cmb.get("hp_add", 0))
-            payload_modules.append(
-                {
-                    "id": str(mod.id),
-                    "module_type": mod.module_type,
-                    "kind": mod.kind,
-                    "level": int(mod.level),
-                    "slot_idx": int(mod.slot_idx),
-                    "status": mod.status,
-                    "started_at_tick": int(getattr(mod, "started_at_tick", 0) or 0),
-                    "finish_tick": int(getattr(mod, "finish_tick", 0) or 0),
-                    "name": md.get("name"),
+            if contributes:
+                if isinstance(vis.get("radius_add"), (int, float)):
+                    vision_radius += int(vis.get("radius_add", 0))
+                if isinstance(cmb.get("attack_add"), (int, float)):
+                    attack += int(cmb.get("attack_add", 0))
+                if isinstance(cmb.get("defense_add"), (int, float)):
+                    defense += int(cmb.get("defense_add", 0))
+                if isinstance(cmb.get("hp_add"), (int, float)):
+                    hp += int(cmb.get("hp_add", 0))
+                upkeep_sub = (
+                    eff.get("upkeep") if isinstance(eff.get("upkeep"), dict) else {}
+                )
+                upkeep_module_delta = self._outpost_accumulate_upkeep_effects(
+                    upkeep_module_delta, upkeep_sub
+                )
+
+            upgrade = md.get("upgrade") if isinstance(md.get("upgrade"), dict) else None
+            upgrade_payload = None
+            can_upgrade_module = False
+            upgrade_missing: list[str] = []
+            next_module_name = None
+            if (
+                upgrade
+                and upgrade.get("to")
+                and stat == "active"
+                and not pending_to
+            ):
+                tun = str(upgrade["to"])
+                try:
+                    next_md = self._outpost_module_definition(tun)
+                    next_module_name = next_md.get("name") or tun
+                except Exception:
+                    next_module_name = tun
+                upgrade_payload = {
+                    "to": tun,
+                    "to_name": next_module_name,
+                    "cost": upgrade.get("cost") if isinstance(upgrade.get("cost"), dict) else {},
+                    "time_ticks": upgrade.get("time_ticks"),
+                    "summary_ru": upgrade.get("summary_ru"),
+                    "prereq_tech": [
+                        str(x)
+                        for x in upgrade.get("prereq_tech", [])
+                        if isinstance(x, str)
+                    ],
                 }
-            )
+                if owner_view:
+                    req_t = upgrade_payload["prereq_tech"]
+                    upgrade_missing = [tid for tid in req_t if tid not in viewer_done]
+                    can_upgrade_module = len(upgrade_missing) == 0
+
+            ticks_left_ip = 0
+            if stat == "in_progress":
+                ticks_left_ip = max(
+                    0, int(getattr(mod, "finish_tick", 0) or 0) - now_tick
+                )
+
+            need_eng = max(1, int(mod.slot_idx) + 1)
+            summary_ru = md.get("effects_summary_ru")
+            if isinstance(summary_ru, str) and summary_ru.strip():
+                fx_sum = summary_ru.strip()
+            else:
+                fx_sum = None
+
+            mod_row: dict = {
+                "id": str(mod.id),
+                "module_type": mod.module_type,
+                "pending_module_type": pending_to,
+                "kind": mod.kind,
+                "level": int(mod.level),
+                "slot_idx": int(mod.slot_idx),
+                "status": mod.status,
+                "started_at_tick": int(getattr(mod, "started_at_tick", 0) or 0),
+                "finish_tick": int(getattr(mod, "finish_tick", 0) or 0),
+                "ticks_remaining": int(ticks_left_ip),
+                "name": md.get("name"),
+                "tier": md.get("tier"),
+                "slot_cost_engineers": int(need_eng),
+                "need_engineers": int(need_eng),
+                "effects_summary_ru": fx_sum,
+                "effects": eff,
+            }
+            if owner_view:
+                if upgrade_payload is not None:
+                    mod_row["upgrade"] = upgrade_payload
+                mod_row["can_upgrade_module"] = bool(can_upgrade_module)
+                mod_row["upgrade_missing_techs"] = upgrade_missing
+            payload_modules.append(mod_row)
+
+        hp_row = getattr(outpost, "hp_current", None)
+        if hp_row is None:
+            hp_current_eff = int(hp)
+        else:
+            hp_current_eff = max(0, min(int(hp), int(hp_row)))
 
         supply_line: dict | None = None
-        if int(
-            getattr(outpost, "z", 0) or 0
-        ) == 0 and not self._cell_is_owned_planet_tile(
+        if int(getattr(outpost, "z", 0) or 0) == 0 and not self._cell_is_owned_planet_tile(
             s, owner_id=outpost.owner_player_id, x=int(outpost.x), y=int(outpost.y), z=0
         ):
-            if self._is_cell_supplied(
+            st = self.get_supply_state(
                 s,
-                owner_id=outpost.owner_player_id,
+                player_id=str(outpost.owner_player_id),
                 x=int(outpost.x),
                 y=int(outpost.y),
                 z=int(outpost.z),
-            ):
-                hub_p = self._supply_hub_planet_for_cell(
-                    s,
-                    owner_id=outpost.owner_player_id,
-                    x=int(outpost.x),
-                    y=int(outpost.y),
-                    z=int(outpost.z),
+            )
+            nh = st.get("nearest_hub") if isinstance(st.get("nearest_hub"), dict) else None
+            hub_id = nh.get("id") if nh else None
+            hub_planet_name: str | None = None
+            hub_p_active: Planet | None = None
+            if hub_id:
+                try:
+                    hub_row = s.get(Planet, uuid.UUID(str(hub_id)))
+                except Exception:
+                    hub_row = None
+                if hub_row is not None:
+                    hub_planet_name = str(hub_row.name or "") or None
+                    if bool(st.get("in_supply")):
+                        hub_p_active = hub_row
+            food_ps = water_ps = 0
+            if hub_p_active is not None:
+                lvl = max(1, int(getattr(outpost, "level", 1) or 1))
+                cap = min(lvl, 3)
+                tier_mult = float(2 ** (cap - 1))
+                food_ps, water_ps = self._supply_route_logistics_costs(
+                    hub=hub_p_active,
+                    ox=int(outpost.x),
+                    oy=int(outpost.y),
+                    outpost_supply_tier_multiplier=tier_mult,
                 )
-                if hub_p is not None:
-                    cf, cw = self._supply_route_logistics_costs(
-                        hub=hub_p, ox=int(outpost.x), oy=int(outpost.y)
+            supply_line = {
+                "hub_planet_id": str(hub_id) if hub_id else None,
+                "hub_planet_name": hub_planet_name,
+                "in_supply": bool(st.get("in_supply")),
+                "route_clear": bool(st.get("route_clear")),
+                "route_blocked_at": st.get("route_blocked_at"),
+                "food_per_sol": int(food_ps),
+                "water_per_sol": int(water_ps),
+            }
+
+        upkeep_total = {
+            k: upkeep_base.get(k, 0) + upkeep_module_delta.get(k, 0)
+            for k in self._OUTPOST_UPKEEP_KEYS
+        }
+
+        outpost_upgrade_meta: dict | None = None
+        ou = od.get("upgrade") if isinstance(od.get("upgrade"), dict) else None
+        if ou and ou.get("to") and owner_view:
+            tgt = str(ou["to"])
+            try:
+                tdef = self._outpost_definition(tgt)
+                tname = (tdef.get("name") or tgt) if isinstance(tdef, dict) else tgt
+            except Exception:
+                tname = tgt
+            req_ou = [str(x) for x in ou.get("prereq_tech", []) if isinstance(x, str)]
+            miss_ou = [tid for tid in req_ou if tid not in viewer_done]
+            outpost_upgrade_meta = {
+                "to": tgt,
+                "to_name": tname,
+                "cost": ou.get("cost") if isinstance(ou.get("cost"), dict) else {},
+                "time_ticks": ou.get("time_ticks"),
+                "can_apply": len(miss_ou) == 0,
+                "missing_techs": miss_ou,
+            }
+
+        empire_module_work_busy = False
+        if owner_view:
+            empire_module_work_busy = (
+                s.execute(
+                    select(OutpostModule.id)
+                    .join(Outpost, Outpost.id == OutpostModule.outpost_id)
+                    .where(
+                        Outpost.owner_player_id == outpost.owner_player_id,
+                        OutpostModule.status == "in_progress",
                     )
-                    supply_line = {
-                        "hub_planet_id": str(hub_p.id),
-                        "food_per_sol": int(cf),
-                        "water_per_sol": int(cw),
-                    }
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+                is not None
+            )
 
         return {
             "outpost_type": outpost.outpost_type,
@@ -583,15 +842,39 @@ class WorldServiceMixin01:
                 "influence_radius": territory_radius,
             },
             "vision": {"radius": int(vision_radius)},
+            "vision_base_radius": base_vision_radius,
             "combat": {
                 "hp": int(hp),
+                "hp_max": int(hp),
+                "hp_current": int(hp_current_eff),
                 "attack": int(attack),
                 "defense": int(defense),
                 "range": int(attack_range),
             },
+            "module_bonuses": {
+                "vision_radius_add": int(vision_radius - base_vision_radius),
+                "hp_add": int(hp - base_hp),
+                "attack_add": int(attack - base_attack),
+                "defense_add": int(defense - base_defense),
+            },
+            "upkeep_per_tick_base": upkeep_base,
+            **(
+                {
+                    "upkeep_per_tick_modules_delta": upkeep_module_delta,
+                    "upkeep_per_tick_total": upkeep_total,
+                    "empire_module_work_busy": bool(empire_module_work_busy),
+                }
+                if owner_view
+                else {}
+            ),
             "slots": {"total": int(outpost.module_slots_total), "used": len(modules)},
             "modules": payload_modules,
             "upgrade": od.get("upgrade"),
+            **(
+                {"structure_upgrade": outpost_upgrade_meta}
+                if outpost_upgrade_meta is not None
+                else {}
+            ),
             "name": od.get("name"),
             "supply_line": supply_line,
         }
@@ -814,10 +1097,18 @@ class WorldServiceMixin01:
         )
 
     def _supply_route_logistics_costs(
-        self, *, hub: Planet, ox: int, oy: int
+        self,
+        *,
+        hub: Planet,
+        ox: int,
+        oy: int,
+        outpost_supply_tier_multiplier: float = 1.0,
     ) -> tuple[int, int]:
         return self._outposts.supply_route_logistics_costs(
-            hub=hub, ox=int(ox), oy=int(oy)
+            hub=hub,
+            ox=int(ox),
+            oy=int(oy),
+            tier_multiplier=float(outpost_supply_tier_multiplier),
         )
 
     def _apply_supply_route_logistics_tick(self, s: Session, *, tick: int) -> None:

@@ -323,3 +323,45 @@ def api_fleet_cancel_order():
         return jsonify(result)
 
 
+def _require_game_admin(s, *, player_id: str) -> bool:
+    pl = s.get(Player, uuid.UUID(player_id))
+    return bool(pl and getattr(pl, "is_game_admin", False))
+
+
+@api_bp.post("/world/admin/dev/purge_bandits")
+def api_world_admin_dev_purge_bandits():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    with db_session() as s:
+        if not _require_game_admin(s, player_id=player_id):
+            return jsonify({"error": "forbidden"}), 403
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        body = world.admin_dev_purge_bandit_world(s)
+        s.commit()
+    return jsonify(body)
+
+
+@api_bp.post("/world/admin/dev/fleet_spawn_lock")
+def api_world_admin_dev_fleet_spawn_lock():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    payload = request.get_json(silent=True) or {}
+    if "enabled" not in payload or not isinstance(payload.get("enabled"), bool):
+        return jsonify({"error": "invalid_payload", "need": {"enabled": True}}), 400
+    enabled = bool(payload["enabled"])
+    with db_session() as s:
+        if not _require_game_admin(s, player_id=player_id):
+            return jsonify({"error": "forbidden"}), 403
+        ws = s.get(WorldState, 1)
+        if not ws:
+            return jsonify({"error": "no_world_state"}), 500
+        ws.test_block_new_fleets = enabled
+        s.commit()
+    return jsonify({"ok": True, "test_block_new_fleets": enabled})
+
+

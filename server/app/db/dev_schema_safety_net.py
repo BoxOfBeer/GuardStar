@@ -68,6 +68,30 @@ def apply_dev_schema_safety_net() -> None:
                             "ALTER TABLE fleets ADD COLUMN IF NOT EXISTS max_energy INTEGER NOT NULL DEFAULT 100"
                         )
                     )
+                if "hunt_target_fleet_id" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE fleets ADD COLUMN IF NOT EXISTS hunt_target_fleet_id UUID NULL REFERENCES fleets(id) ON DELETE SET NULL"
+                        )
+                    )
+                if "patrol_outpost_id" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE fleets ADD COLUMN IF NOT EXISTS patrol_outpost_id UUID NULL"
+                        )
+                    )
+                if "strike_origin_outpost_id" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE fleets ADD COLUMN IF NOT EXISTS strike_origin_outpost_id UUID NULL"
+                        )
+                    )
+                if "bandit_hunt_announced" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE fleets ADD COLUMN IF NOT EXISTS bandit_hunt_announced BOOLEAN NOT NULL DEFAULT false"
+                        )
+                    )
 
         if "unit_orders" in insp.get_table_names():
             cols = {c["name"] for c in insp.get_columns("unit_orders")}
@@ -282,6 +306,30 @@ def apply_dev_schema_safety_net() -> None:
                             "ALTER TABLE outposts ADD COLUMN IF NOT EXISTS finish_tick INTEGER NOT NULL DEFAULT 0"
                         )
                     )
+                if "hp_current" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE outposts ADD COLUMN IF NOT EXISTS hp_current INTEGER NULL"
+                        )
+                    )
+                if "strike_next_tick" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE outposts ADD COLUMN IF NOT EXISTS strike_next_tick INTEGER NOT NULL DEFAULT 0"
+                        )
+                    )
+                if "patrol_fleet_id" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE outposts ADD COLUMN IF NOT EXISTS patrol_fleet_id UUID NULL"
+                        )
+                    )
+                if "patrol_respawn_at_tick" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE outposts ADD COLUMN IF NOT EXISTS patrol_respawn_at_tick INTEGER NOT NULL DEFAULT 0"
+                        )
+                    )
                 conn.execute(
                     text(
                         "CREATE INDEX IF NOT EXISTS ix_outposts_finish_tick ON outposts (finish_tick)"
@@ -348,6 +396,12 @@ def apply_dev_schema_safety_net() -> None:
                     conn.execute(
                         text(
                             "ALTER TABLE outpost_modules ADD COLUMN IF NOT EXISTS finish_tick INTEGER NOT NULL DEFAULT 0"
+                        )
+                    )
+                if "pending_module_type" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE outpost_modules ADD COLUMN IF NOT EXISTS pending_module_type VARCHAR(64)"
                         )
                     )
                 conn.execute(
@@ -420,7 +474,7 @@ def apply_dev_schema_safety_net() -> None:
                           current_tick INTEGER NOT NULL DEFAULT 0,
                           updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                           auto_tick_enabled BOOLEAN NOT NULL DEFAULT false,
-                          auto_tick_interval_seconds DOUBLE PRECISION NOT NULL DEFAULT 5.0,
+                          auto_tick_interval_seconds DOUBLE PRECISION NOT NULL DEFAULT 10.0,
                           player_spawn_min_manhattan INTEGER NOT NULL DEFAULT 25
                         );
                         """
@@ -442,6 +496,23 @@ def apply_dev_schema_safety_net() -> None:
                             "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS player_spawn_min_manhattan INTEGER NOT NULL DEFAULT 25"
                         )
                     )
+                if "test_block_new_fleets" not in ws_cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS test_block_new_fleets BOOLEAN NOT NULL DEFAULT false"
+                        )
+                    )
+                for sql in (
+                    "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS admin_block_player_fleet_create BOOLEAN NOT NULL DEFAULT false",
+                    "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS admin_block_npc_transit BOOLEAN NOT NULL DEFAULT false",
+                    "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS admin_block_bandit_mines BOOLEAN NOT NULL DEFAULT false",
+                    "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS admin_block_bandit_outposts BOOLEAN NOT NULL DEFAULT false",
+                    "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS admin_block_bandit_fleets BOOLEAN NOT NULL DEFAULT false",
+                    "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS admin_max_fleet_units INTEGER NOT NULL DEFAULT 0",
+                    "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS admin_research_overrides_json TEXT",
+                    "ALTER TABLE world_state ADD COLUMN IF NOT EXISTS admin_economy_overrides_json TEXT",
+                ):
+                    conn.execute(text(sql))
 
         if "admin_config" not in insp.get_table_names():
             with engine.begin() as conn:
@@ -551,6 +622,23 @@ def apply_dev_schema_safety_net() -> None:
                     conn.execute(
                         text(
                             "CREATE INDEX IF NOT EXISTS ix_buildings_planet_id ON buildings (planet_id)"
+                        )
+                    )
+                if "capture_progress" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE buildings ADD COLUMN IF NOT EXISTS capture_progress DOUBLE PRECISION NOT NULL DEFAULT 0"
+                        )
+                    )
+                if "capture_attacker_id" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE buildings ADD COLUMN IF NOT EXISTS capture_attacker_id UUID NULL REFERENCES players(id) ON DELETE SET NULL"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "CREATE INDEX IF NOT EXISTS ix_buildings_capture_attacker_id ON buildings (capture_attacker_id)"
                         )
                     )
 
@@ -736,6 +824,45 @@ def apply_dev_schema_safety_net() -> None:
                 conn.execute(
                     text(
                         "CREATE INDEX IF NOT EXISTS ix_feedback_playtest_api_logs_created_at ON feedback_playtest_api_logs (created_at)"
+                    )
+                )
+
+        # Личные сообщения: read_receipt_at + таблица настроек пары (20260510_000021).
+        if "chat_messages" in insp.get_table_names():
+            cm_cols = {c["name"] for c in insp.get_columns("chat_messages")}
+            with engine.begin() as conn:
+                if "read_receipt_at" not in cm_cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS read_receipt_at TIMESTAMPTZ NULL"
+                        )
+                    )
+        if "private_chat_peer_prefs" not in insp.get_table_names():
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS private_chat_peer_prefs (
+                          id BIGSERIAL PRIMARY KEY,
+                          viewer_player_id UUID NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+                          peer_player_id UUID NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+                          welcomed_at TIMESTAMPTZ NULL,
+                          send_read_receipts BOOLEAN NOT NULL DEFAULT false,
+                          last_read_incoming_id BIGINT NOT NULL DEFAULT 0,
+                          hidden_at TIMESTAMPTZ NULL,
+                          CONSTRAINT uq_private_chat_peer_prefs_pair UNIQUE (viewer_player_id, peer_player_id)
+                        );
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_private_chat_peer_prefs_viewer ON private_chat_peer_prefs (viewer_player_id)"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_private_chat_peer_prefs_peer ON private_chat_peer_prefs (peer_player_id)"
                     )
                 )
     except Exception:

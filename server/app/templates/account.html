@@ -2,10 +2,11 @@
 {% block body %}
   <div class="topbar card">
     <div>
-      <h2 style="margin: 0;">Аккаунт</h2>
-      <div class="muted">Оператор: <b>{{ player.display_name }}</b></div>
+      <h2 style="margin: 0;">Аккаунт оператора</h2>
+      <div class="muted">Позывной: <b>{{ player.display_name }}</b></div>
     </div>
     <a href="{{ url_for('web.me') }}" class="status-chip" style="text-decoration:none;">Назад в игру</a>
+    <a href="{{ url_for('web.operator_public_profile', pid=player.id) }}" class="status-chip" style="text-decoration:none;">Публичный профиль</a>
     <a href="{{ url_for('web.feedback') }}" class="status-chip" style="text-decoration:none;">Обратная связь</a>
     <form method="post" action="{{ url_for('web.logout') }}" style="display:inline;">
       <button type="submit">Выйти</button>
@@ -21,16 +22,25 @@
       <div class="access-code-value" translate="no">{{ access_code }}</div>
       <div class="muted">Скопируй ключ сейчас: мы покажем его только один раз.</div>
       {% else %}
-      <div><span class="muted">Ключ доступа</span> — <b>не показываем (храним только хеш)</b></div>
+      <div><span class="muted">Ключ доступа</span> — сохранён в виде хеша на сервере; показать можно только после генерации нового ключа ниже.</div>
       {% endif %}
-      <div><span class="muted">Хеш ключа</span> — <span class="muted">{{ player.access_code_hash[:12] }}…</span></div>
     </div>
+
+    {% if rename_err %}
+    <div class="error" style="margin-top:12px;">
+      {% if rename_err == 'too_short' %}Имя не короче 3 символов.
+      {% elif rename_err == 'too_long' %}Слишком длинное имя (до 64 символов после нормализации пробелов).
+      {% elif rename_err == 'empty' %}Введите непустое имя.
+      {% elif rename_err == 'taken' %}Это имя уже занято (ранее занятые позывные не освобождаются).
+      {% else %}Не удалось сменить имя.{% endif %}
+    </div>
+    {% endif %}
 
     <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap;align-items:flex-end;">
       <form method="post" action="{{ url_for('web.account_rename') }}" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
         <div style="display:flex;flex-direction:column;gap:6px;">
-          <label class="muted" for="display_name">Новое имя</label>
-          <input id="display_name" name="display_name" value="{{ player.display_name }}" maxlength="64" />
+          <label class="muted" for="display_name">Новое позывное</label>
+          <input id="display_name" name="display_name" value="{{ player.display_name }}" maxlength="64" minlength="3" required />
         </div>
         <button type="submit">Сменить имя</button>
       </form>

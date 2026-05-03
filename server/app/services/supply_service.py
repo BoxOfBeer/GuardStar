@@ -91,13 +91,24 @@ class SupplyService:
         return (base_add, per_add)
 
     def planet_supply_radius(
-        self, s: Session, *, planet: Planet
+        self,
+        s: Session,
+        *,
+        planet: Planet,
+        player_supply_mods: tuple[int, int] | None = None,
     ) -> tuple[int, int, int]:
-        """(effective_radius, effective_base, effective_per_supplier)"""
+        """(effective_radius, effective_base, effective_per_supplier)
+
+        Если передан ``player_supply_mods`` (base_add, per_add из техов игрока),
+        повторный запрос ``PlayerTech`` на каждую планету не выполняется.
+        """
         n = int(getattr(planet, "supplier_count", 0) or 0)
-        base_add_t, per_add_t = self._supply_radius_modifiers_for_player(
-            s, player_id=planet.owner_player_id
-        )
+        if player_supply_mods is None:
+            base_add_t, per_add_t = self._supply_radius_modifiers_for_player(
+                s, player_id=planet.owner_player_id
+            )
+        else:
+            base_add_t, per_add_t = player_supply_mods
         base_add_b, per_add_b = self._supply_radius_modifiers_for_planet_buildings(
             s, planet_id=planet.id
         )
@@ -105,6 +116,114 @@ class SupplyService:
         eff_per = int(self.SUPPLY_PER_SUPPLIER) + int(per_add_t) + int(per_add_b)
         eff_radius = max(0, int(eff_base + eff_per * n))
         return eff_radius, eff_base, eff_per
+
+    def planet_supply_rows_for_owner(
+        self, s: Session, *, owner_id: uuid.UUID
+    ) -> list[tuple[Planet, int, int, int]]:
+        """Один проход: планеты игрока и эффективный радиус снабжения по каждой.
+
+        Кортеж: ``(planet, eff_radius, eff_base, eff_per)`` — для окна карты без
+        N×M запросов к БД на каждую клетку.
+        """
+        planets = (
+            s.execute(select(Planet).where(Planet.owner_player_id == owner_id))
+            .scalars()
+            .all()
+        )
+        if not planets:
+            return []
+        mods = self._supply_radius_modifiers_for_player(s, player_id=owner_id)
+        out: list[tuple[Planet, int, int, int]] = []
+        for p in planets:
+            r, eb, ep = self.planet_supply_radius(
+                s, planet=p, player_supply_mods=mods
+            )
+            out.append((p, int(r), int(eb), int(ep)))
+        return out
+
+    def enemy_fleet_positions_xy_in_bbox(
+        self,
+        s: Session,
+        *,
+        owner_id: uuid.UUID,
+        x0: int,
+        x1: int,
+        y0: int,
+        y1: int,
+        z: int = 0,
+    ) -> set[tuple[int, int]]:
+        """Клетки (x,y), где стоит чужой живой флот, в ограничивающем прямоугольнике."""
+        rows = s.execute(
+            select(Fleet.pos_x, Fleet.pos_y).where(
+                Fleet.pos_z == int(z),
+                Fleet.qty > 0,
+                Fleet.owner_player_id != owner_id,
+                Fleet.pos_x >= int(x0),
+                Fleet.pos_x <= int(x1),
+                Fleet.pos_y >= int(y0),
+                Fleet.pos_y <= int(y1),
+            )
+        ).all()
+        return {(int(rx), int(ry)) for rx, ry in rows}
+
+    def map_window_supply_precalc(
+        self,
+        s: Session,
+        *,
+        owner_id: uuid.UUID,
+        x0: int,
+        x1: int,
+        y0: int,
+        y1: int,
+        z: int,
+    ) -> tuple[list[tuple[Planet, int, int, int]], set[tuple[int, int]]]:
+        """Для ``get_player_map_window``: хабы + множество чужих флотов в bbox путей L-снабжения."""
+        if int(z) != 0:
+            return [], set()
+        rows = self.planet_supply_rows_for_owner(s, owner_id=owner_id)
+        ex0, ex1, ey0, ey1 = int(x0), int(x1), int(y0), int(y1)
+        for p, _r, _eb, _ep in rows:
+            px, py = int(p.pos_x), int(p.pos_y)
+            ex0 = min(ex0, px, int(x0))
+            ex1 = max(ex1, px, int(x1))
+            ey0 = min(ey0, py, int(y0))
+            ey1 = max(ey1, py, int(y1))
+        enemy = self.enemy_fleet_positions_xy_in_bbox(
+            s,
+            owner_id=owner_id,
+            x0=ex0,
+            x1=ex1,
+            y0=ey0,
+            y1=ey1,
+            z=0,
+        )
+        return rows, enemy
+
+    @staticmethod
+    def is_cell_supplied_from_precalc(
+        rows: list[tuple[Planet, int, int, int]],
+        enemy_xy: set[tuple[int, int]],
+        *,
+        x: int,
+        y: int,
+        z: int,
+    ) -> bool:
+        """Та же семантика, что ``is_cell_supplied``, без запросов к БД."""
+        if int(z) != 0:
+            return False
+        for p, r, _eff_base, _eff_per in rows:
+            if r <= 0:
+                continue
+            d = abs(int(p.pos_x) - int(x)) + abs(int(p.pos_y) - int(y))
+            if d > r:
+                continue
+            path = SupplyService.manhattan_l_path_cells(
+                int(p.pos_x), int(p.pos_y), int(x), int(y)
+            )
+            if any((int(cx), int(cy)) in enemy_xy for cx, cy in path):
+                continue
+            return True
+        return False
 
     @staticmethod
     def manhattan_l_path_cells(
@@ -149,9 +268,16 @@ class SupplyService:
             .scalars()
             .all()
         )
+        mods = (
+            self._supply_radius_modifiers_for_player(s, player_id=owner_id)
+            if planets
+            else (0, 0)
+        )
         rows: list[tuple[Planet, int, int, int, int]] = []
         for p in planets:
-            r, eff_base, eff_per = self.planet_supply_radius(s, planet=p)
+            r, eff_base, eff_per = self.planet_supply_radius(
+                s, planet=p, player_supply_mods=mods
+            )
             d = abs(int(p.pos_x) - int(x)) + abs(int(p.pos_y) - int(y))
             rows.append((p, int(r), int(d), int(eff_base), int(eff_per)))
         return rows

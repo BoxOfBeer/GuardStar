@@ -57,6 +57,8 @@ def api_chat_private_get():
         data = chat_svc.list_private_messages(
             s, viewer_id=player_id, peer_id=peer, since_id=since
         )
+        if data.get("ok"):
+            s.commit()
     if not data.get("ok") and data.get("error") == "blocked_peer":
         return jsonify(data), 403
     return jsonify(data)
@@ -95,6 +97,91 @@ def api_chat_private_threads():
     with db_session() as s:
         data = chat_svc.list_private_threads(s, viewer_id=player_id)
     return jsonify(data)
+
+
+@api_bp.get("/chat/private/badge")
+def api_chat_private_badge():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    with db_session() as s:
+        data = chat_svc.private_inbox_badge_counts(s, viewer_id=player_id)
+    return jsonify(data)
+
+
+@api_bp.get("/chat/private/thread/meta")
+def api_chat_private_thread_meta():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    peer = (request.args.get("peer_id") or "").strip()
+    if not peer:
+        return jsonify({"ok": False, "error": "peer_id_required"}), 400
+    with db_session() as s:
+        data = chat_svc.get_private_thread_meta(s, viewer_id=player_id, peer_id=peer)
+    if data.get("ok"):
+        return jsonify(data)
+    code = 404 if data.get("error") == "recipient_not_found" else 400
+    return jsonify(data), code
+
+
+@api_bp.post("/chat/private/thread/open")
+def api_chat_private_thread_open():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    payload = request.get_json(silent=True) or {}
+    peer = (payload.get("peer_id") or "").strip()
+    send_rr = bool(payload.get("send_read_receipts"))
+    if not peer:
+        return jsonify({"ok": False, "error": "peer_id_required"}), 400
+    with db_session() as s:
+        result = chat_svc.open_private_thread_intro(
+            s, viewer_id=player_id, peer_id=peer, send_read_receipts=send_rr
+        )
+        if not result.get("ok"):
+            err = result.get("error")
+            code = 404 if err == "recipient_not_found" else 400
+            return jsonify(result), code
+        s.commit()
+    return jsonify(result)
+
+
+@api_bp.patch("/chat/private/thread/prefs")
+def api_chat_private_thread_prefs():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    payload = request.get_json(silent=True) or {}
+    peer = (payload.get("peer_id") or "").strip()
+    send_rr = bool(payload.get("send_read_receipts"))
+    if not peer:
+        return jsonify({"ok": False, "error": "peer_id_required"}), 400
+    with db_session() as s:
+        result = chat_svc.set_private_send_read_receipts(
+            s, viewer_id=player_id, peer_id=peer, send_read_receipts=send_rr
+        )
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+    return jsonify(result)
+
+
+@api_bp.post("/chat/private/thread/hide")
+def api_chat_private_thread_hide():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    payload = request.get_json(silent=True) or {}
+    peer = (payload.get("peer_id") or "").strip()
+    if not peer:
+        return jsonify({"ok": False, "error": "peer_id_required"}), 400
+    with db_session() as s:
+        result = chat_svc.hide_private_thread(s, viewer_id=player_id, peer_id=peer)
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+    return jsonify(result)
 
 
 @api_bp.get("/chat/blocks")

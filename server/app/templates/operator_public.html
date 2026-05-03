@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block body %}
+  <div class="card operator-public-profile">
+    <h2 style="margin-top:0;">Оператор</h2>
+    <div class="muted" style="margin-bottom:4px;">Позывной</div>
+    <div style="font-size:135%;margin-bottom:16px;"><b>{{ profile.display_name }}</b></div>
+
+    <div class="muted" style="margin-bottom:6px;line-height:1.4;">
+      Чтобы начать или продолжить личную переписку в игре («Приват»), укажи этот стабильный идентификатор оператора:
+    </div>
+    <div class="row" style="align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+      <code class="operator-public-id-code" translate="no" id="operator-public-id">{{ profile.id }}</code>
+      <button type="button" class="btn-secondary" id="operator-public-copy-id">Копировать</button>
+    </div>
+
+    {% if profile.past_names and profile.past_names|length > 0 %}
+    <div style="margin-top:18px;">
+      <div class="muted">Раньше оператор пользовался именами ниже — эти строки уже не могут выбрать другие аккаунты.</div>
+      <ul style="margin:10px 0 0;padding-left:1.2em;">
+        {% for n in profile.past_names %}
+          <li>{{ n }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <div class="row" style="margin-top:18px;gap:10px;flex-wrap:wrap;">
+      <a href="{{ url_for('web.index') }}" class="status-chip nav-chip-secondary" style="text-decoration:none;">Главная</a>
+      {% if current_player_id_str and profile.id == current_player_id_str %}
+      <span class="muted">Полная страница оператора и ключ входа доступны только по кнопке «Аккаунт» в игре сверху.</span>
+      {% endif %}
+    </div>
+  </div>
+  <script>
+    (function () {
+      const btn = document.getElementById("operator-public-copy-id");
+      const el = document.getElementById("operator-public-id");
+      if (!btn || !el) return;
+      const text = (el.textContent || "").trim();
+      btn.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          btn.textContent = "Скопировано";
+          setTimeout(function () { btn.textContent = "Копировать"; }, 1400);
+        } catch (_e) {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          try { document.execCommand("copy"); } catch (_x) {}
+          ta.remove();
+        }
+      });
+    })();
+  </script>
+{% endblock %}

@@ -125,6 +125,50 @@ class BalanceService:
         # Для расходов лучше округлять вверх, чтобы модификаторы ощущались и не давали «бесплатных» дробей.
         return {"energy": int(math.ceil(val)) if val > 0 else 0}
 
+    def calc_units_empire_supply_upkeep(
+        self,
+        *,
+        units: dict[str, int],
+        race_id: str | None,
+        techs: list[str] | None,
+    ) -> dict[str, int]:
+        """Металл/кристалл/еда/вода с капитальной планеты за сол (состав × цены из units.upkeep.empire_per_sol)."""
+        keys = ("metal", "crystal", "food", "water")
+        acc = {k: 0 for k in keys}
+        for ut, q in (units or {}).items():
+            qi = max(0, int(q))
+            if qi <= 0:
+                continue
+            u = self.get_unit(str(ut))
+            upk = u.get("upkeep") if isinstance(u.get("upkeep"), dict) else {}
+            emp = (
+                upk.get("empire_per_sol")
+                if isinstance(upk.get("empire_per_sol"), dict)
+                else {}
+            )
+            for k in keys:
+                acc[k] += int(emp.get(k, 0) or 0) * qi
+
+        mult = 1.0
+        if race_id:
+            r = self.get_race(race_id)
+            mods = r.get("modifiers") if isinstance(r, dict) else None
+            mods = mods if isinstance(mods, dict) else {}
+            mult *= float(mods.get("fleet_empire_supply_multiplier", 1.0))
+
+        if techs:
+            for tid in techs:
+                t = self.pack.tech_by_id.get(tid)
+                eff = t.get("effects") if isinstance(t, dict) else None
+                if isinstance(eff, dict) and "fleet_empire_supply_multiplier" in eff:
+                    mult *= float(eff.get("fleet_empire_supply_multiplier", 1.0))
+
+        out: dict[str, int] = {}
+        for k in keys:
+            v = float(acc[k]) * mult
+            out[k] = int(math.ceil(v)) if v > 0 else 0
+        return out
+
     def calc_travel_cost(
         self,
         *,

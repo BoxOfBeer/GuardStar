@@ -176,15 +176,13 @@ class WorldServiceMixin05:
         s.flush()
 
     def _try_spawn_npc_transit_convoy(self, s: Session, *, current_tick: int) -> None:
+        if self._admin_block_npc_transit(s):
+            return
         if not self._balance or not isinstance(
             getattr(self._balance, "pack", None), object
         ):
             return
-        eco = (
-            self._balance.pack.economy
-            if isinstance(self._balance.pack.economy, dict)
-            else {}
-        )
+        eco = self._merged_pack_economy(s)
         blk = eco.get("npc_transit") if isinstance(eco.get("npc_transit"), dict) else {}
         if not blk.get("enabled", True):
             return
@@ -201,6 +199,15 @@ class WorldServiceMixin05:
         if dmax < dmin:
             dmin, dmax = dmax, dmin
         attempts = int(blk.get("spawn_attempts", 48) or 48)
+        floor_n = int(blk.get("spawn_attempts_floor", 12) or 12)
+        gx0 = int(blk.get("grid_x_min", -120) or -120)
+        gx1 = int(blk.get("grid_x_max", 120) or 120)
+        gy0 = int(blk.get("grid_y_min", -120) or -120)
+        gy1 = int(blk.get("grid_y_max", 120) or 120)
+        if gx1 < gx0:
+            gx0, gx1 = gx1, gx0
+        if gy1 < gy0:
+            gy0, gy1 = gy1, gy0
         civ = self._ensure_civilian_npc_player(s)
         seed_i = int(
             hashlib.sha256(
@@ -213,9 +220,9 @@ class WorldServiceMixin05:
         # Раньше концы маршрута требовали «вне обзора всех людей» — конвои никогда
         # не попадали на карту игрока. Достаточно свободных клеток и маршрута.
         ax = ay = bx = by = None
-        for _ in range(max(12, attempts)):
-            sx = rng.randint(-120, 120)
-            sy = rng.randint(-120, 120)
+        for _ in range(max(floor_n, attempts)):
+            sx = rng.randint(gx0, gx1)
+            sy = rng.randint(gy0, gy1)
             if self._cell_blocked_for_fleet(s, sx, sy, 0):
                 continue
             dist = rng.randint(dmin, dmax)
@@ -284,11 +291,7 @@ class WorldServiceMixin05:
             getattr(self._balance, "pack", None), object
         ):
             return
-        eco = (
-            self._balance.pack.economy
-            if isinstance(self._balance.pack.economy, dict)
-            else {}
-        )
+        eco = self._merged_pack_economy(s)
         rp_cfg = (
             eco.get("research_points")
             if isinstance(eco.get("research_points"), dict)
@@ -352,7 +355,16 @@ class WorldServiceMixin05:
                     )
         s.flush()
 
-    def _cell_blocked_for_fleet(self, s: Session, x: int, y: int, z: int) -> bool:
+    def _cell_blocked_for_fleet(
+        self,
+        s: Session,
+        x: int,
+        y: int,
+        z: int,
+        *,
+        enter_to_attack_fleet_id: uuid.UUID | None = None,
+    ) -> bool:
+        self._purge_shell_fleets_at_cell(s, x=int(x), y=int(y), z=int(z))
         if (
             s.execute(
                 select(Building.id).where(
@@ -376,17 +388,20 @@ class WorldServiceMixin05:
             .first()
         ):
             return True
-        if (
+        fleet_ids = (
             s.execute(
                 select(Fleet.id).where(
                     Fleet.pos_x == x, Fleet.pos_y == y, Fleet.pos_z == z
                 )
             )
             .scalars()
-            .first()
-        ):
-            return True
-        return False
+            .all()
+        )
+        if not fleet_ids:
+            return False
+        if enter_to_attack_fleet_id is not None and enter_to_attack_fleet_id in fleet_ids:
+            return False
+        return True
 
     def _cell_in_player_build_zone(
         self, s: Session, *, player_id: uuid.UUID, x: int, y: int
@@ -608,6 +623,7 @@ class WorldServiceMixin05:
         covered_cells: set[tuple[int, int, int]] = set(players_by_cell.keys())
         for src in sources:
             sx, sy, sz, rr = int(src["x"]), int(src["y"]), int(src["z"]), int(src["r"])
+            rr = max(0, min(rr, 96))
             for dy in range(-rr, rr + 1):
                 max_dx = rr - abs(dy)
                 for dx in range(-max_dx, max_dx + 1):
@@ -745,6 +761,8 @@ class WorldServiceMixin05:
         self, s: Session, *, home_x: int, home_y: int
     ) -> None:
         """Один вражеский патруль рядом с колонией — цель для боя в MVP."""
+        if self._admin_block_bandit_extra_fleets(s):
+            return
         npc = self._ensure_bandit_player(s)
         z = 0
         cand = [
@@ -778,6 +796,33 @@ class WorldServiceMixin05:
             s.flush()
             self._write_fleet_units(s, fleet, {"fighter": 2, "scout": 1})
             s.flush()
+            prey: Fleet | None = None
+            best_d = 10**9
+            margin = 160
+            prey_rows = (
+                s.execute(
+                    select(Fleet).where(
+                        Fleet.owner_player_id.not_in(tuple(NPC_FLEET_PLAYER_IDS)),
+                        Fleet.pos_z == z,
+                        Fleet.pos_x >= int(tx) - margin,
+                        Fleet.pos_x <= int(tx) + margin,
+                        Fleet.pos_y >= int(ty) - margin,
+                        Fleet.pos_y <= int(ty) + margin,
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for prey_cand in prey_rows:
+                if int(self._fleet_total_units(s, prey_cand)) <= 0:
+                    continue
+                d = abs(int(prey_cand.pos_x) - tx) + abs(int(prey_cand.pos_y) - ty)
+                if d < best_d:
+                    best_d = d
+                    prey = prey_cand
+            if prey is not None:
+                fleet.hunt_target_fleet_id = prey.id
+                s.flush()
             return
 
     def _combat_tech_breakdown(
@@ -868,11 +913,19 @@ class WorldServiceMixin05:
             a = int(after.get(k, 0))
             if b > a:
                 lost[k] = b - a
+        tb = sum(int(v) for v in before.values())
+        ta = sum(int(v) for v in after.values())
+        lost_net = max(0, tb - ta)
+        lost_sum = sum(lost.values())
+        lost_total_out = lost_net if lost_sum != lost_net else lost_sum
+        # При рассинхроне ключей не подставляем «побочные» lost_by_type (могут ввести игрока в заблуждение).
+        lost_out = dict(lost) if lost_sum == lost_total_out else {}
         return {
             "before": dict(before),
             "after": dict(after),
-            "lost_by_type": lost,
-            "lost_total": sum(lost.values()),
+            "lost_by_type": lost_out,
+            "lost_total": int(lost_total_out),
+            "lost_total_ship_net": int(lost_net),
         }
 
     def _apply_fleet_post_combat_losses(
@@ -950,6 +1003,140 @@ class WorldServiceMixin05:
         }
         return eff_atk, eff_def, meta
 
+    def _fleet_combat_player_story(
+        self,
+        *,
+        viewer_is_attacker: bool,
+        attacker_won: bool,
+        aname: str,
+        dname: str,
+        atk_roll: int,
+        def_roll: int,
+        eff_atk: float,
+        eff_def: float,
+        meta: dict,
+        loss_fraction: float | None = None,
+    ) -> dict:
+        """Краткая история боя для UI: результат, тон столкновения, причины (без формул)."""
+        my_eff = float(eff_atk if viewer_is_attacker else eff_def)
+        their_eff = float(eff_def if viewer_is_attacker else eff_atk)
+        my_roll = int(atk_roll if viewer_is_attacker else def_roll)
+        their_roll = int(def_roll if viewer_is_attacker else atk_roll)
+        i_won = (attacker_won == viewer_is_attacker)
+
+        pe = max(1.0, my_eff)
+        qe = max(1.0, their_eff)
+        parity = min(pe, qe) / max(pe, qe)
+
+        if i_won:
+            title = "Победа" if viewer_is_attacker else "Победа в обороне"
+            subtitle = (
+                f"Ваш флот «{aname}» уничтожил «{dname}»"
+                if viewer_is_attacker
+                else f"Флот «{dname}» отбил атаку «{aname}»"
+            )
+            if my_eff + 1e-6 < their_eff:
+                kind, type_label = "risky_win", "Рискованный бой"
+            elif parity >= 0.88:
+                kind, type_label = "even", "Равный бой"
+            else:
+                kind, type_label = "easy_win", "Лёгкая победа"
+        else:
+            title = "Поражение" if viewer_is_attacker else "Флот уничтожен"
+            subtitle = (
+                f"Флот «{aname}» уничтожен «{dname}»"
+                if viewer_is_attacker
+                else f"Ваш флот «{dname}» уничтожен «{aname}»"
+            )
+            if my_eff > their_eff + 1e-3:
+                kind, type_label = "upset_loss", "Неудачный бросок"
+            elif parity >= 0.88:
+                kind, type_label = "even", "Равный бой"
+            else:
+                kind, type_label = "hard_loss", "Тяжёлый бой"
+
+        bullets: list[str] = []
+        if i_won:
+            if my_eff >= their_eff * 1.12:
+                bullets.append(
+                    f"По расчётной мощности (до случайности) вы в преимуществе — {int(round(my_eff))} vs {int(round(their_eff))}."
+                )
+            elif my_eff < their_eff:
+                bullets.append(
+                    f"По расчёту сил противник был сильнее ({int(round(their_eff))} vs {int(round(my_eff))}); исход решил случайный множитель."
+                )
+            else:
+                bullets.append(
+                    f"Силы были близки — {int(round(my_eff))} vs {int(round(their_eff))}."
+                )
+        else:
+            if my_eff > their_eff * 1.12:
+                bullets.append(
+                    f"По расчёту вы сильнее ({int(round(my_eff))} vs {int(round(their_eff))}), но после броска очков не хватило."
+                )
+            elif my_eff + 1e-3 < their_eff:
+                bullets.append(
+                    f"По расчёту вы уступали — {int(round(my_eff))} vs {int(round(their_eff))}."
+                )
+            else:
+                bullets.append(
+                    f"Силы были близки — {int(round(my_eff))} vs {int(round(their_eff))}."
+                )
+
+        ar = meta.get("attacker_research") if isinstance(meta.get("attacker_research"), list) else []
+        dr = meta.get("defender_research") if isinstance(meta.get("defender_research"), list) else []
+        myr = ar if viewer_is_attacker else dr
+        otr = dr if viewer_is_attacker else ar
+        if myr:
+            snip = "; ".join(
+                f"{str(t.get('name') or '?').strip()}: {str(t.get('summary') or '').strip()}"
+                for t in myr[:4]
+                if isinstance(t, dict)
+            )
+            if snip:
+                bullets.append(f"Ваши исследования (бой): {snip}.")
+        if otr:
+            bullets.append("У противника есть боевые бонусы от исследований.")
+
+        atk_sup = bool(meta.get("attacker_supply_zone"))
+        def_home = bool(meta.get("defender_home_zone"))
+        if viewer_is_attacker:
+            if atk_sup and def_home:
+                bullets.append(
+                    "Территория: ваш бонус снабжения (+5% к базе) и домашнее преимущество защитника (+8% к нему)."
+                )
+            elif atk_sup:
+                bullets.append("Территория: старт из зоны снабжения — +5% к вашей базе очков.")
+            elif def_home:
+                bullets.append("Территория: защитник на домашней клетке — +8% к его базе.")
+            else:
+                bullets.append("Территориальных бонусов не было.")
+        else:
+            parts: list[str] = []
+            if def_home:
+                parts.append("ваша домашняя клетка (+8% к защите)")
+            if atk_sup:
+                parts.append("атакующий из зоны снабжения (+5% к нему)")
+            if parts:
+                bullets.append("Территория: " + ", ".join(parts) + ".")
+            else:
+                bullets.append("Территориальных бонусов не было.")
+
+        out: dict = {
+            "title": title,
+            "subtitle": subtitle,
+            "matchup_line": f"«{aname}» vs «{dname}»",
+            "scores_rolled": f"{my_roll} vs {their_roll}",
+            "scores_compact": f"{my_roll}:{their_roll}",
+            "effective_before_roll": f"{int(round(my_eff))} vs {int(round(their_eff))}",
+            "battle_type_kind": kind,
+            "battle_type_label": type_label,
+            "cause_bullets": bullets,
+        }
+        if loss_fraction is not None:
+            out["loss_percent"] = round(float(loss_fraction) * 100.0, 1)
+        return out
+
     def estimate_fleet_combat_preview(
         self,
         s: Session,
@@ -998,6 +1185,8 @@ class WorldServiceMixin05:
         event_player_id: uuid.UUID,
     ) -> dict:
         """Итог боя: проигравший флот удалён; победитель с потерями; атакующий при победе занимает клетку защитника."""
+        self._materialize_legacy_fleet_qty_into_ship_rows(s, attacker)
+        self._materialize_legacy_fleet_qty_into_ship_rows(s, defender)
         tx, ty, tz = int(defender.pos_x), int(defender.pos_y), int(defender.pos_z)
         eff_atk, eff_def, meta = self._combat_effective_scores(
             s,
@@ -1051,9 +1240,22 @@ class WorldServiceMixin05:
                 "winner": "attacker",
             }
             atk_casualties = self._composition_casualties(atk_comp_0, atk_comp_1)
+            story_attacker = self._fleet_combat_player_story(
+                viewer_is_attacker=True,
+                attacker_won=True,
+                aname=aname,
+                dname=dname,
+                atk_roll=atk_roll,
+                def_roll=def_roll,
+                eff_atk=eff_atk,
+                eff_def=eff_def,
+                meta=meta,
+                loss_fraction=loss_frac,
+            )
             payload_att = {
                 "result": "victory",
                 "battle_calculation": calc_block,
+                "player_story": story_attacker,
                 "outcome_summary": victor_side,
                 "consequences": {
                     "enemy_fleet_removed": loser_id,
@@ -1066,19 +1268,32 @@ class WorldServiceMixin05:
                 s,
                 tick=battle_tick,
                 type="fleet_combat",
-                message=f"Бой: победа «{aname}» над «{dname}» ({atk_roll}:{def_roll}).",
+                message=f"Победа: «{aname}» против «{dname}»",
                 payload=payload_att,
                 player_id=event_player_id,
             )
             if dp != ap:
+                story_def_lost = self._fleet_combat_player_story(
+                    viewer_is_attacker=False,
+                    attacker_won=True,
+                    aname=aname,
+                    dname=dname,
+                    atk_roll=atk_roll,
+                    def_roll=def_roll,
+                    eff_atk=eff_atk,
+                    eff_def=eff_def,
+                    meta=meta,
+                    loss_fraction=None,
+                )
                 self._emit_event(
                     s,
                     tick=battle_tick,
                     type="fleet_combat",
-                    message=f"Бой: «{dname}» уничтожен ({def_roll}:{atk_roll}).",
+                    message=f"Поражение: «{dname}» уничтожен",
                     payload={
                         "result": "defeat_side",
                         "battle_calculation": calc_block,
+                        "player_story": story_def_lost,
                         "consequences": {
                             "your_fleet_lost_id": loser_id,
                             "winner_enemy_fleet": str(attacker.id),
@@ -1102,9 +1317,22 @@ class WorldServiceMixin05:
 
         defender_win = {"destroyed_attacker_fleet_id": loser_id, "winner": "defender"}
         def_casualties = self._composition_casualties(def_comp_0, def_comp_1)
+        story_att_lose = self._fleet_combat_player_story(
+            viewer_is_attacker=True,
+            attacker_won=False,
+            aname=aname,
+            dname=dname,
+            atk_roll=atk_roll,
+            def_roll=def_roll,
+            eff_atk=eff_atk,
+            eff_def=eff_def,
+            meta=meta,
+            loss_fraction=None,
+        )
         payload_lose_att = {
             "result": "defeat",
             "battle_calculation": calc_block,
+            "player_story": story_att_lose,
             "outcome_summary": defender_win,
             "consequences": {
                 "your_fleet_lost_id": loser_id,
@@ -1116,19 +1344,32 @@ class WorldServiceMixin05:
             s,
             tick=battle_tick,
             type="fleet_combat",
-            message=f"Бой: «{aname}» уничтожен «{dname}» ({atk_roll}:{def_roll}).",
+            message=f"Поражение: «{aname}» против «{dname}»",
             payload=payload_lose_att,
             player_id=event_player_id,
         )
         if dp != ap:
+            story_def_win = self._fleet_combat_player_story(
+                viewer_is_attacker=False,
+                attacker_won=False,
+                aname=aname,
+                dname=dname,
+                atk_roll=atk_roll,
+                def_roll=def_roll,
+                eff_atk=eff_atk,
+                eff_def=eff_def,
+                meta=meta,
+                loss_fraction=loss_frac_d,
+            )
             self._emit_event(
                 s,
                 tick=battle_tick,
                 type="fleet_combat",
-                message=f"Бой: «{dname}» отбил «{aname}» ({def_roll}:{atk_roll}).",
+                message=f"Победа в обороне: «{dname}» против «{aname}»",
                 payload={
                     "result": "defense_win",
                     "battle_calculation": calc_block,
+                    "player_story": story_def_win,
                     "consequences": {
                         "destroyed_enemy_fleet_id": loser_id,
                         "your_fleet_after_battle": def_casualties,
@@ -1170,17 +1411,12 @@ class WorldServiceMixin05:
         )
         if not atk:
             return {"ok": False, "error": "fleet_not_found"}
-        dfd = (
-            s.execute(
-                select(Fleet).where(
-                    Fleet.pos_x == int(target_x),
-                    Fleet.pos_y == int(target_y),
-                    Fleet.pos_z == int(target_z),
-                    Fleet.owner_player_id != pid,
-                )
-            )
-            .scalars()
-            .first()
+        dfd = self._enemy_fleet_at(
+            s,
+            x=int(target_x),
+            y=int(target_y),
+            z=int(target_z),
+            owner_player_id=pid,
         )
         if not dfd:
             return {"ok": True, "combat": False}
@@ -1196,6 +1432,7 @@ class WorldServiceMixin05:
     def _enemy_fleet_at(
         self, s: Session, *, x: int, y: int, z: int, owner_player_id: uuid.UUID
     ) -> Fleet | None:
+        self._purge_shell_fleets_at_cell(s, x=int(x), y=int(y), z=int(z))
         return (
             s.execute(
                 select(Fleet).where(
@@ -1228,6 +1465,7 @@ class WorldServiceMixin05:
             x, y = q.popleft()
             if abs(x - int(center_x)) + abs(y - int(center_y)) > max_ring:
                 continue
+            self._purge_shell_fleets_at_cell(s, x=x, y=y, z=cz)
             other = s.execute(
                 select(Fleet.id).where(
                     Fleet.pos_x == x,
@@ -1380,6 +1618,9 @@ class WorldServiceMixin05:
             )
             return {"ok": True, "result": "walked_in"}
 
+        self._purge_shell_fleets_at_cell(
+            s, x=int(order.target_x), y=int(order.target_y), z=int(order.target_z)
+        )
         own_block = (
             s.execute(
                 select(Fleet).where(
@@ -1572,6 +1813,8 @@ class WorldServiceMixin05:
         composition: dict | None,
     ) -> dict:
         pid = uuid.UUID(player_id)
+        if self._admin_block_player_fleet_create(s):
+            return {"ok": False, "error": "test_block_new_fleets"}
         try:
             plid = uuid.UUID(planet_id)
         except Exception:
@@ -1614,8 +1857,9 @@ class WorldServiceMixin05:
         total = sum(units.values())
         if total < 1:
             return {"ok": False, "error": "fleet_empty"}
-        if total > 50:
-            return {"ok": False, "error": "fleet_too_large"}
+        cap = self._world_max_fleet_units(s)
+        if total > cap:
+            return {"ok": False, "error": "fleet_too_large", "max_units": cap}
 
         home = s.execute(
             select(Planet).where(Planet.owner_player_id == pid)
@@ -1767,6 +2011,9 @@ class WorldServiceMixin05:
         if self._active_order_for_fleet(s, fleet_id=fleet.id):
             return {"ok": False, "error": "active_order_exists"}
 
+        self._purge_shell_fleets_at_cell(
+            s, x=int(target_x), y=int(target_y), z=int(target_z)
+        )
         ally_at = (
             s.execute(
                 select(Fleet).where(

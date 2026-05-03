@@ -5,6 +5,13 @@ import pytest
 
 from app.services.balance_service import BalanceError, BalanceService, load_balance_pack
 from app.services.player_research_effects import adjusted_research_duration_ticks
+from app.services.world_research_runtime import (
+    apply_tier_to_residual_ticks,
+    parse_research_overrides_json,
+    serialize_research_overrides_from_maps,
+    tier_rp_multiplier,
+    tier_time_multiplier,
+)
 from app.services.world_service import WorldService
 from app.db.models.planet import Planet
 
@@ -55,15 +62,26 @@ def test_supply_route_logistics_costs_use_manhattan_extras():
     assert water == 2 + 2 * 5
 
 
-def test_fleet_empire_upkeep_costs_default_is_per_fleet():
+def test_fleet_empire_supply_scales_with_ship_count_and_type():
     base = Path(__file__).resolve().parents[1] / "data" / "balance"
     svc = BalanceService.load_from_path(base)
-    ws = WorldService(balance=svc)
+    one = svc.calc_units_empire_supply_upkeep(
+        units={"scout": 1}, race_id="human", techs=None
+    )
+    ten = svc.calc_units_empire_supply_upkeep(
+        units={"scout": 10}, race_id="human", techs=None
+    )
+    assert ten["food"] == 10 * one["food"]
+    assert ten["water"] == 10 * one["water"]
+    fighter = svc.calc_units_empire_supply_upkeep(
+        units={"fighter": 1}, race_id="human", techs=None
+    )
+    assert fighter["metal"] > one["metal"] or fighter["crystal"] > one["crystal"]
 
-    # Значения по умолчанию: 1 металл + 1 кристалл за флот, per_ship=0.
-    c = ws._fleet_empire_upkeep_costs(fleets=3, ships=99)
-    assert c["metal"] == 3
-    assert c["crystal"] == 3
+    ws = WorldService(balance=svc)
+    overhead = ws._fleet_empire_overhead_per_sol()
+    assert isinstance(overhead.get("food"), int)
+    assert isinstance(overhead.get("water"), int)
 
 
 def test_supplier_unit_definition_exists():
@@ -238,3 +256,22 @@ def test_building_foundation_terrain_rules_present():
     assert "empty" not in habitat["build_on_terrain"]
     hf = svc.get_building("hydro_farm")
     assert hf.get("effects", {}).get("production_per_tick_add", {}).get("food") == 3
+    bf = svc.get_building("basic_farm")
+    assert bf.get("upgrade", {}).get("to") == "hydro_farm"
+    bw = svc.get_building("basic_water")
+    assert bw.get("upgrade", {}).get("to") == "atmospheric_reclaim"
+    assert svc.get_building("starter_farm").get("upgrade", {}).get("to") == "hydro_farm"
+    assert svc.get_building("starter_water").get("upgrade", {}).get("to") == "atmospheric_reclaim"
+
+
+def test_world_research_runtime_tier_mults():
+    raw = '{"time":{"2":2.0},"rp":{"2":1.5}}'
+    tmap, rmap = parse_research_overrides_json(raw)
+    assert tmap[2] == 2.0
+    assert rmap[2] == 1.5
+    assert tier_time_multiplier(raw, tier=2) == 2.0
+    assert tier_time_multiplier(raw, tier=1) == 1.0
+    assert tier_rp_multiplier(raw, tier=2) == 1.5
+    assert apply_tier_to_residual_ticks(residual=10, tier_time_mult=2.0) == 20
+    assert serialize_research_overrides_from_maps({1: 1.0, 2: 2.0}, {1: 1.0}) is not None
+    assert serialize_research_overrides_from_maps({1: 1.0}, {1: 1.0}) is None

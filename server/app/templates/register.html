@@ -99,12 +99,14 @@
         </div>
       </section>
 
-      <label for="reg-display-name">Имя (любое):</label>
+      <label for="reg-display-name">Позывное оператора (уникально, от 3 символов; ранее занятые имена не возвращаются в пул):</label>
       <input
         id="reg-display-name"
         name="display_name"
         placeholder="например, Molot"
         maxlength="64"
+        minlength="3"
+        required
         value="{{ display_name_value or '' }}"
         autocomplete="username"
       />

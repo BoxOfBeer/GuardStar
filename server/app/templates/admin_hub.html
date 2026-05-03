@@ -33,6 +33,8 @@
       background: rgba(0, 0, 0, 0.35); padding: 10px; border-radius: 8px; max-height: 240px; overflow: auto;
     }
     .err-flash { color: #ff8a9e; margin-bottom: 10px; }
+    .admin-tab-panel { display: none; margin-top: 18px; }
+    .admin-tab-panel.is-active { display: block; }
   </style>
 {% endblock %}
 {% block body %}
@@ -76,6 +78,8 @@
     <div class="card" style="margin-top:14px;">
       <div class="admin-nav">
         <a href="{{ url_for('web.admin_hub', token=token, tab='world') }}" class="{% if tab == 'world' %}admin-tab-active{% endif %}">Мир</a>
+        <a href="{{ url_for('web.admin_hub', token=token, tab='npc') }}" class="{% if tab == 'npc' %}admin-tab-active{% endif %}">НПС / корсары</a>
+        <a href="{{ url_for('web.admin_hub', token=token, tab='balance') }}" class="{% if tab == 'balance' %}admin-tab-active{% endif %}">Игрок / баланс</a>
         <a href="{{ url_for('web.admin_hub', token=token, tab='accounts') }}" class="{% if tab == 'accounts' %}admin-tab-active{% endif %}">Аккаунты</a>
         <a href="{{ url_for('web.admin_hub', token=token, tab='feedback') }}" class="{% if tab == 'feedback' %}admin-tab-active{% endif %}">Обратная связь</a>
       </div>
@@ -92,7 +96,8 @@
       </p>
     </div>
 
-    <section id="admin-tab-world" class="admin-section-title" style="margin-top:18px;">
+    <div id="admin-panel-world" class="admin-tab-panel {% if tab == 'world' %}is-active{% endif %} admin-section-title">
+    <section id="admin-tab-world" style="margin-top:0;">
       <h3 class="admin-muted" style="margin-bottom:10px;">Мир и автосол</h3>
       <div class="admin-row">
         <div class="admin-card">
@@ -157,8 +162,86 @@
         </div>
       </div>
     </section>
+    </div>
 
-    <section id="admin-tab-accounts" class="admin-section-title" style="margin-top:28px;">
+    <div id="admin-panel-npc" class="admin-tab-panel {% if tab == 'npc' %}is-active{% endif %} admin-section-title">
+    <section id="admin-tab-npc" style="margin-top:0;">
+      <h3 class="admin-muted" style="margin-bottom:10px;">НПС: спавн и чистка</h3>
+      <p class="admin-muted" style="max-width:720px;line-height:1.45;">
+        «Ядерный стоп» перекрывает всё ниже. Отдельные флаги работают, когда ядерный выключен.
+        <b>Флоты корсаров</b> — респавн патруля, ударные звена, MVP-патруль у колонии (стартовый патруль у <b>нового</b> корсарского форпоста идёт вместе с форпостом).
+      </p>
+      <div class="admin-row">
+        <div class="admin-card">
+          <h3>Флаги спавна</h3>
+          {% set sf = data.spawn_flags %}
+          <form method="post" action="{{ url_for('web.admin_world_spawn_flags', token=token) }}">
+            <input type="hidden" name="token" value="{{ token }}" />
+            <label style="margin-top:6px;"><input type="checkbox" name="test_block_new_fleets" value="1" {% if sf.test_block_new_fleets %}checked{% endif %} /> Полный стоп спавнов (как старый fleet_spawn_lock)</label>
+            <label style="margin-top:6px;"><input type="checkbox" name="admin_block_player_fleet_create" value="1" {% if sf.admin_block_player_fleet_create %}checked{% endif %} /> Блок: новые флоты игроков (создание с планеты)</label>
+            <label style="margin-top:6px;"><input type="checkbox" name="admin_block_npc_transit" value="1" {% if sf.admin_block_npc_transit %}checked{% endif %} /> Блок: NPC-транзит (конвои)</label>
+            <label style="margin-top:6px;"><input type="checkbox" name="admin_block_bandit_mines" value="1" {% if sf.admin_block_bandit_mines %}checked{% endif %} /> Блок: корсарские шахты</label>
+            <label style="margin-top:6px;"><input type="checkbox" name="admin_block_bandit_outposts" value="1" {% if sf.admin_block_bandit_outposts %}checked{% endif %} /> Блок: корсарские форпосты</label>
+            <label style="margin-top:6px;"><input type="checkbox" name="admin_block_bandit_fleets" value="1" {% if sf.admin_block_bandit_fleets %}checked{% endif %} /> Блок: прочие флоты корсаров (патруль-респавн, удары, MVP)</label>
+            <button type="submit" style="margin-top:14px;">Сохранить флаги</button>
+          </form>
+        </div>
+        <div class="admin-card">
+          <h3>Зачистка корсаров</h3>
+          <p class="admin-muted">Удаляет форпосты, здания и флоты владельца-корсара (как <code>POST /api/world/admin/dev/purge_bandits</code>).</p>
+          <form method="post" action="{{ url_for('web.admin_world_purge_bandits', token=token) }}" onsubmit="return confirm('Удалить все объекты корсаров в мире?');">
+            <input type="hidden" name="token" value="{{ token }}" />
+            <button type="submit" style="border-color:#7a1f3c;color:#ff6f91;">Purge корсаров</button>
+          </form>
+        </div>
+      </div>
+    </section>
+    </div>
+
+    <div id="admin-panel-balance" class="admin-tab-panel {% if tab == 'balance' %}is-active{% endif %} admin-section-title">
+    <section id="admin-tab-balance" style="margin-top:0;">
+      <h3 class="admin-muted" style="margin-bottom:10px;">Игрок: лимиты и исследования</h3>
+      {% if economy_json_error|default(false) %}
+      <p class="err-flash">JSON economy overrides не распарсился (ожидается объект <code>{}</code>) — изменения не сохранены.</p>
+      {% endif %}
+      <div class="admin-row">
+        <div class="admin-card">
+          <h3>Макс. кораблей в одном флоте</h3>
+          <p class="admin-muted">0 = дефолт сервера (<code>{{ data.default_max_fleet_units }}</code>).</p>
+          <form method="post" action="{{ url_for('web.admin_world_balance_tuning', token=token) }}">
+            <input type="hidden" name="token" value="{{ token }}" />
+            <label>Лимит (0–500): <input type="number" name="admin_max_fleet_units" min="0" max="500" value="{{ data.admin_max_fleet_units }}" /></label>
+            <p class="admin-muted" style="margin-top:10px;">Множители по <b>tier</b> из <code>tech.json</code> (время = residual×множитель, очки = cost×множитель). Оставьте пустым или 1 для «как в балансе».</p>
+            <table style="width:100%;border-collapse:collapse;font-size:90%;margin-top:8px;">
+              <thead><tr><th>Tier</th><th>Время (×)</th><th>Очки НИ (×)</th></tr></thead>
+              <tbody>
+              {% for row in data.research_tiers %}
+                <tr>
+                  <td>{{ row.tier }}</td>
+                  <td><input type="text" name="time_t{{ row.tier }}" value="{{ row.time }}" style="width:5rem;" /></td>
+                  <td><input type="text" name="rp_t{{ row.tier }}" value="{{ row.rp }}" style="width:5rem;" /></td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+            <button type="submit" style="margin-top:14px;">Сохранить лимит и множители</button>
+          </form>
+        </div>
+      </div>
+      <div class="admin-card" style="margin-top:18px;flex-basis:100%;max-width:none;">
+        <h3>Фрагмент <code>economy.json</code> в БД</h3>
+        <p class="admin-muted">Частичный JSON с теми же ключами, что в <code>server/data/balance/economy.json</code> (рекурсивно поверх файла). Пустое поле — сбросить переопределения.</p>
+        <form method="post" action="{{ url_for('web.admin_world_economy_overrides', token=token) }}">
+          <input type="hidden" name="token" value="{{ token }}" />
+          <textarea name="admin_economy_overrides_json" rows="14" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:85%;padding:10px;border-radius:8px;">{{ data.admin_economy_overrides_json }}</textarea>
+          <button type="submit" style="margin-top:10px;">Сохранить economy overrides</button>
+        </form>
+      </div>
+    </section>
+    </div>
+
+    <div id="admin-panel-accounts" class="admin-tab-panel {% if tab == 'accounts' %}is-active{% endif %} admin-section-title">
+    <section id="admin-tab-accounts" style="margin-top:0;">
       <h3 class="admin-muted" style="margin-bottom:10px;">Аккаунты ({{ players|length }})</h3>
       <div class="card" style="background:rgba(10,19,36,0.72);border-color:rgba(255,255,255,0.12);">
         <div class="events" style="max-height:520px;">
@@ -237,8 +320,10 @@
         </div>
       </div>
     </section>
+    </div>
 
-    <section id="admin-tab-feedback" class="admin-section-title" style="margin-top:28px;margin-bottom:48px;">
+    <div id="admin-panel-feedback" class="admin-tab-panel {% if tab == 'feedback' %}is-active{% endif %} admin-section-title">
+    <section id="admin-tab-feedback" style="margin-top:0;margin-bottom:48px;">
       <h3 class="admin-muted" style="margin-bottom:10px;">Обратная связь (последние записи)</h3>
       <div class="card" style="background:rgba(10,19,36,0.72);border-color:rgba(255,255,255,0.12);">
         {% if feedback_messages|length == 0 %}
@@ -259,11 +344,12 @@
         {% endfor %}
       </div>
     </section>
+    </div>
 
     <script>
       document.addEventListener("DOMContentLoaded", function () {
         var tab = {{ tab | tojson }};
-        var el = document.getElementById("admin-tab-" + tab);
+        var el = document.getElementById("admin-panel-" + tab);
         if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
       });
     </script>

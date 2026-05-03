@@ -2,16 +2,16 @@
 {% block body %}
   <div class="topbar card">
     <div class="topbar-left">
-      <div class="muted topbar-operator">Оператор: <b id="operator-name">{{ data.display_name }}</b></div>
+      <div class="muted topbar-operator">Оператор: <a href="{{ url_for('web.operator_public_profile', pid=data.player_id) }}" id="operator-name" class="topbar-operator-link"><b>{{ data.display_name }}</b></a></div>
     </div>
     <div class="status-chip resources-bar" id="resources-chip">
-      <span class="res-chip"><span class="muted" aria-hidden="true">⛏</span><span id="top-metal">—</span></span>
-      <span class="res-chip"><span class="muted" aria-hidden="true">💎</span><span id="top-crystal">—</span></span>
-      <span class="res-chip"><span class="muted" aria-hidden="true">⚡</span><span id="top-energy">—</span></span>
-      <span class="res-chip"><span class="muted" aria-hidden="true">⛽</span><span id="top-fuel">—</span></span>
-      <span class="res-chip"><span class="muted" aria-hidden="true">🍲</span><span id="top-food">—</span></span>
-      <span class="res-chip"><span class="muted" aria-hidden="true">💧</span><span id="top-water">—</span></span>
-      <span class="res-chip"><span class="muted" aria-hidden="true">🔬</span><span id="top-rp">—</span></span>
+      <span class="res-chip" data-res="metal"><span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">⛏</span><span class="res-drain-marker" hidden>!</span></span><span id="top-metal">—</span></span>
+      <span class="res-chip" data-res="crystal"><span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">💎</span><span class="res-drain-marker" hidden>!</span></span><span id="top-crystal">—</span></span>
+      <span class="res-chip" data-res="energy"><span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">⚡</span><span class="res-drain-marker" hidden>!</span></span><span id="top-energy">—</span></span>
+      <span class="res-chip" data-res="fuel"><span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">⛽</span><span class="res-drain-marker" hidden>!</span></span><span id="top-fuel">—</span></span>
+      <span class="res-chip" data-res="food"><span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">🍲</span><span class="res-drain-marker" hidden>!</span></span><span id="top-food">—</span></span>
+      <span class="res-chip" data-res="water"><span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">💧</span><span class="res-drain-marker" hidden>!</span></span><span id="top-water">—</span></span>
+      <span class="res-chip res-chip-static" data-res="rp"><span class="muted" aria-hidden="true">🔬</span><span id="top-rp">—</span></span>
     </div>
     <button type="button" id="tech-modal-open" class="status-chip nav-chip nav-chip-secondary">Исследования</button>
     <button type="button" id="economy-modal-open" class="status-chip nav-chip nav-chip-primary">Империя</button>
@@ -32,7 +32,9 @@
             <button type="button" class="comms-tab is-active" data-comms-tab="system" role="tab" aria-selected="true">Система</button>
             <button type="button" class="comms-tab" data-comms-tab="global" role="tab" aria-selected="false">Общий</button>
             <button type="button" class="comms-tab" data-comms-tab="alliance" role="tab" aria-selected="false">Альянс</button>
-            <button type="button" class="comms-tab" data-comms-tab="private" role="tab" aria-selected="false">Приват</button>
+            <button type="button" class="comms-tab" data-comms-tab="private" role="tab" aria-selected="false">
+              Приват<span id="private-tab-badge" class="comms-tab-badge hidden" title="Новые контакты / непрочитанные входящие"></span>
+            </button>
           </div>
           <div id="comms-pane-system" class="comms-pane is-active" role="tabpanel">
             <div id="system-log-filters" class="system-log-filters" aria-label="Фильтр системного лога">
@@ -57,7 +59,7 @@
           </div>
           <div id="comms-pane-private" class="comms-pane hidden" role="tabpanel">
             <div class="row" style="gap:8px;margin-bottom:8px;flex-wrap:wrap;">
-              <input id="private-peer-input" type="text" placeholder="UUID игрока для ЛС" style="flex:1;min-width:0;" maxlength="64" />
+              <input id="private-peer-input" type="text" placeholder="Идентификатор из публичного профиля оператора" style="flex:1;min-width:0;" maxlength="64" />
               <button type="button" id="private-peer-open" class="btn-secondary">Открыть</button>
             </div>
             <div id="private-threads" class="private-threads muted"></div>
@@ -68,9 +70,29 @@
                 <button type="submit" class="btn-primary">Отпр.</button>
               </form>
               <div id="private-chat-feed" class="comms-chat-feed channel-private"></div>
-              <div class="row private-chat-actions-row" style="gap:8px;margin-top:8px;">
+              <div class="row private-chat-actions-row" style="gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center;">
+                <label class="private-read-receipt-label muted" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+                  <input type="checkbox" id="private-send-read-receipt" />
+                  <span>Сообщать о прочтении</span>
+                </label>
+                <button type="button" id="private-delete-thread-btn" class="btn-secondary" title="Убрать из списка (история на сервере сохранится)">Удалить чат</button>
                 <button type="button" id="private-block-peer-btn" class="btn-secondary" title="Не показывать сообщения этого игрока">Игнор</button>
                 <button type="button" id="private-back-threads-btn" class="btn-secondary">К списку</button>
+              </div>
+            </div>
+            <div id="private-intro-overlay" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="private-intro-title">
+              <div class="overlay-card card" style="max-width:440px;">
+                <h3 id="private-intro-title" style="margin-top:0;">Личная переписка</h3>
+                <p class="muted" style="margin-bottom:10px;line-height:1.45;">
+                  Контакт: <strong id="private-intro-peer-name"></strong>.
+                </p>
+                <p style="margin:0;line-height:1.45;">
+                  Информировать отправителя, когда вы прочитываете его сообщения?
+                </p>
+                <div class="row" style="gap:10px;margin-top:16px;flex-wrap:wrap;">
+                  <button type="button" id="private-intro-yes" class="btn-primary">Да</button>
+                  <button type="button" id="private-intro-no" class="btn-secondary">Нет</button>
+                </div>
               </div>
             </div>
           </div>
@@ -175,7 +197,7 @@
     </div>
 
     <div id="planet-modal-overlay" class="overlay hidden" role="dialog" aria-modal="true">
-      <div class="overlay-card card planet-modal-card">
+      <div class="overlay-card card planet-modal-card modal-shell-wide">
         <div class="planet-modal-head">
           <h3 id="planet-modal-title" style="margin:0;">Планета</h3>
           <button type="button" id="planet-modal-close" class="planet-modal-close" aria-label="Закрыть">×</button>
@@ -185,9 +207,9 @@
     </div>
 
     <div id="economy-modal-overlay" class="overlay hidden" role="dialog" aria-modal="true">
-      <div class="overlay-card card tech-modal-card">
+      <div class="overlay-card card tech-modal-card modal-shell-wide">
         <div class="planet-modal-head">
-          <h3 style="margin:0;">Статистика империи</h3>
+          <h3 style="margin:0;">Империя — экономика</h3>
           <button type="button" id="economy-modal-close" class="planet-modal-close" aria-label="Закрыть">×</button>
         </div>
         <div id="economy-modal-body" class="planet-modal-body muted">Загрузка…</div>
@@ -195,7 +217,7 @@
     </div>
 
     <div id="fleet-modal-overlay" class="overlay hidden" role="dialog" aria-modal="true">
-      <div class="overlay-card card planet-modal-card">
+      <div class="overlay-card card planet-modal-card modal-shell-wide">
         <div class="planet-modal-head">
           <h3 id="fleet-modal-title" style="margin:0;">Состав флота</h3>
           <button type="button" id="fleet-modal-close" class="planet-modal-close" aria-label="Закрыть">×</button>
@@ -259,6 +281,162 @@
         </div>
       </div>
     </div>
+
+    <div
+      id="entry-tutorial-overlay"
+      class="overlay overlay-entry-tutorial hidden"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="entry-tutorial-title"
+      aria-describedby="entry-tutorial-intro"
+      aria-hidden="true"
+    >
+      <div class="overlay-card card entry-tutorial-card">
+        <header class="entry-tutorial-head">
+          <h2 id="entry-tutorial-title" class="entry-tutorial-main-title">GuardStar — краткий гид</h2>
+          <p id="entry-tutorial-intro" class="entry-tutorial-intro muted">
+            Основные идеи игры перед началом. Это окно можно снова открыть <strong>внизу страницы</strong> кнопкой
+            «Напомнить подсказку». «Ок» закрывает подсказку на эту сессию; галочка отключает автоматический показ при
+            следующих входах с этого браузера.
+          </p>
+        </header>
+        <div class="entry-tutorial-body muted">
+          <div class="entry-tutorial-layout">
+            <nav class="entry-tutorial-tabs" role="tablist" aria-label="Разделы подсказки">
+              <button type="button" class="entry-tutorial-tab is-active entry-tutorial-tab--economy" role="tab" id="tutorial-tab-economy" aria-selected="true" aria-controls="tutorial-panel-economy" data-tutorial-tab="economy">
+                <span class="entry-tutorial-tab-glyph" aria-hidden="true">⛏</span>
+                <span class="entry-tutorial-tab-label">Экономика</span>
+              </button>
+              <button type="button" class="entry-tutorial-tab entry-tutorial-tab--fleet" role="tab" id="tutorial-tab-fleet" aria-selected="false" aria-controls="tutorial-panel-fleet" data-tutorial-tab="fleet">
+                <span class="entry-tutorial-tab-glyph" aria-hidden="true">🚀</span>
+                <span class="entry-tutorial-tab-label">Флот и карта</span>
+              </button>
+              <button type="button" class="entry-tutorial-tab entry-tutorial-tab--visual" role="tab" id="tutorial-tab-visual" aria-selected="false" aria-controls="tutorial-panel-visual" data-tutorial-tab="visual">
+                <span class="entry-tutorial-tab-glyph" aria-hidden="true">◫</span>
+                <span class="entry-tutorial-tab-label">Цвета карты</span>
+              </button>
+              <button type="button" class="entry-tutorial-tab entry-tutorial-tab--combat" role="tab" id="tutorial-tab-combat" aria-selected="false" aria-controls="tutorial-panel-combat" data-tutorial-tab="combat">
+                <span class="entry-tutorial-tab-glyph" aria-hidden="true">⚔</span>
+                <span class="entry-tutorial-tab-label">Бой</span>
+              </button>
+              <button type="button" class="entry-tutorial-tab entry-tutorial-tab--symbols" role="tab" id="tutorial-tab-symbols" aria-selected="false" aria-controls="tutorial-panel-symbols" data-tutorial-tab="symbols">
+                <span class="entry-tutorial-tab-glyph" aria-hidden="true">✦</span>
+                <span class="entry-tutorial-tab-label">Обозначения</span>
+              </button>
+            </nav>
+            <div class="entry-tutorial-panels">
+          <section class="tutorial-panel is-active tutorial-block" id="tutorial-panel-economy" aria-label="Экономика" role="tabpanel" aria-labelledby="tutorial-tab-economy" data-tutorial-panel="economy" tabindex="0">
+            <div class="tutorial-glyphs-row tutorial-glyphs-row--economy" aria-hidden="true">
+              <span class="tutorial-chip tutorial-chip-resource" title="Металл">⛏</span>
+              <span class="tutorial-chip tutorial-chip-resource" title="Кристалл">💎</span>
+              <span class="tutorial-chip tutorial-chip-resource" title="Энергия">⚡</span>
+              <span class="tutorial-chip tutorial-chip-resource" title="Топливо">⛽</span>
+              <span class="tutorial-chip tutorial-chip-resource" title="Еда">🍲</span>
+              <span class="tutorial-chip tutorial-chip-resource" title="Вода">💧</span>
+              <span class="tutorial-chip tutorial-chip-resource" title="Исследования">🔬</span>
+            </div>
+            <h3 class="tutorial-block-title tutorial-block-title--inline">Экономика (упрощённо)</h3>
+            <ul class="tutorial-list">
+              <li>
+                Строка ресурсов вверху (<span class="tutorial-inline-glyph muted" aria-hidden="true">⛏ 💎 ⚡ ⛽ 🍲 💧 🔬</span>) — запасы империи; часть расходуется на
+                полёты, стройку и исследования.
+              </li>
+              <li>
+                Игровое время считается в <strong>солах</strong> (глобальный тик виден у флота). Производство и затраты на планетах работают
+                от этого же ритма — подробнее в модалке <strong>«Империя»</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">◇</span>.
+              </li>
+              <li>
+                Своя планета <span class="tutorial-inline-glyph" aria-hidden="true">🪐</span> — опорная точка дома; стройка и экономика доступны там и в связанных узлах цепочки снабжения.
+              </li>
+            </ul>
+          </section>
+          <section class="tutorial-panel tutorial-block hidden" id="tutorial-panel-fleet" aria-label="Флот и карта" role="tabpanel" aria-labelledby="tutorial-tab-fleet" data-tutorial-panel="fleet" tabindex="0">
+            <div class="tutorial-glyphs-row tutorial-glyphs-row--fleet" aria-hidden="true">
+              <span class="tutorial-chip tutorial-chip-map-arrow">↑ сдвиг окна</span>
+              <span class="tutorial-chip tutorial-chip-flight-sample">● — путь полёта</span>
+              <span class="tutorial-chip tutorial-chip-action-sample">Лететь</span>
+            </div>
+            <h3 class="tutorial-block-title tutorial-block-title--inline">Движение флота</h3>
+            <ul class="tutorial-list">
+              <li>В правой колонке выберите активный флот в списке (или действие «Где флот?», чтобы центрировать карту).</li>
+              <li>
+                На карте щёлкните по клетке — в блоке «Клетка» появится расчёт расстояния, длительности полёта и прибытия в солах.
+              </li>
+              <li>Кнопка <strong>«Лететь»</strong> активна только когда выбрана цель для выбранного флота; появится подтверждение с топливом и временем.</li>
+              <li>
+                <strong>Протяжка неочевидна:</strong> с клетки, где стоит <strong>ваш</strong> флот, можно <strong>перетащить</strong>
+                указатель на другую клетку <span class="tutorial-inline-glyph muted" aria-hidden="true">☰ ▸</span> — тот же сценарий, что выбор цели + «Лететь»: то же окно топлива и времени.
+              </li>
+              <li>
+                <strong>Стрелки на краю сетки</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">← ↑ → ↓</span>
+                означают не полёт юнита, а <strong>смещение всего окна карты</strong> («лист сектора» размером текущего окна). На пустом краю — один щелчок; если на границе есть объект или значимый ландшафт,
+                первый клик выделяет клетку, <strong>второй</strong> там же по направлению стрелки — смещает окно.
+              </li>
+              <li>
+                В движении флота на сетке рисуются <span class="tutorial-text-flight">жёлтая</span> линия и точка перемещения.
+              </li>
+            </ul>
+          </section>
+          <section class="tutorial-panel tutorial-block hidden" id="tutorial-panel-visual" aria-label="Цвета карты" role="tabpanel" aria-labelledby="tutorial-tab-visual" data-tutorial-panel="visual" tabindex="0">
+            <div class="tutorial-color-strip" aria-label="Упрощённая легенда цветов">
+              <span class="tutorial-swatch tutorial-swatch-empty" title="Пустой сектор"></span>
+              <span class="tutorial-swatch tutorial-swatch-sector" title="Объект / сектор"></span>
+              <span class="tutorial-swatch tutorial-swatch-selected" title="Выбор"></span>
+              <span class="tutorial-swatch tutorial-swatch-unknown" title="Туман / аномалия"></span>
+              <span class="tutorial-swatch tutorial-swatch-own-inf" title="Своё влияние"></span>
+              <span class="tutorial-swatch tutorial-swatch-contest" title="Спор зон"></span>
+              <span class="tutorial-swatch tutorial-swatch-target" title="Цель перелёта"></span>
+            </div>
+            <h3 class="tutorial-block-title tutorial-block-title--inline">Карта: цвета и подсказки</h3>
+            <ul class="tutorial-list">
+              <li>Под окном карты полная текстовая легенда; цветная полоска здесь задаёт те же оттенки и рамки кратко.</li>
+              <li>Туман войны затемняёт неисследованные участки; <span class="tutorial-text-zone-self">ветки влияния своих планет</span> совпадают с зеленовато-мятными акцентами интерфейса.</li>
+              <li><span class="tutorial-text-selected">Выделенная</span> клетка и <span class="tutorial-text-target">цель последнего приказа</span> — как в игре и в легенде снизу.</li>
+              <li>Вектор вашего активного союзного перелёта — <span class="tutorial-text-flight">жёлтые</span> линии по сетке в текущем окне обзора.</li>
+            </ul>
+          </section>
+          <section class="tutorial-panel tutorial-block hidden" id="tutorial-panel-combat" aria-label="Бой" role="tabpanel" aria-labelledby="tutorial-tab-combat" data-tutorial-panel="combat" tabindex="0">
+            <div class="tutorial-glyphs-row tutorial-glyphs-row--combat" aria-hidden="true">
+              <span class="tutorial-chip tutorial-chip-danger-sample">⚔ Атаковать</span>
+              <span class="tutorial-chip tutorial-chip-timeout-sample">Таймер 30&nbsp;с</span>
+            </div>
+            <h3 class="tutorial-block-title tutorial-block-title--inline">Атака другого оператора или корсара</h3>
+            <ul class="tutorial-list">
+              <li>Прилёт на клетку с вражеским флотом или явной угрозой запускает цепочку: сначала приказ полёта, затем второе окно с таймером.</li>
+              <li>Во втором окне нужно явно подтвердить <strong class="tutorial-text-danger">«Атаковать»</strong> или отказаться — без выбора за отведённое время бой не начнётся.</li>
+              <li>В «Настройки UI» можно включить автоподтверждение боя при обнаружении врага на цели (использовать аккуратно).</li>
+              <li>В логах и на руинах/аномалиях возможны засады («корсары» около символов <span class="tutorial-inline-glyph" aria-hidden="true">⟁ ◎</span>) — свой флот на клетке и готовность к бою либо осторожное планирование.</li>
+            </ul>
+          </section>
+          <section class="tutorial-panel tutorial-block hidden" id="tutorial-panel-symbols" aria-label="Обозначения" role="tabpanel" aria-labelledby="tutorial-tab-symbols" data-tutorial-panel="symbols" tabindex="0">
+            <div class="tutorial-glyphs-row tutorial-glyphs-row--symbols" aria-hidden="true">
+              <span class="tutorial-chip tutorial-chip-plain">⟁ руины</span>
+              <span class="tutorial-chip tutorial-chip-plain">◎ аном.</span>
+              <span class="tutorial-chip tutorial-chip-plain">≋ туман</span>
+              <span class="tutorial-chip tutorial-chip-plain">🪐 планета</span>
+              <span class="tutorial-chip tutorial-chip-plain">▣ форпост</span>
+              <span class="tutorial-chip tutorial-chip-plain">◇ постр.</span>
+            </div>
+            <h3 class="tutorial-block-title tutorial-block-title--inline">Обозначения на карте</h3>
+            <ul class="tutorial-list">
+              <li><strong>Тактика:</strong> руины, аномалии, туман с «?», планеты, флот (иконки), форпост, постройки <span class="tutorial-inline-glyph muted" aria-hidden="true">⛏ ⚙</span>; координаты на клетках — «Настройки UI».</li>
+              <li><strong>Графика:</strong> те же классы объектов упрощаются до пиктограмм SVG; режим переключается там же.</li>
+              <li>Центр окна дополнительно подсвечен; периметр со <span class="tutorial-inline-glyph muted" aria-hidden="true">←↑→↓</span> см. вкладку <strong>«Флот и карта»</strong> про смещение обзора.</li>
+              <li>Стройка: инженеры в составе флота (или исключение стартового мира); исследование ⟁ ◎ — флот на клетке.</li>
+            </ul>
+          </section>
+            </div>
+          </div>
+        </div>
+        <footer class="entry-tutorial-foot">
+          <label class="entry-tutorial-dismiss-label">
+            <input type="checkbox" id="entry-tutorial-dismiss-next" autocomplete="off" />
+            Больше не показывать при входе
+          </label>
+          <button type="button" id="entry-tutorial-ok" class="btn-primary entry-tutorial-primary">Ок</button>
+        </footer>
+      </div>
+    </div>
   {% else %}
     <div class="card">Планет пока нет.</div>
   {% endif %}
@@ -269,6 +447,11 @@
       заходе с этого устройства можно снова оказаться в игре без повторного ввода кода доступа. Не используйте общий
       компьютер, если не хотите, чтобы другой человек зашёл под вашим оператором.
     </p>
+    {% if data.planets and data.planets|length > 0 %}
+      <div class="site-footer-actions">
+        <button type="button" id="entry-tutorial-remind" class="btn-secondary">Напомнить подсказку</button>
+      </div>
+    {% endif %}
     <img
       class="site-footer-logo"
       src="{{ url_for('static', filename='img/guardstar-logo.png') }}"
@@ -281,7 +464,7 @@
   <script id="initial-data" type="application/json">{{ {'window': window, 'z': z, 'player': data.player_id, 'home': data.planets[0].pos if data.planets and data.planets|length > 0 else None, 'is_game_admin': data.get('is_game_admin', False), 'is_game_moderator': data.get('is_game_moderator', False)}|tojson }}</script>
 
   <div id="tech-modal-overlay" class="overlay hidden" role="dialog" aria-modal="true">
-    <div class="overlay-card card tech-modal-card">
+    <div class="overlay-card card tech-modal-card modal-shell-wide">
       <div class="planet-modal-head">
         <h3 style="margin:0;">Исследования</h3>
         <button type="button" id="tech-modal-close" class="planet-modal-close" aria-label="Закрыть">×</button>

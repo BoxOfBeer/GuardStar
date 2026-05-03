@@ -30,11 +30,20 @@ if __name__ == "__main__":
             pass
 
     # Автоперезапуск при правках `.py` (иначе новые маршруты не подхватятся, пока не остановите процесс).
-    # При проблемах на Windows с двойным процессом: `set GUARDSTAR_NO_RELOADER=1`.
-    use_reloader = os.environ.get("GUARDSTAR_NO_RELOADER", "").lower() not in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
+    # На Windows встроенный `use_reloader=True` часто даёт WinError 10038 при остановке сервера —
+    # перезагрузчик только по `set GUARDSTAR_USE_RELOADER=1`. В остальных ОС: выкл. через `GUARDSTAR_NO_RELOADER=1`.
+    if sys.platform.startswith("win"):
+        use_reloader = os.environ.get("GUARDSTAR_USE_RELOADER", "").lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+    else:
+        use_reloader = os.environ.get("GUARDSTAR_NO_RELOADER", "").lower() not in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
     app.run(host=host, port=port, debug=True, use_reloader=use_reloader)

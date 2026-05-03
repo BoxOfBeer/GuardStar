@@ -156,6 +156,10 @@ class WorldServiceMixin03:
                     ).scalar()
                     or 0
                 )
+                built_surface = int(
+                    self._surface_slot_buildings_count_for_planet(s, planet=p)
+                )
+                field_buildings = max(0, built_total - built_surface)
                 slots_total = int(getattr(p, "build_slots_total", 55) or 55)
                 build = {"active": None, "queue": []}
                 mxpop = self._effective_max_population(s, p)
@@ -178,7 +182,12 @@ class WorldServiceMixin03:
                     "planet_class": str(
                         getattr(p, "planet_class", "earthlike") or "earthlike"
                     ),
-                    "build_slots": {"used": built_total, "total": slots_total},
+                    "build_slots": {
+                        "used": built_surface,
+                        "total": slots_total,
+                        "field_buildings": field_buildings,
+                        "planet_buildings_anywhere": built_total,
+                    },
                     "supplier_count": int(getattr(p, "supplier_count", 0) or 0),
                     "supply_radius": int(sr),
                     "supply_base": self.SUPPLY_BASE_RADIUS,
@@ -209,7 +218,13 @@ class WorldServiceMixin03:
                 }
             )
         for op in outposts_in_cell:
-            st = self._outpost_stats(s, op)
+            st = self._outpost_stats(
+                s,
+                op,
+                viewer_player_id=(
+                    str(pid) if str(op.owner_player_id) == str(pid) else None
+                ),
+            )
             sector["objects"].append(
                 {
                     "type": "outpost",
@@ -540,6 +555,18 @@ class WorldServiceMixin03:
                 return
             e.last_seen_tick = now_tick
 
+        # Снабжение для оценки опасности: раньше на каждую видимую клетку —
+        # сотни запросов (планеты + каждая клетка L-пути). Один precalc на окно.
+        supply_rows, enemy_supply_xy = self._supply.map_window_supply_precalc(
+            s,
+            owner_id=pid,
+            x0=x0,
+            x1=x1,
+            y0=y0,
+            y1=y1,
+            z=z,
+        )
+
         # --- Зоны влияния/стройки (радиус 3 от планет). ---
         # В базовом варианте: зона врага видна, но строить там нельзя (геймплейно проверим позже).
         build_self: set[tuple[int, int]] = set()
@@ -644,9 +671,16 @@ class WorldServiceMixin03:
                         danger_reasons.append("anomaly")
                     elif tk == "ruins":
                         danger_reasons.append("ruins")
-                    supplied = self._is_cell_supplied(
-                        s, owner_id=pid, x=int(x), y=int(y), z=int(z)
-                    )
+                    if int(z) == 0:
+                        supplied = self._supply.is_cell_supplied_from_precalc(
+                            supply_rows,
+                            enemy_supply_xy,
+                            x=int(x),
+                            y=int(y),
+                            z=int(z),
+                        )
+                    else:
+                        supplied = False
                     if not supplied:
                         danger_reasons.append("unsupplied")
 
@@ -897,11 +931,31 @@ class WorldServiceMixin03:
         )
         s.add(outpost)
         s.flush()
+        st_hp = self._outpost_stats(s, outpost, viewer_player_id=player_id)
+        cmb = st_hp.get("combat") if isinstance(st_hp.get("combat"), dict) else {}
+        outpost.hp_current = int(cmb.get("hp", 0) or 0) or None
+        if str(pid) == str(BANDIT_PLAYER_ID):
+            wc = self._warfare_economy(s)
+            outpost.strike_next_tick = int(start_tick) + random.randint(
+                int(wc["strike_min"]), int(wc["strike_max"])
+            )
+            outpost.patrol_respawn_at_tick = 0
+            s.flush()
+            bnpc = self._ensure_bandit_player(s)
+            self._spawn_bandit_patrol_for_outpost(
+                s,
+                npc=bnpc,
+                outpost=outpost,
+                tick=start_tick,
+                wc=wc,
+                for_new_outpost=True,
+            )
+            s.flush()
         return {
             "ok": True,
             "outpost": {
                 "id": str(outpost.id),
-                **self._outpost_stats(s, outpost),
+                **self._outpost_stats(s, outpost, viewer_player_id=player_id),
                 "x": x,
                 "y": y,
                 "z": z,
@@ -959,6 +1013,15 @@ class WorldServiceMixin03:
             or int(getattr(res, "fuel", 0)) < need["fuel"]
         ):
             return {"ok": False, "error": "not_enough_resources", "need": need}
+        st_old = self._outpost_stats(s, outpost, viewer_player_id=player_id)
+        c_old = st_old.get("combat") if isinstance(st_old.get("combat"), dict) else {}
+        old_max = int(c_old.get("hp", 0) or 0)
+        old_hp_raw = getattr(outpost, "hp_current", None)
+        old_hp_i = (
+            int(old_hp_raw)
+            if old_hp_raw is not None
+            else (old_max if old_max > 0 else 0)
+        )
         res.metal -= need["metal"]
         res.crystal -= need["crystal"]
         res.energy -= need["energy"]
@@ -974,11 +1037,18 @@ class WorldServiceMixin03:
         )
         outpost.updated_at = datetime.utcnow()
         s.flush()
+        st_new = self._outpost_stats(s, outpost, viewer_player_id=player_id)
+        c_new = st_new.get("combat") if isinstance(st_new.get("combat"), dict) else {}
+        new_max = int(c_new.get("hp", 0) or old_max or 0)
+        if new_max > 0:
+            bonus = max(0, new_max - (old_max if old_max > 0 else new_max))
+            outpost.hp_current = max(0, min(new_max, old_hp_i + bonus))
+        s.flush()
         return {
             "ok": True,
             "outpost": {
                 "id": str(outpost.id),
-                **self._outpost_stats(s, outpost),
+                **self._outpost_stats(s, outpost, viewer_player_id=player_id),
                 "x": outpost.x,
                 "y": outpost.y,
                 "z": outpost.z,
@@ -1013,68 +1083,62 @@ class WorldServiceMixin03:
                     "required_techs": req_techs,
                     "missing_techs": missing,
                 }
+        busy_other = (
+            s.execute(
+                select(OutpostModule.id)
+                .join(Outpost, Outpost.id == OutpostModule.outpost_id)
+                .where(
+                    Outpost.owner_player_id == pid,
+                    OutpostModule.status == "in_progress",
+                )
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        if busy_other:
+            return {"ok": False, "error": "module_work_queue_full"}
         modules = self._outpost_module_rows(s, outpost_id=outpost.id)
         if len(modules) >= int(outpost.module_slots_total):
             return {"ok": False, "error": "outpost_slots_full"}
+        used = {int(m.slot_idx) for m in modules}
+        slot_idx = next(
+            (i for i in range(int(outpost.module_slots_total)) if i not in used),
+            len(used),
+        )
+        if int(slot_idx) >= int(outpost.module_slots_total):
+            return {"ok": False, "error": "outpost_slots_full"}
+        spend = max(1, int(slot_idx) + 1)
         eng_fleet = self._owned_engineer_fleet_at(
             s, owner_id=pid, x=int(outpost.x), y=int(outpost.y), z=int(outpost.z)
         )
         if not eng_fleet:
             return {"ok": False, "error": "engineer_required"}
         eng_map = self._fleet_units_map(s, eng_fleet)
-        spend = int(md.get("slot_cost_engineers", 1) or 1)
         if int(eng_map.get("engineer", 0)) < spend:
             return {
                 "ok": False,
                 "error": "not_enough_engineers",
                 "need_engineers": spend,
             }
-        home = s.execute(
-            select(Planet)
-            .where(Planet.owner_player_id == pid)
-            .order_by(Planet.created_at.asc())
-        ).scalar_one_or_none()
-        res = (
-            s.execute(
-                select(Resource).where(Resource.planet_id == home.id)
-            ).scalar_one_or_none()
-            if home
-            else None
-        )
-        if not home or not res:
-            return {"ok": False, "error": "no_resources"}
-        cost = (md.get("build") if isinstance(md.get("build"), dict) else {}).get(
-            "cost", {}
-        )
-        need = {k: int(cost.get(k, 0)) for k in ("metal", "crystal", "energy", "fuel")}
-        if (
-            int(res.metal) < need["metal"]
-            or int(res.crystal) < need["crystal"]
-            or int(res.energy) < need["energy"]
-            or int(getattr(res, "fuel", 0)) < need["fuel"]
-        ):
-            return {"ok": False, "error": "not_enough_resources", "need": need}
+        bld = md.get("build") if isinstance(md.get("build"), dict) else {}
         eng_map["engineer"] = max(0, int(eng_map.get("engineer", 0)) - spend)
         self._write_fleet_units(s, eng_fleet, eng_map)
-        res.metal -= need["metal"]
-        res.crystal -= need["crystal"]
-        res.energy -= need["energy"]
-        if hasattr(res, "fuel"):
-            res.fuel = int(getattr(res, "fuel", 0)) - need["fuel"]
-        used = {int(m.slot_idx) for m in modules}
-        slot_idx = next(
-            (i for i in range(int(outpost.module_slots_total)) if i not in used),
-            len(used),
-        )
+        ws = self.get_or_create_world_state(s)
+        start_tick = int(ws.current_tick)
+        duration = int(bld.get("time_ticks", 3) or 3)
+        duration = max(1, duration)
+        finish_tick = start_tick + duration
         row = OutpostModule(
             outpost_id=outpost.id,
             module_type=module_type,
+            pending_module_type=None,
             kind=str(md.get("kind") or "utility"),
             level=int(md.get("level", 1) or 1),
             slot_idx=int(slot_idx),
-            status="active",
-            started_at_tick=int(self.get_or_create_world_state(s).current_tick),
-            finish_tick=int(self.get_or_create_world_state(s).current_tick),
+            status="in_progress",
+            started_at_tick=start_tick,
+            finish_tick=finish_tick,
             updated_at=datetime.utcnow(),
         )
         s.add(row)
@@ -1083,7 +1147,7 @@ class WorldServiceMixin03:
             "ok": True,
             "outpost": {
                 "id": str(outpost.id),
-                **self._outpost_stats(s, outpost),
+                **self._outpost_stats(s, outpost, viewer_player_id=player_id),
                 "x": outpost.x,
                 "y": outpost.y,
                 "z": outpost.z,
@@ -1109,6 +1173,8 @@ class WorldServiceMixin03:
         )
         if not row:
             return {"ok": False, "error": "module_not_found"}
+        if str(row.status or "") != "active":
+            return {"ok": False, "error": "module_busy"}
         md = self._outpost_module_definition(row.module_type)
         upgrade = md.get("upgrade") if isinstance(md.get("upgrade"), dict) else None
         if not upgrade or not upgrade.get("to"):
@@ -1126,6 +1192,22 @@ class WorldServiceMixin03:
                     "required_techs": req_techs,
                     "missing_techs": missing,
                 }
+        busy_other = (
+            s.execute(
+                select(OutpostModule.id)
+                .join(Outpost, Outpost.id == OutpostModule.outpost_id)
+                .where(
+                    Outpost.owner_player_id == pid,
+                    OutpostModule.status == "in_progress",
+                    OutpostModule.id != row.id,
+                )
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        if busy_other:
+            return {"ok": False, "error": "module_work_queue_full"}
         outpost = s.get(Outpost, row.outpost_id)
         eng_fleet = (
             self._owned_engineer_fleet_at(
@@ -1137,57 +1219,107 @@ class WorldServiceMixin03:
         if not eng_fleet:
             return {"ok": False, "error": "engineer_required"}
         eng_map = self._fleet_units_map(s, eng_fleet)
-        spend = int(md.get("slot_cost_engineers", 1) or 1)
+        spend = max(1, int(row.slot_idx) + 1)
         if int(eng_map.get("engineer", 0)) < spend:
             return {
                 "ok": False,
                 "error": "not_enough_engineers",
                 "need_engineers": spend,
             }
-        home = s.execute(
-            select(Planet)
-            .where(Planet.owner_player_id == pid)
-            .order_by(Planet.created_at.asc())
-        ).scalar_one_or_none()
-        res = (
-            s.execute(
-                select(Resource).where(Resource.planet_id == home.id)
-            ).scalar_one_or_none()
-            if home
-            else None
-        )
-        if not home or not res:
-            return {"ok": False, "error": "no_resources"}
-        cost = upgrade.get("cost") if isinstance(upgrade.get("cost"), dict) else {}
-        need = {k: int(cost.get(k, 0)) for k in ("metal", "crystal", "energy", "fuel")}
-        if (
-            int(res.metal) < need["metal"]
-            or int(res.crystal) < need["crystal"]
-            or int(res.energy) < need["energy"]
-            or int(getattr(res, "fuel", 0)) < need["fuel"]
-        ):
-            return {"ok": False, "error": "not_enough_resources", "need": need}
         eng_map["engineer"] = max(0, int(eng_map.get("engineer", 0)) - spend)
         self._write_fleet_units(s, eng_fleet, eng_map)
-        res.metal -= need["metal"]
-        res.crystal -= need["crystal"]
-        res.energy -= need["energy"]
-        if hasattr(res, "fuel"):
-            res.fuel = int(getattr(res, "fuel", 0)) - need["fuel"]
-        row.module_type = str(upgrade["to"])
-        new_md = self._outpost_module_definition(row.module_type)
-        row.level = int(new_md.get("level", row.level) or row.level)
-        row.kind = str(new_md.get("kind") or row.kind)
+        ws = self.get_or_create_world_state(s)
+        start_tick = int(ws.current_tick)
+        duration = int(upgrade.get("time_ticks", 4) or 4)
+        duration = max(1, duration)
+        row.pending_module_type = str(upgrade["to"])
+        row.status = "in_progress"
+        row.started_at_tick = start_tick
+        row.finish_tick = start_tick + duration
         row.updated_at = datetime.utcnow()
         s.flush()
         return {
             "ok": True,
             "outpost": {
                 "id": str(outpost.id),
-                **self._outpost_stats(s, outpost),
+                **self._outpost_stats(s, outpost, viewer_player_id=player_id),
                 "x": outpost.x,
                 "y": outpost.y,
                 "z": outpost.z,
             },
         }
+
+    def dismantle_outpost_module(
+        self, s: Session, *, player_id: str, module_id: str
+    ) -> dict:
+        pid = uuid.UUID(player_id)
+        try:
+            mid = uuid.UUID(module_id)
+        except Exception:
+            return {"ok": False, "error": "invalid_module_id"}
+        row = (
+            s.execute(
+                select(OutpostModule)
+                .join(Outpost, Outpost.id == OutpostModule.outpost_id)
+                .where(OutpostModule.id == mid, Outpost.owner_player_id == pid)
+            )
+            .scalars()
+            .first()
+        )
+        if not row:
+            return {"ok": False, "error": "module_not_found"}
+        outpost = s.get(Outpost, row.outpost_id)
+        if not outpost:
+            return {"ok": False, "error": "outpost_not_found"}
+        if str(row.status or "") != "active":
+            return {"ok": False, "error": "module_busy"}
+        refund = max(1, int(row.slot_idx) + 1)
+        eng_fleet = self._owned_engineer_fleet_at(
+            s, owner_id=pid, x=int(outpost.x), y=int(outpost.y), z=int(outpost.z)
+        )
+        if not eng_fleet:
+            return {"ok": False, "error": "engineer_required"}
+        eng_map = self._fleet_units_map(s, eng_fleet)
+        eng_map["engineer"] = int(eng_map.get("engineer", 0)) + refund
+        self._write_fleet_units(s, eng_fleet, eng_map)
+        s.delete(row)
+        s.flush()
+        return {
+            "ok": True,
+            "outpost": {
+                "id": str(outpost.id),
+                **self._outpost_stats(s, outpost, viewer_player_id=player_id),
+                "x": outpost.x,
+                "y": outpost.y,
+                "z": outpost.z,
+            },
+        }
+
+    def _resolve_completed_outpost_modules(self, s: Session, *, next_tick: int) -> None:
+        rows = (
+            s.execute(
+                select(OutpostModule).where(
+                    OutpostModule.status == "in_progress",
+                    OutpostModule.finish_tick <= int(next_tick),
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            pend = getattr(row, "pending_module_type", None)
+            if isinstance(pend, str) and pend.strip():
+                tgt = pend.strip()
+                row.module_type = tgt
+                try:
+                    new_md = self._outpost_module_definition(tgt)
+                except Exception:
+                    new_md = {}
+                row.level = int(new_md.get("level", row.level) or row.level)
+                row.kind = str(new_md.get("kind") or row.kind or "utility")
+                row.pending_module_type = None
+            row.status = "active"
+            row.updated_at = datetime.utcnow()
+        if rows:
+            s.flush()
 

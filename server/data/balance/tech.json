@@ -2,319 +2,627 @@
   "tech": [
     {
       "id": "tech_logistics_1",
-      "name": "Логистика I",
-      "description": "Оптимизация маршрутов: перелёты флота расходуют меньше топлива.",
+      "name": "Логистика I — маршевые столы",
+      "description": "Эпоха I · Простые маршрутные модели для коротких перелётов и посадочных узлов.",
       "tier": 1,
       "enabled": true,
       "prereq": [],
-      "cost": {
-        "metal": 200,
-        "crystal": 120
-      },
-      "time_ticks": 10,
-      "research_points_cost": 24,
-      "residual_time_ticks": 6,
+      "cost": { "metal": 140, "crystal": 90 },
+      "time_ticks": 78,
+      "research_points_cost": 28,
+      "residual_time_ticks": 60,
+      "effects": { "travel_fuel_multiplier": 0.92 }
+    },
+    {
+      "id": "tech_industry_1",
+      "name": "Промышленность I — аварийные цеха",
+      "description": "Эпоха I · Базовое вытягивание руды и примитивное литьё без сложной автоматизации.",
+      "tier": 1,
+      "enabled": true,
+      "prereq": [],
+      "cost": { "metal": 150, "crystal": 85 },
+      "time_ticks": 78,
+      "research_points_cost": 26,
+      "residual_time_ticks": 60,
+      "effects": { "production_multiplier": { "metal": 1.08 } }
+    },
+    {
+      "id": "tech_colonial_standards_1",
+      "name": "Колониальные нормы I — санитария и пайок",
+      "description": "Эпоха I · Единые нормы запасов еды и воды для малой колонии; снижают «утечку» при старте.",
+      "tier": 1,
+      "enabled": true,
+      "prereq": [],
+      "cost": { "metal": 110, "crystal": 130 },
+      "time_ticks": 82,
+      "research_points_cost": 34,
+      "residual_time_ticks": 66,
       "effects": {
-        "travel_fuel_multiplier": 0.9
+        "production_multiplier": { "food": 1.04, "water": 1.04 }
       }
     },
     {
       "id": "tech_hydroponics_1",
-      "name": "Гидропоника I",
-      "description": "Замкнутые циклы выращивания: открывает гидропонные блоки на планетах.",
-      "tier": 1,
+      "name": "Гидропоника I — замкнутый контур",
+      "description": "Эпоха I · Разблокирует постройку «Гидропоника»; стабилизирует урожай на планетах.",
+      "tier": 2,
       "enabled": true,
-      "prereq": [
-        "tech_logistics_1"
-      ],
-      "cost": {
-        "metal": 160,
-        "crystal": 100
-      },
-      "time_ticks": 8,
-      "research_points_cost": 28,
-      "residual_time_ticks": 5,
-      "effects": {
-        "production_multiplier": {
-          "food": 1.08
-        }
-      }
+      "prereq": ["tech_logistics_1"],
+      "cost": { "metal": 220, "crystal": 160 },
+      "time_ticks": 188,
+      "research_points_cost": 88,
+      "residual_time_ticks": 138,
+      "effects": { "production_multiplier": { "food": 1.1 } }
     },
     {
       "id": "tech_atmospheric_water_1",
-      "name": "Атмосферная вода I",
-      "description": "Конденсация и рециклинг паров: реклаймеры воды на планетах.",
-      "tier": 1,
+      "name": "Атмосферная вода I — конденсат",
+      "description": "Эпоха I · Разблокирует атмосферные конденсаторы; основа жизнеобеспечения.",
+      "tier": 2,
       "enabled": true,
-      "prereq": [
-        "tech_logistics_1"
-      ],
-      "cost": {
-        "metal": 140,
-        "crystal": 120
-      },
-      "time_ticks": 8,
-      "research_points_cost": 28,
-      "residual_time_ticks": 5,
-      "effects": {
-        "production_multiplier": {
-          "water": 1.08
-        }
-      }
-    },
-    {
-      "id": "tech_industry_1",
-      "name": "Промышленность I",
-      "description": "Повышает добычу металла на планетах.",
-      "tier": 1,
-      "enabled": true,
-      "prereq": [],
-      "cost": {
-        "metal": 200,
-        "crystal": 80
-      },
-      "time_ticks": 10,
-      "research_points_cost": 26,
-      "residual_time_ticks": 6,
-      "effects": {
-        "production_multiplier": {
-          "metal": 1.1
-        }
-      }
+      "prereq": ["tech_logistics_1"],
+      "cost": { "metal": 200, "crystal": 175 },
+      "time_ticks": 188,
+      "research_points_cost": 88,
+      "residual_time_ticks": 138,
+      "effects": { "production_multiplier": { "water": 1.1 } }
     },
     {
       "id": "tech_armament_1",
-      "name": "Вооружение I",
-      "description": "Улучшение систем наведения и зарядов: выше урон в бою флотов.",
-      "tier": 1,
+      "name": "Вооружение I — расчёт баллистики",
+      "description": "Эпоха I · Упаковка зарядов и примитивное наведение для флотских орудий.",
+      "tier": 2,
       "enabled": true,
-      "prereq": [
-        "tech_industry_1"
-      ],
-      "cost": {
-        "metal": 280,
-        "crystal": 160
-      },
-      "time_ticks": 14,
-      "research_points_cost": 36,
-      "residual_time_ticks": 7,
-      "effects": {
-        "combat_damage_multiplier": 1.12
-      }
+      "prereq": ["tech_industry_1"],
+      "cost": { "metal": 260, "crystal": 155 },
+      "time_ticks": 198,
+      "research_points_cost": 96,
+      "residual_time_ticks": 150,
+      "effects": { "combat_damage_multiplier": 1.09 }
     },
     {
       "id": "tech_hull_1",
-      "name": "Броня корпуса I",
-      "description": "Усиление рам и щитов: флот держит удар дольше.",
-      "tier": 1,
+      "name": "Броня корпуса I — распределение нагрузки",
+      "description": "Эпоха I · Усиление рам и переборок; флот дольше держит огонь.",
+      "tier": 2,
       "enabled": true,
-      "prereq": [
-        "tech_logistics_1"
-      ],
-      "cost": {
-        "metal": 220,
-        "crystal": 200
-      },
-      "time_ticks": 12,
-      "research_points_cost": 34,
-      "residual_time_ticks": 6,
-      "effects": {
-        "combat_hp_multiplier": 1.1
-      }
+      "prereq": ["tech_logistics_1"],
+      "cost": { "metal": 240, "crystal": 185 },
+      "time_ticks": 192,
+      "research_points_cost": 92,
+      "residual_time_ticks": 144,
+      "effects": { "combat_hp_multiplier": 1.07 }
+    },
+    {
+      "id": "tech_planetary_survey_1",
+      "name": "Планетный съём I — спектры и залежи",
+      "description": "Эпоха I · Стыковка промышленных данных и маршрутов: лучше целиться в кристаллические пласты.",
+      "tier": 2,
+      "enabled": true,
+      "prereq": ["tech_industry_1", "tech_logistics_1"],
+      "cost": { "metal": 230, "crystal": 195 },
+      "time_ticks": 182,
+      "research_points_cost": 84,
+      "residual_time_ticks": 132,
+      "effects": { "production_multiplier": { "crystal": 1.07 } }
     },
     {
       "id": "tech_territory_2",
-      "name": "Территориальные сети I",
-      "description": "Разрешает строить укреплённые форпосты для более уверенного удержания фронтира.",
-      "tier": 2,
-      "enabled": true,
-      "prereq": [
-        "tech_industry_1",
-        "tech_logistics_1"
-      ],
-      "cost": {
-        "metal": 320,
-        "crystal": 220
-      },
-      "time_ticks": 14,
-      "research_points_cost": 58,
-      "residual_time_ticks": 8,
-      "effects": {}
-    },
-    {
-      "id": "tech_supply_networks_1",
-      "name": "Сети снабжения I",
-      "description": "Стандартизация конвоев и узлов: немного увеличивает радиус снабжения планет и открывает логистический центр.",
-      "tier": 2,
-      "enabled": true,
-      "prereq": [
-        "tech_logistics_1",
-        "tech_industry_1"
-      ],
-      "field_data_requirements": [
-        "research_fragments"
-      ],
-      "cost": {
-        "metal": 340,
-        "crystal": 240
-      },
-      "time_ticks": 14,
-      "research_points_cost": 62,
-      "residual_time_ticks": 8,
-      "effects": {
-        "supply_base_add": 1
-      }
-    },
-    {
-      "id": "tech_deep_scan_1",
-      "name": "Глубинное сканирование I",
-      "description": "Улучшенные сенсорные пакеты: открывает корвет с усиленной разведкой.",
-      "tier": 2,
-      "enabled": true,
-      "prereq": [
-        "tech_logistics_1",
-        "tech_hull_1"
-      ],
-      "cost": {
-        "metal": 300,
-        "crystal": 260
-      },
-      "time_ticks": 16,
-      "research_points_cost": 54,
-      "residual_time_ticks": 7,
-      "effects": {}
-    },
-    {
-      "id": "tech_territory_3",
-      "name": "Территориальные сети II",
-      "description": "Открывает командные узлы, расширяющие и стабилизирующие контроль сектора.",
+      "name": "Территориальные сети I — укреплённый фронтир",
+      "description": "Эпоха I · Укреплённые форпосты и право держать дальние узлы.",
       "tier": 3,
       "enabled": true,
-      "prereq": [
-        "tech_territory_2",
-        "tech_hull_1",
-        "tech_supply_networks_1"
-      ],
-      "field_data_requirements": [
-        "ruin_archives"
-      ],
-      "cost": {
-        "metal": 480,
-        "crystal": 340
-      },
-      "time_ticks": 18,
-      "research_points_cost": 102,
-      "residual_time_ticks": 10,
+      "prereq": ["tech_industry_1", "tech_logistics_1"],
+      "cost": { "metal": 380, "crystal": 260 },
+      "time_ticks": 268,
+      "research_points_cost": 168,
+      "residual_time_ticks": 210,
       "effects": {}
-    },
-    {
-      "id": "tech_industry_2",
-      "name": "Промышленность II",
-      "description": "Расширенные экстракторы и автоматизация добычи металла.",
-      "tier": 2,
-      "enabled": true,
-      "prereq": [
-        "tech_industry_1"
-      ],
-      "cost": {
-        "metal": 340,
-        "crystal": 180
-      },
-      "time_ticks": 14,
-      "research_points_cost": 62,
-      "residual_time_ticks": 8,
-      "effects": {
-        "production_multiplier": {
-          "metal": 1.12
-        }
-      }
-    },
-    {
-      "id": "tech_hydroponics_2",
-      "name": "Гидропоника II",
-      "description": "Многоуровневые фермы для стабильного продовольствия.",
-      "tier": 2,
-      "enabled": true,
-      "prereq": [
-        "tech_hydroponics_1"
-      ],
-      "cost": {
-        "metal": 260,
-        "crystal": 220
-      },
-      "time_ticks": 14,
-      "research_points_cost": 64,
-      "residual_time_ticks": 8,
-      "effects": {
-        "production_multiplier": {
-          "food": 1.12
-        }
-      }
-    },
-    {
-      "id": "tech_atmospheric_water_2",
-      "name": "Атмосферная вода II",
-      "description": "Улучшенная конденсация для крупных поселений.",
-      "tier": 2,
-      "enabled": true,
-      "prereq": [
-        "tech_atmospheric_water_1"
-      ],
-      "cost": {
-        "metal": 250,
-        "crystal": 230
-      },
-      "time_ticks": 14,
-      "research_points_cost": 64,
-      "residual_time_ticks": 8,
-      "effects": {
-        "production_multiplier": {
-          "water": 1.12
-        }
-      }
     },
     {
       "id": "tech_energy_grid_1",
-      "name": "Энергосети I",
-      "description": "Оптимизация распределения энергии и снижение потерь.",
-      "tier": 2,
+      "name": "Энергосети I — стабилизация пиков",
+      "description": "Эпоха I · Меньше потерь в распределении энергии по колонии и докам.",
+      "tier": 3,
       "enabled": true,
-      "prereq": [
-        "tech_industry_1",
-        "tech_logistics_1"
-      ],
-      "cost": {
-        "metal": 300,
-        "crystal": 240
-      },
-      "time_ticks": 15,
-      "research_points_cost": 66,
-      "residual_time_ticks": 8,
-      "effects": {
-        "upkeep_energy_multiplier": 0.92
-      }
+      "prereq": ["tech_industry_1", "tech_logistics_1"],
+      "cost": { "metal": 340, "crystal": 285 },
+      "time_ticks": 276,
+      "research_points_cost": 182,
+      "residual_time_ticks": 218,
+      "effects": { "upkeep_energy_multiplier": 0.93 }
+    },
+    {
+      "id": "tech_industry_2",
+      "name": "Промышленность II — линии выборки",
+      "description": "Эпоха I · Серийные экстракторы металла после первых цехов.",
+      "tier": 3,
+      "enabled": true,
+      "prereq": ["tech_industry_1"],
+      "cost": { "metal": 360, "crystal": 220 },
+      "time_ticks": 272,
+      "research_points_cost": 198,
+      "residual_time_ticks": 226,
+      "effects": { "production_multiplier": { "metal": 1.13 } }
+    },
+    {
+      "id": "tech_reactor_stewards_1",
+      "name": "Реакторные смотрители I — безопасный форсаж",
+      "description": "Эпоха I · Связка энергорежима и биомассы: топливная культура без аварийного перегрува.",
+      "tier": 3,
+      "enabled": true,
+      "prereq": ["tech_industry_1", "tech_hydroponics_1"],
+      "cost": { "metal": 310, "crystal": 300 },
+      "time_ticks": 258,
+      "research_points_cost": 172,
+      "residual_time_ticks": 206,
+      "effects": { "production_multiplier": { "fuel": 1.1 } }
+    },
+    {
+      "id": "tech_orbital_tugs_1",
+      "name": "Орбитальные буксиры — расход топлива",
+      "description": "Эпоха I-II · Инженерные маневры перевозят массу дешевле по межклеточным переходам.",
+      "tier": 4,
+      "enabled": true,
+      "prereq": ["tech_hull_1", "tech_logistics_1"],
+      "cost": { "metal": 420, "crystal": 340 },
+      "time_ticks": 354,
+      "research_points_cost": 285,
+      "residual_time_ticks": 294,
+      "effects": { "travel_fuel_multiplier": 0.91 }
+    },
+    {
+      "id": "tech_supply_networks_1",
+      "name": "Сети снабжения I — стандарт конвоя",
+      "description": "Эпоха I-II · Требует полевые фрагменты исследований. Стандартизирует узлы и радиус снабжения; логистический центр.",
+      "tier": 4,
+      "enabled": true,
+      "prereq": ["tech_logistics_1", "tech_industry_1"],
+      "field_data_requirements": ["research_fragments"],
+      "cost": { "metal": 450, "crystal": 360 },
+      "time_ticks": 372,
+      "research_points_cost": 318,
+      "residual_time_ticks": 312,
+      "effects": { "supply_base_add": 1 }
+    },
+    {
+      "id": "tech_deep_scan_1",
+      "name": "Глубинное сканирование I — сенсорные пучки",
+      "description": "Эпоха I-II · Дальнобойное картирование; открывает развед-корвет и глубину тактической картины.",
+      "tier": 4,
+      "enabled": true,
+      "prereq": ["tech_logistics_1", "tech_hull_1"],
+      "cost": { "metal": 400, "crystal": 385 },
+      "time_ticks": 366,
+      "research_points_cost": 298,
+      "residual_time_ticks": 306,
+      "effects": {}
+    },
+    {
+      "id": "tech_hydroponics_2",
+      "name": "Гидропоника II — многоярусность",
+      "description": "Эпоха I-II · Объёмные фермы для растущих поселений.",
+      "tier": 4,
+      "enabled": true,
+      "prereq": ["tech_hydroponics_1"],
+      "cost": { "metal": 380, "crystal": 345 },
+      "time_ticks": 358,
+      "research_points_cost": 308,
+      "residual_time_ticks": 302,
+      "effects": { "production_multiplier": { "food": 1.12 } }
+    },
+    {
+      "id": "tech_atmospheric_water_2",
+      "name": "Атмосферная вода II — циклы охлаждения",
+      "description": "Эпоха I-II · Отвод тепла и вторичная конденсация для высоких нагрузок.",
+      "tier": 4,
+      "enabled": true,
+      "prereq": ["tech_atmospheric_water_1"],
+      "cost": { "metal": 365, "crystal": 360 },
+      "time_ticks": 358,
+      "research_points_cost": 308,
+      "residual_time_ticks": 302,
+      "effects": { "production_multiplier": { "water": 1.12 } }
     },
     {
       "id": "tech_fleet_doctrine_1",
-      "name": "Флотская доктрина I",
-      "description": "Координация манёвров и огня для боевых кораблей.",
-      "tier": 2,
+      "name": "Флотская доктрина I — согласованный огонь",
+      "description": "Эпоха I-II · Боевая сетка связи между линейными и ударными кораблями.",
+      "tier": 4,
       "enabled": true,
-      "prereq": [
-        "tech_armament_1",
-        "tech_hull_1"
-      ],
-      "cost": {
-        "metal": 360,
-        "crystal": 280
-      },
-      "time_ticks": 16,
-      "research_points_cost": 72,
-      "residual_time_ticks": 9,
+      "prereq": ["tech_armament_1", "tech_hull_1"],
+      "cost": { "metal": 440, "crystal": 355 },
+      "time_ticks": 378,
+      "research_points_cost": 335,
+      "residual_time_ticks": 324,
       "effects": {
-        "combat_damage_multiplier": 1.08,
-        "combat_hp_multiplier": 1.06
+        "combat_damage_multiplier": 1.05,
+        "combat_hp_multiplier": 1.06 }
+    },
+    {
+      "id": "tech_sector_standardization_1",
+      "name": "Секторальная стандартизация I — спицы-хабы",
+      "description": "Эпоха II · После территориальных сетей и энергоядра: единый профиль складов повышает дальность снабжения.",
+      "tier": 5,
+      "enabled": true,
+      "prereq": ["tech_territory_2", "tech_energy_grid_1"],
+      "cost": { "metal": 620, "crystal": 480 },
+      "time_ticks": 476,
+      "research_points_cost": 465,
+      "residual_time_ticks": 396,
+      "effects": { "supply_base_add": 1 }
+    },
+    {
+      "id": "tech_territory_3",
+      "name": "Территориальные сети II — узлы управления сектором",
+      "description": "Эпоха II · Требует архивы руин. Командные узлы и переход на тяжёлые постройки на фронтире.",
+      "tier": 5,
+      "enabled": true,
+      "prereq": ["tech_territory_2", "tech_hull_1", "tech_supply_networks_1"],
+      "field_data_requirements": ["ruin_archives"],
+      "cost": { "metal": 720, "crystal": 520 },
+      "time_ticks": 504,
+      "research_points_cost": 545,
+      "residual_time_ticks": 426,
+      "effects": {}
+    },
+    {
+      "id": "tech_hyperlanes_discipline_1",
+      "name": "Дисциплина гипермаршрутов I",
+      "description": "Эпоха II · Связка буксиров и реформ топлива: маршевые коридоры с меньшим штрафом по запасам.",
+      "tier": 5,
+      "enabled": true,
+      "prereq": ["tech_orbital_tugs_1", "tech_reactor_stewards_1"],
+      "cost": { "metal": 580, "crystal": 545 },
+      "time_ticks": 488,
+      "research_points_cost": 488,
+      "residual_time_ticks": 412,
+      "effects": { "travel_fuel_multiplier": 0.89 }
+    },
+    {
+      "id": "tech_ballistics_suite_2",
+      "name": "Баллистический комплекс II — калибр и время",
+      "description": "Эпоха II · Связка орудий и доктрины: выверенная серия по крупным целям.",
+      "tier": 5,
+      "enabled": true,
+      "prereq": ["tech_armament_1", "tech_fleet_doctrine_1"],
+      "cost": { "metal": 640, "crystal": 510 },
+      "time_ticks": 494,
+      "research_points_cost": 512,
+      "residual_time_ticks": 418,
+      "effects": { "combat_damage_multiplier": 1.07 }
+    },
+    {
+      "id": "tech_structural_trusses_2",
+      "name": "Силовые фермы II — узлы каркаса",
+      "description": "Эпоха II · Интеграция брони и глубокого сканирования для целевого усиления корпуса.",
+      "tier": 5,
+      "enabled": true,
+      "prereq": ["tech_hull_1", "tech_deep_scan_1"],
+      "cost": { "metal": 610, "crystal": 560 },
+      "time_ticks": 498,
+      "research_points_cost": 498,
+      "residual_time_ticks": 422,
+      "effects": { "combat_hp_multiplier": 1.09 }
+    },
+    {
+      "id": "tech_metallurgy_cluster_3",
+      "name": "Металлургический кластер III",
+      "description": "Эпоха II · После промышленного рывка и выверенной сети энергии — согласование плавки и трасс.",
+      "tier": 6,
+      "enabled": true,
+      "prereq": ["tech_industry_2", "tech_energy_grid_1"],
+      "cost": { "metal": 780, "crystal": 620 },
+      "time_ticks": 556,
+      "research_points_cost": 655,
+      "residual_time_ticks": 468,
+      "effects": { "production_multiplier": { "metal": 1.11 } }
+    },
+    {
+      "id": "tech_capacitive_bus_2",
+      "name": "Ёмкостная шина II — буферы нагрузки",
+      "description": "Эпоха II · Меньшие пики по энергосодержанию флотов и построек после съёмки залежей.",
+      "tier": 6,
+      "enabled": true,
+      "prereq": ["tech_energy_grid_1", "tech_planetary_survey_1"],
+      "cost": { "metal": 720, "crystal": 668 },
+      "time_ticks": 562,
+      "research_points_cost": 642,
+      "residual_time_ticks": 474,
+      "effects": { "upkeep_energy_multiplier": 0.91 }
+    },
+    {
+      "id": "tech_biosphere_mosaic_3",
+      "name": "Биосферная мозаика III — замкнутый колодец",
+      "description": "Эпоха II · Свод гидропоники и воды второго поколения: устойчивые циклы на дальних узлах.",
+      "tier": 6,
+      "enabled": true,
+      "prereq": ["tech_hydroponics_2", "tech_atmospheric_water_2"],
+      "cost": { "metal": 740, "crystal": 700 },
+      "time_ticks": 568,
+      "research_points_cost": 688,
+      "residual_time_ticks": 478,
+      "effects": {
+        "production_multiplier": { "food": 1.08, "water": 1.08 }
       }
+    },
+    {
+      "id": "tech_interdiction_doctrine_1",
+      "name": "Доктрина запретной зоны I",
+      "description": "Эпоха II · Связка баллистики и орбитальных маневров для перехватов без полного топливного распада.",
+      "tier": 6,
+      "enabled": true,
+      "prereq": ["tech_ballistics_suite_2", "tech_orbital_tugs_1"],
+      "cost": { "metal": 790, "crystal": 640 },
+      "time_ticks": 574,
+      "research_points_cost": 712,
+      "residual_time_ticks": 486,
+      "effects": { "combat_damage_multiplier": 1.055 }
+    },
+    {
+      "id": "tech_gravity_cartography_2",
+      "name": "Гравитационная картография II",
+      "description": "Эпоха II · Связка глубокого скана и общей боевой сетки: более надёжные контуры боя.",
+      "tier": 6,
+      "enabled": true,
+      "prereq": ["tech_deep_scan_1", "tech_fleet_doctrine_1"],
+      "cost": { "metal": 750, "crystal": 695 },
+      "time_ticks": 568,
+      "research_points_cost": 698,
+      "residual_time_ticks": 480,
+      "effects": {
+        "combat_hp_multiplier": 1.045,
+        "combat_damage_multiplier": 1.035
+      }
+    },
+    {
+      "id": "tech_armored_conduits_1",
+      "name": "Бронированные тракты — целостность маршрута",
+      "description": "Эпоха II · Связка дисциплины коридоров и силовых ферм: меньше потерь на длинной доставке.",
+      "tier": 7,
+      "enabled": true,
+      "prereq": ["tech_hyperlanes_discipline_1", "tech_structural_trusses_2"],
+      "cost": { "metal": 860, "crystal": 780 },
+      "time_ticks": 624,
+      "research_points_cost": 805,
+      "residual_time_ticks": 528,
+      "effects": { "travel_fuel_multiplier": 0.9 }
+    },
+    {
+      "id": "tech_asteroid_press_4",
+      "name": "Астероидный пресс IV — структурный слиток",
+      "description": "Эпоха II · Связка кластерной выплавки и съёмки пластов: металл и кристалл из одних линий.",
+      "tier": 7,
+      "enabled": true,
+      "prereq": ["tech_metallurgy_cluster_3", "tech_planetary_survey_1"],
+      "cost": { "metal": 900, "crystal": 760 },
+      "time_ticks": 632,
+      "research_points_cost": 828,
+      "residual_time_ticks": 538,
+      "effects": {
+        "production_multiplier": { "metal": 1.08, "crystal": 1.06 }
+      }
+    },
+    {
+      "id": "tech_ultragrid_backbone_3",
+      "name": "Ультра-сетка III — межузловые магистрали",
+      "description": "Эпоха II · После секторальной стандартизации и ёмкостных шин: «скелет» энергорынка колонии.",
+      "tier": 7,
+      "enabled": true,
+      "prereq": ["tech_capacitive_bus_2", "tech_sector_standardization_1"],
+      "cost": { "metal": 880, "crystal": 820 },
+      "time_ticks": 638,
+      "research_points_cost": 858,
+      "residual_time_ticks": 544,
+      "effects": { "upkeep_energy_multiplier": 0.87 }
+    },
+    {
+      "id": "tech_citadel_skeleton_2",
+      "name": "Каркас цитадели II — армированные пояса",
+      "description": "Эпоха II · Связка ферм и доктрины: флотовые ядра выдерживают концентрированный залп.",
+      "tier": 7,
+      "enabled": true,
+      "prereq": ["tech_structural_trusses_2", "tech_fleet_doctrine_1"],
+      "cost": { "metal": 920, "crystal": 800 },
+      "time_ticks": 642,
+      "research_points_cost": 875,
+      "residual_time_ticks": 550,
+      "effects": { "combat_hp_multiplier": 1.1 }
+    },
+    {
+      "id": "tech_circulation_masterplan_2",
+      "name": "Мастер-план циркуляции II",
+      "description": "Эпоха II-III · Биосферная логика плюс ультрасеть: поддерживать огромную империю без вечных пиков энергии.",
+      "tier": 8,
+      "enabled": true,
+      "prereq": ["tech_biosphere_mosaic_3", "tech_ultragrid_backbone_3"],
+      "cost": { "metal": 1020, "crystal": 940 },
+      "time_ticks": 696,
+      "research_points_cost": 1025,
+      "residual_time_ticks": 596,
+      "effects": { "upkeep_energy_multiplier": 0.85 }
+    },
+    {
+      "id": "tech_secondary_hub_charter_1",
+      "name": "Хартия вторичных узлов — разнос нагрузки",
+      "description": "Эпоха II-III · После тяжёлых территориальных сетей повторное расширение радиуса снабжения.",
+      "tier": 8,
+      "enabled": true,
+      "prereq": ["tech_territory_3", "tech_sector_standardization_1"],
+      "cost": { "metal": 1080, "crystal": 880 },
+      "time_ticks": 708,
+      "research_points_cost": 1088,
+      "residual_time_ticks": 608,
+      "effects": { "supply_base_add": 1 }
+    },
+    {
+      "id": "tech_battle_integrated_lab_3",
+      "name": "Интегрированная боевая лаборатория III",
+      "description": "Эпоха II-III · Связка перехватной доктрины и каркаса цитадели.",
+      "tier": 8,
+      "enabled": true,
+      "prereq": ["tech_interdiction_doctrine_1", "tech_citadel_skeleton_2"],
+      "cost": { "metal": 1120, "crystal": 900 },
+      "time_ticks": 718,
+      "research_points_cost": 1115,
+      "residual_time_ticks": 618,
+      "effects": {
+        "combat_damage_multiplier": 1.085,
+        "combat_hp_multiplier": 1.05 }
+    },
+    {
+      "id": "tech_deep_mantle_taps_1",
+      "name": "Глубинные выводы мантии I",
+      "description": "Эпоха II-III · После астероидного пресса и кластерной металлургии — промышленный «довод» добытого.",
+      "tier": 8,
+      "enabled": true,
+      "prereq": ["tech_asteroid_press_4", "tech_metallurgy_cluster_3"],
+      "cost": { "metal": 1140, "crystal": 890 },
+      "time_ticks": 724,
+      "research_points_cost": 1138,
+      "residual_time_ticks": 624,
+      "effects": { "production_multiplier": { "metal": 1.12 } }
+    },
+    {
+      "id": "tech_compression_transit_grid_3",
+      "name": "Сеть сжатых переходов III",
+      "description": "Эпоха II-III · После бронетрактов и ёмкостных буферов — «сжатые окна» для тяжёлых перевозок.",
+      "tier": 8,
+      "enabled": true,
+      "prereq": ["tech_armored_conduits_1", "tech_capacitive_bus_2"],
+      "cost": { "metal": 1040, "crystal": 960 },
+      "time_ticks": 712,
+      "research_points_cost": 1105,
+      "residual_time_ticks": 614,
+      "effects": { "travel_fuel_multiplier": 0.9 }
+    },
+    {
+      "id": "tech_echo_calibration_3",
+      "name": "Калибровка эха III — синтез траекторий",
+      "description": "Эпоха II-III · Связка гравикартографии и доктрины запретных зон: мелкая выверка финиша боя.",
+      "tier": 9,
+      "enabled": true,
+      "prereq": ["tech_gravity_cartography_2", "tech_interdiction_doctrine_1"],
+      "cost": { "metal": 1240, "crystal": 1020 },
+      "time_ticks": 772,
+      "research_points_cost": 1335,
+      "residual_time_ticks": 666,
+      "effects": {
+        "combat_damage_multiplier": 1.025,
+        "combat_hp_multiplier": 1.025 }
+    },
+    {
+      "id": "tech_bastion_compacts_2",
+      "name": "Бастионные компакты II — уплотнение хартий",
+      "description": "Эпоха II-III · После вторичных узлов и мантии: каждый поставщик тянет дальше в плотном секторе.",
+      "tier": 9,
+      "enabled": true,
+      "prereq": ["tech_secondary_hub_charter_1", "tech_deep_mantle_taps_1"],
+      "cost": { "metal": 1280, "crystal": 980 },
+      "time_ticks": 784,
+      "research_points_cost": 1365,
+      "residual_time_ticks": 678,
+      "effects": { "supply_per_supplier_add": 1 }
+    },
+    {
+      "id": "tech_spear_tip_lances_3",
+      "name": "Копья на острие III — удар по ядру",
+      "description": "Эпоха II-III · Связка боевая лаборатория × сеть сжатых переходов.",
+      "tier": 9,
+      "enabled": true,
+      "prereq": ["tech_battle_integrated_lab_3", "tech_compression_transit_grid_3"],
+      "cost": { "metal": 1320, "crystal": 1045 },
+      "time_ticks": 796,
+      "research_points_cost": 1398,
+      "residual_time_ticks": 688,
+      "effects": { "combat_damage_multiplier": 1.1 }
+    },
+    {
+      "id": "tech_stellar_yield_curriculum_4",
+      "name": "Учебник звёздной отдачи IV",
+      "description": "Эпоха II-III · Связка мантийных выводов и мастера циркуляции — энергоёмкость и кристаллы.",
+      "tier": 9,
+      "enabled": true,
+      "prereq": ["tech_deep_mantle_taps_1", "tech_circulation_masterplan_2"],
+      "cost": { "metal": 1340, "crystal": 1120 },
+      "time_ticks": 802,
+      "research_points_cost": 1415,
+      "residual_time_ticks": 694,
+      "effects": {
+        "production_multiplier": { "crystal": 1.14, "energy": 1.06 }
+      }
+    },
+    {
+      "id": "tech_lifelines_brigade_2",
+      "name": "Бригада линий жизни II",
+      "description": "Эпоха II-III · Связка сжатых переходов и устойчивой биосферы для длинных коридоров.",
+      "tier": 9,
+      "enabled": true,
+      "prereq": ["tech_compression_transit_grid_3", "tech_biosphere_mosaic_3"],
+      "cost": { "metal": 1260, "crystal": 1090 },
+      "time_ticks": 788,
+      "research_points_cost": 1380,
+      "residual_time_ticks": 682,
+      "effects": { "supply_base_add": 1 }
+    },
+    {
+      "id": "tech_apex_far_logistics",
+      "name": "Апекс — дальняя логистика созвездия",
+      "description": "Эпоха III · Компакт вершины транспортной ветви: экономия топлива на имперских расстояниях.",
+      "tier": 10,
+      "enabled": true,
+      "prereq": ["tech_compression_transit_grid_3", "tech_lifelines_brigade_2"],
+      "cost": { "metal": 1680, "crystal": 1420 },
+      "time_ticks": 916,
+      "research_points_cost": 1745,
+      "residual_time_ticks": 792,
+      "effects": { "travel_fuel_multiplier": 0.88 }
+    },
+    {
+      "id": "tech_apex_war_matrix",
+      "name": "Апекс — матрица войны сектора",
+      "description": "Эпоха III · Связка копей и бастионной плотности; консолидация удара.",
+      "tier": 10,
+      "enabled": true,
+      "prereq": ["tech_spear_tip_lances_3", "tech_bastion_compacts_2"],
+      "cost": { "metal": 1740, "crystal": 1380 },
+      "time_ticks": 928,
+      "research_points_cost": 1810,
+      "residual_time_ticks": 804,
+      "effects": {
+        "combat_damage_multiplier": 1.09,
+        "combat_hp_multiplier": 1.08 }
+    },
+    {
+      "id": "tech_apex_stellar_industry",
+      "name": "Апекс — звёздная индустрия",
+      "description": "Эпоха III · Связка учебника отдачи и астероидного пресса: вершина промышленного контура.",
+      "tier": 10,
+      "enabled": true,
+      "prereq": ["tech_stellar_yield_curriculum_4", "tech_asteroid_press_4"],
+      "cost": { "metal": 1720, "crystal": 1480 },
+      "time_ticks": 932,
+      "research_points_cost": 1785,
+      "residual_time_ticks": 808,
+      "effects": {
+        "production_multiplier": { "metal": 1.1, "crystal": 1.08 }
+      }
+    },
+    {
+      "id": "tech_crown_sector_hegemony",
+      "name": "Корона — гегемония сектора",
+      "description": "Эпоха III · После всех апексов: политический и инженерный синтез власти на дистанции (+ к логистике снабжения).",
+      "tier": 10,
+      "enabled": true,
+      "prereq": ["tech_apex_far_logistics", "tech_apex_war_matrix", "tech_apex_stellar_industry"],
+      "cost": { "metal": 2050, "crystal": 1680 },
+      "time_ticks": 988,
+      "research_points_cost": 2060,
+      "residual_time_ticks": 852,
+      "effects": {
+        "supply_base_add": 2,
+        "combat_damage_multiplier": 1.035,
+        "combat_hp_multiplier": 1.035 }
     }
   ]
 }

@@ -29,6 +29,17 @@
     fog: "Туман войны",
   };
   const STATUS_RU = { idle: "ожидание", moving: "в пути" };
+  const escHtml = (s) =>
+    String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/"/g, "&quot;");
+  const escAttr = (s) =>
+    String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;")
+      .replace(/\n/g, "&#10;");
   const formatTerrainRu = (t) => (t && TERRAIN_RU[t]) || (t ? String(t) : "—");
   const ruOrderType = (t) => {
     if (!t) return "приказ";
@@ -36,7 +47,7 @@
     if (t === "emergency_return") return "аварийный возврат";
     return String(t);
   };
-  const formatInfluenceHud = (inf) => {
+  const formatInfluenceHud = (inf, richLinks = false) => {
     if (!inf || typeof inf !== "object") return "—";
     const controlOwnerName =
       inf.control?.owner_name != null
@@ -46,10 +57,10 @@
           : null;
     const controlOwnerId =
       inf.control?.owner != null
-        ? String(inf.control.owner)
+        ? String(inf.control.owner).trim()
         : inf.home_control_owner != null
-          ? String(inf.home_control_owner)
-          : null;
+          ? String(inf.home_control_owner).trim()
+          : "";
     const yourValueRaw =
       typeof inf.control?.your_value === "number"
         ? inf.control.your_value
@@ -71,13 +82,18 @@
     const yourValue = yv > cap ? `${cap.toFixed(1)}+` : yv.toFixed(2);
     const topValue = tv > cap ? `${cap.toFixed(1)}+` : tv.toFixed(2);
     const contested = Boolean(inf.contested ?? inf.home_contested);
-    // На сервере control_value накапливается тиками и может быть ≫ 1 — это не «проценты клетки», а накопленный вес.
     const thr = captureThreshold.toFixed(1);
     const tail = contested ? " • спор зон" : "";
     if (!controlOwnerId) {
       return `накопление контроля: нейтрально • ваш вклад ${yourValue} • лидер ${topValue} • порог захвата ${thr}${tail}`;
     }
-    return `накопление контроля: ${ownerShort} • ваш вклад ${yourValue} • лидер ${topValue} • порог захвата ${thr}${tail}`;
+    let leadLabel = ownerShort;
+    if (richLinks && controlOwnerName && /^[\da-f-]{36}$/i.test(controlOwnerId)) {
+      leadLabel = `<a href="/operator/${escAttr(controlOwnerId)}" class="chat-player-link sector-owner-link">${escHtml(controlOwnerName)}</a>`;
+    } else {
+      leadLabel = escHtml(ownerShort);
+    }
+    return `накопление контроля: ${leadLabel} • ваш вклад ${yourValue} • лидер ${topValue} • порог захвата ${thr}${tail}`;
   };
   const formatGlyphRu = (terrain, g) => {
     if (g === "" || g === undefined || g === null) return "—";
@@ -131,6 +147,12 @@
   let supplyHint = null; // { for:{x,y,z}, inSupply:boolean, routeClear:boolean, blockedAt:{x,y} | null }
   /** Счётчик запросов `/api/world/sector` для панели discovery — отбрасываем устаревшие ответы (анти-мерцание). */
   let discoverySectorFetchGen = 0;
+  /**
+   * Очередь `GET /api/world/window` — строго по одному за раз.
+   * Параллельные вызовы + отбрасывание «устаревших» ответов могли выкинуть единственный успешный JSON
+   * (например новый запрос упал с 401, старый успешный не применялся) → пустая карта и HUD без ошибок в консоли.
+   */
+  let mapWindowRefreshQueue = Promise.resolve();
   /** Последняя клетка руин/аномалии в HUD — не сбрасываем кнопку при каждом poll, если координаты те же. */
   let discoveryHudCellKey = null;
 
@@ -163,6 +185,22 @@
   const discoveryResolveHelp = document.getElementById("discovery-resolve-help");
   const clearSelBtn = document.getElementById("clear-sel-btn");
   const eventsEl = document.getElementById("events");
+  /** `data-event-id` боя, у которого игрок раскрыл «Подробный расчёт» — восстанавливаем после каждого перерендера лога. */
+  const openFleetCombatDetailIds = new Set();
+  if (eventsEl) {
+    eventsEl.addEventListener(
+      "toggle",
+      (ev) => {
+        const t = ev.target;
+        if (!(t instanceof HTMLDetailsElement) || !t.classList.contains("event-combat-details")) return;
+        const id = t.getAttribute("data-event-id");
+        if (id == null || id === "") return;
+        if (t.open) openFleetCombatDetailIds.add(id);
+        else openFleetCombatDetailIds.delete(id);
+      },
+      true,
+    );
+  }
   const commsPanel = document.getElementById("comms-panel");
   const commsPanelTitleEl = document.getElementById("comms-panel-title");
   const commsCollapseBtn = document.getElementById("comms-collapse-btn");
@@ -182,6 +220,13 @@
   const privatePeerOpenBtn = document.getElementById("private-peer-open");
   const privateBlockPeerBtn = document.getElementById("private-block-peer-btn");
   const privateBackThreadsBtn = document.getElementById("private-back-threads-btn");
+  const privateTabBadge = document.getElementById("private-tab-badge");
+  const privateSendReadReceiptCb = document.getElementById("private-send-read-receipt");
+  const privateDeleteThreadBtn = document.getElementById("private-delete-thread-btn");
+  const privateIntroOverlay = document.getElementById("private-intro-overlay");
+  const privateIntroPeerNameEl = document.getElementById("private-intro-peer-name");
+  const privateIntroYesBtn = document.getElementById("private-intro-yes");
+  const privateIntroNoBtn = document.getElementById("private-intro-no");
   const chatSettingsOpenBtn = document.getElementById("chat-settings-open");
   const chatSettingsOverlay = document.getElementById("chat-settings-overlay");
   const chatSettingsClose = document.getElementById("chat-settings-close");
@@ -191,6 +236,94 @@
   const chatColorAlliance = document.getElementById("chat-color-alliance");
   const chatColorPrivate = document.getElementById("chat-color-private");
   const chatDisablePrivate = document.getElementById("chat-disable-private");
+
+  const ENTRY_TUTORIAL_SUPPRESS_KEY = "gs.entryTutorial.suppress.v1";
+  const entryTutorialOverlay = document.getElementById("entry-tutorial-overlay");
+  const entryTutorialOk = document.getElementById("entry-tutorial-ok");
+  const entryTutorialDismissNext = document.getElementById("entry-tutorial-dismiss-next");
+  const entryTutorialRemindBtn = document.getElementById("entry-tutorial-remind");
+
+  /** Вкладки подсказки (левое меню модалки). */
+  const ENTRY_TUTORIAL_TAB_IDS = ["economy", "fleet", "visual", "combat", "symbols"];
+  const setEntryTutorialTab = (tabId) => {
+    if (!entryTutorialOverlay) return;
+    const tid = ENTRY_TUTORIAL_TAB_IDS.includes(tabId) ? tabId : "economy";
+    entryTutorialOverlay.querySelectorAll("[data-tutorial-tab]").forEach((btn) => {
+      const bid = btn.getAttribute("data-tutorial-tab");
+      const on = bid === tid;
+      btn.classList.toggle("is-active", on);
+      btn.setAttribute("aria-selected", on ? "true" : "false");
+      try {
+        btn.tabIndex = on ? 0 : -1;
+      } catch (_x) {
+        /* ignore */
+      }
+    });
+    entryTutorialOverlay.querySelectorAll("[data-tutorial-panel]").forEach((panel) => {
+      const pid = panel.getAttribute("data-tutorial-panel");
+      const on = pid === tid;
+      panel.classList.toggle("hidden", !on);
+      panel.classList.toggle("is-active", on);
+    });
+  };
+  if (entryTutorialOverlay) {
+    entryTutorialOverlay.querySelectorAll("[data-tutorial-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => setEntryTutorialTab(btn.getAttribute("data-tutorial-tab") || "economy"));
+    });
+    setEntryTutorialTab("economy");
+  }
+
+  const isEntryTutorialSuppressed = () => {
+    try {
+      return localStorage.getItem(ENTRY_TUTORIAL_SUPPRESS_KEY) === "1";
+    } catch (_e) {
+      return false;
+    }
+  };
+
+  const openEntryTutorial = () => {
+    if (!entryTutorialOverlay) return;
+    if (entryTutorialDismissNext) entryTutorialDismissNext.checked = false;
+    setEntryTutorialTab("economy");
+    entryTutorialOverlay.classList.remove("hidden");
+    entryTutorialOverlay.removeAttribute("aria-hidden");
+    document.body.classList.add("entry-tutorial-open");
+    requestAnimationFrame(() => {
+      try {
+        if (entryTutorialOk) entryTutorialOk.focus({ preventScroll: true });
+      } catch (_e) {
+        if (entryTutorialOk) entryTutorialOk.focus();
+      }
+    });
+  };
+
+  const closeEntryTutorialAfterOk = () => {
+    if (entryTutorialDismissNext && entryTutorialDismissNext.checked) {
+      try {
+        localStorage.setItem(ENTRY_TUTORIAL_SUPPRESS_KEY, "1");
+      } catch (_e) {
+        /* ignore */
+      }
+    }
+    if (entryTutorialOverlay) {
+      entryTutorialOverlay.classList.add("hidden");
+      entryTutorialOverlay.setAttribute("aria-hidden", "true");
+    }
+    document.body.classList.remove("entry-tutorial-open");
+  };
+
+  const maybeAutoShowEntryTutorial = () => {
+    if (!entryTutorialOverlay || isEntryTutorialSuppressed()) return;
+    openEntryTutorial();
+  };
+
+  if (entryTutorialOk) entryTutorialOk.addEventListener("click", () => closeEntryTutorialAfterOk());
+  if (entryTutorialOverlay) {
+    entryTutorialOverlay.addEventListener("click", (ev) => {
+      if (ev.target === entryTutorialOverlay) ev.stopPropagation();
+    });
+  }
+  if (entryTutorialRemindBtn) entryTutorialRemindBtn.addEventListener("click", () => openEntryTutorial());
 
   const COMMS_COLLAPSED_KEY = "gs.comms.collapsed.v1";
   const SYSTEM_LOG_FILTER_KEY = "gs.systemLog.filter.v1";
@@ -265,6 +398,17 @@
     discovery_blueprint_cache: "research",
     npc_transit_completed: "economy",
     emergency_orbit_staging: "economy",
+    field_building_capture_tick: "combat",
+    building_captured: "combat",
+    building_lost_capture: "combat",
+    fleet_bombards_outpost: "combat",
+    outpost_under_bombardment: "combat",
+    outpost_destroyed: "combat",
+    bandit_strike_spawned: "combat",
+    bandit_strike_chasing: "combat",
+    bandit_patrol_spawned: "combat",
+    bandit_mine_placed: "combat",
+    bandit_outpost_placed: "combat",
   };
   const getEventCategory = (type) => {
     const t = type ? String(type) : "";
@@ -385,6 +529,8 @@
   let lastViewerChatModerate = null;
   let privatePeerActive = "";
   let lastPrivateChatId = 0;
+  let pendingIntroPeerId = "";
+  let privateReceiptsProgrammaticToggle = false;
 
   /** Согласовано с `MAX_CHAT_BODY_LEN` на сервере (`chat_service`). */
   const MAX_CHAT_BODY_CHARS = 1000;
@@ -408,9 +554,21 @@
   };
 
   /** Рендер строк чата через DOM (`textContent`) — без интерпретации HTML из сети. */
-  const appendChatLines = (feedEl, messages, { reset } = { reset: false }) => {
+  const appendChatLines = (feedEl, messages, opts = {}) => {
+    const reset = Boolean(opts.reset);
+    const privateDm = Boolean(opts.privateDm);
     if (!feedEl || !Array.isArray(messages)) return;
     if (reset) feedEl.innerHTML = "";
+    const readClockShort = (iso) => {
+      if (!iso) return "";
+      try {
+        const d = new Date(String(iso));
+        if (!Number.isFinite(d.getTime())) return "";
+        return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+      } catch (_e) {
+        return "";
+      }
+    };
     for (const m of messages) {
       const row = document.createElement("div");
       row.className = "chat-line";
@@ -418,9 +576,28 @@
       row.dataset.msgId = Number.isFinite(mid) && mid > 0 ? String(Math.floor(mid)) : "0";
       const meta = document.createElement("span");
       meta.className = "chat-meta";
-      meta.textContent = String(m.display_name || m.sender_id || "—");
+      const sid = String(m.sender_id || "").trim();
+      const dn = String(m.display_name || "").trim();
+      if (sid && /^[\da-f-]{36}$/i.test(sid)) {
+        const a = document.createElement("a");
+        a.href = `/operator/${sid}`;
+        a.className = "chat-player-link";
+        a.textContent = dn || sid || "—";
+        meta.appendChild(a);
+      } else {
+        meta.textContent = dn || sid || "—";
+      }
       row.appendChild(meta);
       row.appendChild(document.createTextNode(String(m.body ?? "")));
+      if (privateDm && playerId && sid === String(playerId)) {
+        const rr = m.read_receipt_at != null && String(m.read_receipt_at).trim() !== "";
+        if (rr) {
+          const rk = document.createElement("span");
+          rk.className = "chat-private-read";
+          rk.textContent = ` · прочитано ${readClockShort(m.read_receipt_at)}`;
+          row.appendChild(rk);
+        }
+      }
       feedEl.appendChild(row);
     }
     trimChatFeedToMaxLines(feedEl);
@@ -441,7 +618,17 @@
       main.className = "chat-line-main";
       const meta = document.createElement("span");
       meta.className = "chat-meta";
-      meta.textContent = String(m.display_name || m.sender_id || "—");
+      const gsid = String(m.sender_id || "").trim();
+      const gdn = String(m.display_name || "").trim();
+      if (gsid && /^[\da-f-]{36}$/i.test(gsid)) {
+        const ga = document.createElement("a");
+        ga.href = `/operator/${gsid}`;
+        ga.className = "chat-player-link";
+        ga.textContent = gdn || gsid || "—";
+        meta.appendChild(ga);
+      } else {
+        meta.textContent = gdn || gsid || "—";
+      }
       const bodyEl = document.createElement("span");
       bodyEl.className = "chat-body";
       bodyEl.textContent = String(m.body ?? "");
@@ -607,6 +794,116 @@
     });
   }
 
+  const formatPrivateThreadTs = (iso) => {
+    if (!iso) return "";
+    try {
+      const d = new Date(iso);
+      if (!Number.isFinite(d.getTime())) return "";
+      return d.toLocaleString(undefined, {
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch (_e) {
+      return "";
+    }
+  };
+
+  const updatePrivateTabBadge = (newContacts, unread) => {
+    if (!privateTabBadge) return;
+    const nc = Number(newContacts) || 0;
+    const nu = Number(unread) || 0;
+    if (nc <= 0 && nu <= 0) {
+      privateTabBadge.textContent = "";
+      privateTabBadge.classList.add("hidden");
+      privateTabBadge.setAttribute("aria-hidden", "true");
+      return;
+    }
+    privateTabBadge.textContent = `${nc}/${nu}`;
+    privateTabBadge.classList.remove("hidden");
+    privateTabBadge.setAttribute("aria-hidden", "false");
+  };
+
+  const refreshPrivateBadge = async () => {
+    try {
+      const r = await fetch("/api/chat/private/badge");
+      const body = await r.json();
+      if (!r.ok || !body || !body.ok) return;
+      updatePrivateTabBadge(body.new_contacts ?? 0, body.unread_messages ?? 0);
+    } catch (_e) {
+      /* ignore */
+    }
+  };
+
+  const activatePrivateChatUi = async (pid, sendReceiptsChecked) => {
+    const peer = String(pid || "").trim();
+    if (!peer) return;
+    privatePeerActive = peer;
+    pendingIntroPeerId = "";
+    lastPrivateChatId = 0;
+    if (privateChatPeer) privateChatPeer.value = peer;
+    if (privateChatWrap) privateChatWrap.classList.remove("hidden");
+    if (privateThreadsEl) privateThreadsEl.classList.add("hidden");
+    if (privateSendReadReceiptCb) {
+      privateReceiptsProgrammaticToggle = true;
+      privateSendReadReceiptCb.checked = Boolean(sendReceiptsChecked);
+      queueMicrotask(() => {
+        privateReceiptsProgrammaticToggle = false;
+      });
+    }
+    if (privateChatFeed) privateChatFeed.innerHTML = "<div class='muted'>Загрузка…</div>";
+    await fetchPrivateChat();
+    void refreshPrivateBadge();
+  };
+
+  const completePrivateIntro = async (sendReceipts) => {
+    const pid = pendingIntroPeerId;
+    if (!pid) return;
+    if (privateIntroOverlay) privateIntroOverlay.classList.add("hidden");
+    try {
+      const r = await fetch("/api/chat/private/thread/open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ peer_id: pid, send_read_receipts: Boolean(sendReceipts) }),
+      });
+      const body = await r.json();
+      if (!r.ok || !body || !body.ok) {
+        pendingIntroPeerId = "";
+        if (statusEl)
+          statusEl.textContent = `ЛС: ${(body && body.error) || "не удалось открыть диалог"}`;
+        return;
+      }
+      await activatePrivateChatUi(pid, sendReceipts);
+    } catch (_e) {
+      pendingIntroPeerId = "";
+      if (statusEl) statusEl.textContent = "ЛС: сеть";
+    }
+  };
+
+  const openPrivatePeer = async (peerId) => {
+    const pid = String(peerId || "").trim();
+    if (!pid) return;
+    try {
+      const r = await fetch(`/api/chat/private/thread/meta?peer_id=${encodeURIComponent(pid)}`);
+      const meta = await r.json();
+      if (!r.ok || !meta || !meta.ok) {
+        if (statusEl) statusEl.textContent = `ЛС: ${(meta && meta.error) || "контакт недоступен"}`;
+        return;
+      }
+      if (meta.needs_intro) {
+        pendingIntroPeerId = pid;
+        if (privateIntroPeerNameEl)
+          privateIntroPeerNameEl.textContent = String(meta.peer_display_name || pid);
+        if (privateIntroOverlay) privateIntroOverlay.classList.remove("hidden");
+        return;
+      }
+      await activatePrivateChatUi(pid, Boolean(meta.send_read_receipts));
+    } catch (_e) {
+      if (statusEl) statusEl.textContent = "ЛС: сеть";
+    }
+  };
+
   const fetchPrivateChat = async () => {
     if (!privateChatFeed || !privatePeerActive) return;
     try {
@@ -624,17 +921,19 @@
       const msgs = Array.isArray(body.messages) ? body.messages : [];
       if (!lastPrivateChatId) {
         if (msgs.length) {
-          appendChatLines(privateChatFeed, msgs, { reset: true });
+          appendChatLines(privateChatFeed, msgs, { reset: true, privateDm: true });
           lastPrivateChatId = msgs.reduce((a, m) => Math.max(a, Number(m.id) || 0), 0);
         } else {
           privateChatFeed.innerHTML = "<div class='muted'>Нет сообщений. Напишите первым.</div>";
         }
+        void refreshPrivateBadge();
         return;
       }
       if (msgs.length) {
-        appendChatLines(privateChatFeed, msgs, { reset: false });
+        appendChatLines(privateChatFeed, msgs, { reset: false, privateDm: true });
         lastPrivateChatId = msgs.reduce((a, m) => Math.max(a, Number(m.id) || 0), lastPrivateChatId);
       }
+      void refreshPrivateBadge();
     } catch (_e) {
       /* ignore */
     }
@@ -649,17 +948,24 @@
         privateThreadsEl.innerHTML = "<div class='muted'>Не удалось загрузить диалоги.</div>";
         return;
       }
+      updatePrivateTabBadge(body.badge_new_contacts ?? 0, body.badge_unread ?? 0);
       const threads = Array.isArray(body.threads) ? body.threads : [];
       if (!threads.length) {
         privateThreadsEl.innerHTML =
-          "<div class='muted'>Нет переписок. Укажите UUID игрока выше или дождитесь входящего сообщения.</div>";
+          "<div class='muted'>Нет переписок. Укажите идентификатор оператора выше или дождитесь сообщения.</div>";
         return;
       }
       privateThreadsEl.innerHTML = threads
-        .map(
-          (t) =>
-            `<button type="button" class="btn-secondary private-thread-btn" data-peer="${escChatTxt(t.peer_id)}"><b>${escChatTxt(t.display_name)}</b><span class="muted"> · ${escChatTxt(t.last_preview || "")}</span></button>`
-        )
+        .map((t) => {
+          const un = Number(t.unread_incoming) || 0;
+          const unreadSpan =
+            un > 0 ? `<span class="private-thread-unread">${escChatTxt(String(un))}</span>` : "";
+          const ts = formatPrivateThreadTs(t.last_message_at);
+          const tsLine = ts
+            ? `<span class="private-thread-last-at">${escChatTxt(ts)}</span>`
+            : "";
+          return `<button type="button" class="btn-secondary private-thread-btn" data-peer="${escChatTxt(t.peer_id)}"><b>${escChatTxt(t.display_name)}</b>${unreadSpan}<span class="muted"> · ${escChatTxt(t.last_preview || "")}</span>${tsLine}</button>`;
+        })
         .join("");
       privateThreadsEl.querySelectorAll(".private-thread-btn").forEach((btn) => {
         btn.addEventListener("click", () => {
@@ -672,25 +978,34 @@
     }
   };
 
-  const openPrivatePeer = async (peerId) => {
-    const pid = String(peerId || "").trim();
-    if (!pid) return;
-    privatePeerActive = pid;
-    lastPrivateChatId = 0;
-    if (privateChatPeer) privateChatPeer.value = pid;
-    if (privateChatWrap) privateChatWrap.classList.remove("hidden");
-    if (privateThreadsEl) privateThreadsEl.classList.add("hidden");
-    if (privateChatFeed) privateChatFeed.innerHTML = "<div class='muted'>Загрузка…</div>";
-    await fetchPrivateChat();
-  };
-
   const closePrivatePeerView = () => {
     privatePeerActive = "";
+    pendingIntroPeerId = "";
     lastPrivateChatId = 0;
+    if (privateIntroOverlay) privateIntroOverlay.classList.add("hidden");
     if (privateChatPeer) privateChatPeer.value = "";
     if (privateChatWrap) privateChatWrap.classList.add("hidden");
     if (privateThreadsEl) privateThreadsEl.classList.remove("hidden");
     void loadPrivateThreads();
+  };
+
+  const patchPrivateReceiptPrefs = async (peer, val) => {
+    try {
+      const r = await fetch("/api/chat/private/thread/prefs", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ peer_id: peer, send_read_receipts: Boolean(val) }),
+      });
+      const body = await r.json();
+      if (!r.ok || !body || !body.ok) {
+        if (statusEl) statusEl.textContent = `ЛС: ${(body && body.error) || "не удалось сохранить"}`;
+        return;
+      }
+      void fetchPrivateChat();
+      void refreshPrivateBadge();
+    } catch (_e) {
+      if (statusEl) statusEl.textContent = "ЛС: сеть";
+    }
   };
   const planetModalOverlay = document.getElementById("planet-modal-overlay");
   const planetModalBody = document.getElementById("planet-modal-body");
@@ -715,6 +1030,8 @@
   const techModalBody = document.getElementById("tech-modal-body");
   const techModalOpenBtn = document.getElementById("tech-modal-open");
   const techModalCloseBtn = document.getElementById("tech-modal-close");
+  /** Активный «маршрут» из правой колонки: фильтрует центр только по недостающим зависимостям. */
+  let techModalPathGuide = null; // null | { targetId: string, prereqIds: string[] }
   const economyModalOverlay = document.getElementById("economy-modal-overlay");
   const economyModalBody = document.getElementById("economy-modal-body");
   const economyModalOpenBtn = document.getElementById("economy-modal-open");
@@ -898,12 +1215,6 @@
     return arr.length ? arr[0] : null;
   };
 
-  const escHtml = (s) =>
-    String(s ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/"/g, "&quot;");
-
   /** Общий кэш `/api/balance` (переиспользуется исследованиями, и составом флота). */
   const fetchBalanceCached = async () => {
     if (!window.__guardstarBalanceCache)
@@ -990,6 +1301,119 @@
     return hit && hit.name ? String(hit.name) : k;
   };
 
+  /** Для сообщений статуса: имя постройки по балансу, без технического ключа если есть русское название. */
+  const buildingStatusCaptionRu = (logicalType, fallback = "постройка") => {
+    const raw = logicalType != null && String(logicalType).trim() ? String(logicalType).trim() : "";
+    return raw ? buildingLabelRu(raw) : fallback;
+  };
+
+  /** Подписи техов из `/api/balance` для ошибок `tech_required`. */
+  const techIdsToRuCsv = (ids) => {
+    const arr = Array.isArray(ids) ? ids.filter((x) => x != null && String(x).trim()) : [];
+    if (!arr.length) return "";
+    const bb = window.__guardstarBalanceCache && window.__guardstarBalanceCache.body;
+    const list = bb && bb.ok && Array.isArray(bb.tech) ? bb.tech : [];
+    const byId = new Map(list.filter((t) => t && t.id).map((t) => [String(t.id), t]));
+    return arr
+      .map((id) => {
+        const t = byId.get(String(id));
+        return t && t.name ? String(t.name) : String(id);
+      })
+      .join(", ");
+  };
+
+  const resolveBuildingCanonId = (logicalType) => {
+    const k = String(logicalType || "").trim().toLowerCase();
+    if (!k) return "";
+    const bb = window.__guardstarBalanceCache && window.__guardstarBalanceCache.body;
+    if (!bb || !bb.ok) return k;
+    const ba = bb.aliases && bb.aliases.building_aliases;
+    if (ba && typeof ba === "object" && Object.prototype.hasOwnProperty.call(ba, k)) return String(ba[k]);
+    return k;
+  };
+
+  const resolveBuildingDef = (logicalType) => {
+    const bid = resolveBuildingCanonId(logicalType);
+    const bb = window.__guardstarBalanceCache && window.__guardstarBalanceCache.body;
+    if (!bb || !bb.ok || !bid) return null;
+    const buildings = Array.isArray(bb.buildings) ? bb.buildings : [];
+    return buildings.find((b) => b && String(b.id) === String(bid)) || null;
+  };
+
+  /** Римский суффикс тира постройки (I, II…) для строки модалки. */
+  const buildingTierRoman = (tier) => {
+    const n = Number(tier) || 0;
+    if (n < 1) return "";
+    const map = ["", "I", "II", "III", "IV", "V", "VI", "VII", "VIII"];
+    return n < map.length ? map[n] : `${n}`;
+  };
+
+  /** Категория для группировки «еда / вода / прочее» по эффектам производства из баланса. */
+  const buildingSurfaceProduceCat = (def) => {
+    if (!def || typeof def !== "object") return "other";
+    const eff = def.effects && typeof def.effects === "object" ? def.effects : null;
+    if (!eff) return "other";
+    const prod = eff.production_per_tick_add || eff.production_per_sol_add || null;
+    if (!prod || typeof prod !== "object") return "other";
+    const food = Number(prod.food) || 0;
+    const water = Number(prod.water) || 0;
+    if (food > 0 && water <= 0) return "food";
+    if (water > 0 && food <= 0) return "water";
+    return "other";
+  };
+
+  const buildingSurfaceGroupTitle = (def) => {
+    if (!def || typeof def !== "object") return "Постройка";
+    const base = typeof def.name === "string" && def.name.trim() ? def.name.trim() : "Постройка";
+    const tr = Number(def.tier ?? 0) || 0;
+    const r = buildingTierRoman(tr);
+    return tr >= 1 && r ? `${base} ${r}` : base;
+  };
+
+  /** Есть ли в `/api/balance` цепочка upgrade→to с существующим зданием-целью (как на сервере). */
+  const buildingHasBalanceUpgrade = (logicalType) => {
+    const def = resolveBuildingDef(logicalType);
+    if (!def || typeof def !== "object") return false;
+    const up = def.upgrade;
+    if (!up || typeof up !== "object") return false;
+    const to = String(up.to || "").trim().toLowerCase();
+    if (!to) return false;
+    const targetCanon = resolveBuildingCanonId(to);
+    const bb = window.__guardstarBalanceCache && window.__guardstarBalanceCache.body;
+    if (!bb || !bb.ok || !targetCanon) return false;
+    const buildings = Array.isArray(bb.buildings) ? bb.buildings : [];
+    return buildings.some((bd) => bd && String(bd.id).toLowerCase() === String(targetCanon).toLowerCase());
+  };
+
+  const upgradeBuildingButtonHtml = (bid, logicalType, { disabledReason } = {}) => {
+    if (!bid) return "";
+    const ok = buildingHasBalanceUpgrade(logicalType);
+    if (!ok || disabledReason) {
+      const t = disabledReason || "В балансе нет следующего уровня для этой постройки.";
+      return `<button type="button" class="btn-icon-action btn-upgrade-build" disabled title="${escAttr(t)}" aria-label="Улучшить (недоступно)">🔧</button>`;
+    }
+    return `<button type="button" class="btn-icon-action btn-upgrade-build" data-bupgrade="${escHtml(bid)}" title="Улучшить постройку" aria-label="Улучшить постройку">🔧</button>`;
+  };
+
+  /** Одна строка действий по группе одинаковых построек на планете: ♻ одна · 🔧 одна · 🔧 все (∞ если ≥2). */
+  const planetSurfaceGroupActionsHtml = (logicalType, ids) => {
+    const list = Array.isArray(ids) ? ids.filter(Boolean) : [];
+    const n = list.length;
+    if (!n) return "";
+    const hasUp = buildingHasBalanceUpgrade(logicalType);
+    const csvEsc = escAttr(list.join(","));
+    const dismantleBtn = `<button type="button" class="btn-icon-action btn-demolish-build" data-demolish-surface-one title="Снести одну постройку из этой строки (${n}&nbsp;шт. по счёту, ~50% возврат на дом)" aria-label="Снести одну постройку из группы"><span class="ico-recycle" aria-hidden="true">♻</span></button>`;
+    const nmGroup = escAttr(buildingStatusCaptionRu(logicalType, "постройка"));
+    const upOneBtn = hasUp
+      ? `<button type="button" class="btn-icon-action btn-upgrade-build" data-bupgrade-surface-one title="Улучшить одну (${nmGroup}); при нескольких — по одной по очереди" aria-label="Улучшить одну в группе">🔧</button>`
+      : `<button type="button" class="btn-icon-action btn-upgrade-build" disabled title="Для этого объекта не задан переход «следующий уровень» в балансе" aria-label="Улучшение недоступно">🔧</button>`;
+    const upAllBtn =
+      hasUp && n >= 2
+        ? `<button type="button" class="btn-icon-action planet-surf-upgrade-all btn-upgrade-build" data-bupgrade-surface-all title="Заплатить апгрейд за все постройки в строке (${n}&nbsp;шт.) подряд" aria-label="Улучшить все постройки в строке подряд"><span aria-hidden="true">🔧</span><span class="planet-surf-inf" aria-hidden="true">∞</span></button>`
+        : "";
+    return `<div class="planet-build-group-actions" data-surface-group-ids="${csvEsc}">${dismantleBtn}${upOneBtn}${upAllBtn}</div>`;
+  };
+
   const fleetOptionLabel = (f) => {
     if (!f) return "";
     const nm = (f.name && String(f.name).trim()) || "Флот";
@@ -1031,6 +1455,14 @@
     if (role === "scout") return "recon";
     if (role === "combat") return "combat";
     return "tech";
+  };
+
+  /** Краткая «цель / роль» корпуса для раскрывающегося блока в модалке флота. */
+  const fleetUnitRolePurposeRu = (logicalKey) => {
+    const g = fleetUiRoleGroup(logicalKey);
+    if (g === "recon") return "Разведка: скорость и сбор сведений, слабый бой.";
+    if (g === "combat") return "Бой: урон и стойкость в столкновениях.";
+    return "Техника и логистика: строительство, снабжение вспомогательные задачи.";
   };
 
   const unitBuildCostParts = (logicalKey) => {
@@ -1129,7 +1561,8 @@
 
   const unitLabelCombat = (k) => fleetUnitLabel(k);
 
-  const formatFleetCombatPayloadRu = (p) => {
+  /** Текст для сворачиваемого блока «Подробный расчёт» (формулы, шаги, состав). */
+  const formatFleetCombatDetailsRu = (p) => {
     if (!p || typeof p !== "object") return "";
     const lines = [];
     const bc = p.battle_calculation;
@@ -1137,14 +1570,12 @@
       if (bc.how_score_works) lines.push(String(bc.how_score_works));
       const f = bc.factors || {};
       lines.push(
-        `Базовые очки (до броска): атакующий ${f.attacker_base ?? "—"}, защитник ${f.defender_base ?? "—"}`
+        `Базовые очки (до броска): атакующий ${f.attacker_base ?? "—"}, защитник ${f.defender_base ?? "—"}`,
       );
       const sup = f.supply_zone_bonus || {};
       const zatk = sup.attacker != null ? sup.attacker : f.attacker_supply_zone ? 1.05 : 1;
       const zdef = sup.defender != null ? sup.defender : f.defender_home_zone ? 1.08 : 1;
-      lines.push(
-        `Множитель территории: атакующий ×${zatk}, защитник ×${zdef} (снабжение +5% / дом +8%)`
-      );
+      lines.push(`Множитель территории: атакующий ×${zatk}, защитник ×${zdef} (снабжение +5% / дом +8%)`);
       const ar = Array.isArray(f.attacker_research) ? f.attacker_research : [];
       const dr = Array.isArray(f.defender_research) ? f.defender_research : [];
       if (ar.length) {
@@ -1158,15 +1589,15 @@
         lines.push("Исследования защитника: нет влияющих на бой.");
       }
       lines.push(
-        `После территории: атакующий ≈ ${f.attacker_effective_before_roll ?? f.attacker_effective ?? "—"}, защитник ≈ ${f.defender_effective_before_roll ?? f.defender_effective ?? "—"}`
+        `После территории: атакующий ≈ ${f.attacker_effective_before_roll ?? f.attacker_effective ?? "—"}, защитник ≈ ${f.defender_effective_before_roll ?? f.defender_effective ?? "—"}`,
       );
       const rb = bc.rolls || {};
       if (Object.keys(rb).length) {
         lines.push(
-          `Случайный множитель (0.94…1.08): атакующий ×${rb.random_factor_attacker ?? "—"}, защитник ×${rb.random_factor_defender ?? "—"}`
+          `Случайный множитель (0.94…1.08): атакующий ×${rb.random_factor_attacker ?? "—"}, защитник ×${rb.random_factor_defender ?? "—"}`,
         );
         lines.push(
-          `Очки после броска: ${rb.rolled_score_attacker ?? "—"} vs ${rb.rolled_score_defender ?? "—"} (${rb.rule || ""})`
+          `Очки после броска: ${rb.rolled_score_attacker ?? "—"} vs ${rb.rolled_score_defender ?? "—"} (${rb.rule || ""})`,
         );
       }
       const comp = bc.composition_start || {};
@@ -1175,41 +1606,175 @@
         lines.push(`Состав защитника до боя: ${formatComposition(comp.defender) || "—"}`);
       }
     }
-    const cs = p.consequences;
-    if (cs && typeof cs === "object") {
-      lines.push("Последствия:");
-      if (cs.your_fleet_survivors) {
-        const y = cs.your_fleet_survivors;
-        lines.push(
-          `  Потери победителя (вы): −${y.lost_total ?? 0} кораблей` +
-            (y.lost_by_type && Object.keys(y.lost_by_type).length
-              ? ` (${Object.entries(y.lost_by_type)
-                  .map(([k, v]) => `${unitLabelCombat(k)} −${v}`)
-                  .join(", ")})`
-              : "")
-        );
+    const cs = p.consequences && typeof p.consequences === "object" ? p.consequences : null;
+    if (cs) {
+      const yFrac = cs.your_ship_loss_fraction_applied;
+      const dFrac = cs.ship_loss_fraction_applied;
+      const defFrac = cs.defender_ship_loss_fraction_applied;
+      const extra = [];
+      if (typeof yFrac === "number")
+        extra.push(`Доля потерь победителя (расчёт): ${(yFrac * 100).toFixed(1)}%.`);
+      if (typeof defFrac === "number")
+        extra.push(`Доля потерь защитника (расчёт): ${(defFrac * 100).toFixed(1)}%.`);
+      if (typeof dFrac === "number")
+        extra.push(`Доля потерь при обороне (расчёт): ${(dFrac * 100).toFixed(1)}%.`);
+      if (extra.length) {
+        lines.push("");
+        lines.push("Доли потерь по формулам (справочно):");
+        for (const x of extra) lines.push(x);
       }
-      if (cs.your_fleet_after_battle) {
-        const y = cs.your_fleet_after_battle;
-        lines.push(`  Потери защитника после боя: −${y.lost_total ?? 0} ед.`);
-      }
-      if (cs.enemy_survivors_after) {
-        const y = cs.enemy_survivors_after;
-        lines.push(`  Противник после боя (живые): потери −${y.lost_total ?? "?"}`);
-      }
-      if (cs.winner_takes_square)
-        lines.push(
-          `  Клетка захвачена: (${cs.winner_takes_square.x},${cs.winner_takes_square.y},${cs.winner_takes_square.z})`
-        );
-      if (cs.your_fleet_lost_id) lines.push("  Ваш флот уничтожен.");
-      if (cs.destroyed_enemy_fleet_id || cs.enemy_fleet_removed) lines.push("  Противничий флот уничтожен.");
-      if (typeof cs.your_ship_loss_fraction_applied === "number")
-        lines.push(`  Доля потерь ваших кораблей (победа): ${(cs.your_ship_loss_fraction_applied * 100).toFixed(1)}%`);
-      if (typeof cs.ship_loss_fraction_applied === "number")
-        lines.push(`  Доля потерь при обороне: ${(cs.ship_loss_fraction_applied * 100).toFixed(1)}%`);
     }
     if (!lines.length) return "";
     return lines.map((ln) => escHtml(ln)).join("\n");
+  };
+
+  /** Сумма чисел в объектe состава (before/after). */
+  const sumFleetCompositionTotals = (m) =>
+    Object.values(m && typeof m === "object" ? m : {}).reduce((s, x) => s + Number(x || 0), 0);
+
+  /**
+   * Потери → исход столкновения → территория (клетка последней).
+   * Процент в строке потерь считается от фактических before/after, не от loss_frac модели боя.
+   */
+  const formatFleetCombatConsequencesRu = (cs) => {
+    const lossLines = [];
+    const lossDetailLines = [];
+    const outcomeTailLines = [];
+
+    if (cs && typeof cs === "object" && cs.your_fleet_survivors) {
+      const y = cs.your_fleet_survivors;
+      const lostN = Number(y.lost_total ?? 0);
+      if (lostN > 0) {
+        const tb = sumFleetCompositionTotals(y.before);
+        const pctFromRoster = tb > 0 ? Math.round((lostN / tb) * 100) : null;
+        let main = `Потери: −${lostN} кораблей`;
+        if (pctFromRoster != null) main += ` (${pctFromRoster}%)`;
+        lossLines.push(main);
+        if (y.lost_by_type && Object.keys(y.lost_by_type).length) {
+          lossDetailLines.push(
+            Object.entries(y.lost_by_type)
+              .map(([k, v]) => `${unitLabelCombat(k)} −${v}`)
+              .join(", "),
+          );
+        }
+      }
+    }
+    if (cs && typeof cs === "object" && cs.your_fleet_after_battle) {
+      const y = cs.your_fleet_after_battle;
+      const lostNw = Number(y.lost_total ?? 0);
+      const tb = sumFleetCompositionTotals(y.before);
+      const pctFromRoster =
+        tb > 0 && lostNw > 0 ? Math.round((lostNw / tb) * 100) : null;
+      let ln = `Потери после боя: −${lostNw} ед.`;
+      if (pctFromRoster != null) ln += ` (${pctFromRoster}%)`;
+      if (!lossLines.length) lossLines.push(ln);
+    }
+
+    if (cs && typeof cs === "object") {
+      if (cs.destroyed_enemy_fleet_id || cs.enemy_fleet_removed)
+        outcomeTailLines.push("Флот противника уничтожен.");
+      if (cs.your_fleet_lost_id) outcomeTailLines.push("Ваш флот уничтожен.");
+      if (cs.enemy_survivors_after) {
+        const y = cs.enemy_survivors_after;
+        outcomeTailLines.push(`Противник уцелел: списано −${y.lost_total ?? "?"} ед.`);
+      }
+      if (cs.winner_takes_square) {
+        const w = cs.winner_takes_square;
+        outcomeTailLines.push(`Клетка захвачена: (${w.x}, ${w.y}, ${w.z})`);
+      }
+    }
+    return { lossLines, lossDetailLines, outcomeTailLines };
+  };
+
+  /** Первая строка карточки боя в ленте (без заголовка «Сол», он снаружи). */
+  const formatFleetCombatHeadHtml = (ps) => {
+    if (!ps || typeof ps !== "object") return "";
+    const title = String(ps.title || "").trim();
+    const compact =
+      (ps.scores_compact != null && String(ps.scores_compact).trim()) ||
+      String(ps.scores_rolled || "")
+        .replace(/\s+vs\s+/gi, ":")
+        .replace(/\s+/g, "");
+    const scoreFrag =
+      compact && compact.length
+        ? ` <span class="event-fleet-combat-score">(${escHtml(compact)})</span>`
+        : "";
+    const match = String(ps.matchup_line || "").trim();
+    const matchupFrag = match
+      ? `<div class="event-fleet-combat-matchup muted">${escHtml(match)}</div>`
+      : "";
+    return `<div class="event-fleet-combat-head"><strong>${escHtml(title)}</strong>${scoreFrag}${matchupFrag}</div>`;
+  };
+
+  /** Системное событие боя: сверху смысл и итог, формулы — только внутри «Подробный расчёт». */
+  const formatFleetCombatBlockHtml = (p, eventNumericId) => {
+    if (!p || typeof p !== "object") return "";
+    const ps = p.player_story && typeof p.player_story === "object" ? p.player_story : null;
+    const bc = p.battle_calculation && typeof p.battle_calculation === "object" ? p.battle_calculation : null;
+    const cs = p.consequences && typeof p.consequences === "object" ? p.consequences : null;
+    const { lossLines, lossDetailLines, outcomeTailLines } = formatFleetCombatConsequencesRu(cs);
+    const detailsInner = formatFleetCombatDetailsRu(p);
+    const parts = [];
+
+    if (ps) {
+      parts.push('<div class="event-combat-summary">');
+      const tk = String(ps.battle_type_label || "").trim();
+      if (tk) parts.push(`<div class="event-combat-kind muted">${escHtml(tk)}</div>`);
+      if (ps.effective_before_roll)
+        parts.push(`<div class="event-combat-eff muted">До случайности (ваши vs врага): ${escHtml(String(ps.effective_before_roll))}</div>`);
+      for (const ln of lossLines) parts.push(`<div class="event-combat-losses">${escHtml(ln)}</div>`);
+      for (const ln of lossDetailLines)
+        parts.push(`<div class="event-combat-loss-detail muted">${escHtml(ln)}</div>`);
+      for (const ln of outcomeTailLines) parts.push(`<div class="event-combat-tail">${escHtml(ln)}</div>`);
+      const bullets = Array.isArray(ps.cause_bullets) ? ps.cause_bullets : [];
+      if (bullets.length) {
+        parts.push('<div class="event-combat-causes"><span class="muted">Причина:</span><ul>');
+        for (const b of bullets) parts.push(`<li>${escHtml(String(b))}</li>`);
+        parts.push("</ul></div>");
+      }
+      parts.push("</div>");
+    } else {
+      for (const ln of lossLines) parts.push(`<div class="event-combat-fallback">${escHtml(ln)}</div>`);
+      for (const ln of lossDetailLines)
+        parts.push(`<div class="event-combat-fallback muted">${escHtml(ln)}</div>`);
+      for (const ln of outcomeTailLines) parts.push(`<div class="event-combat-fallback muted">${escHtml(ln)}</div>`);
+    }
+
+    if (detailsInner || bc) {
+      const eid =
+        eventNumericId != null && String(eventNumericId).trim() !== ""
+          ? ` data-event-id="${escHtml(String(eventNumericId))}"`
+          : "";
+      parts.push(`<details class="event-combat-details"${eid}>`);
+      parts.push(`<summary class="event-combat-details-sum">${escHtml("Подробности боя")}</summary>`);
+      if (detailsInner)
+        parts.push(`<div class="event-combat-details-body muted">${detailsInner}</div>`);
+      else parts.push('<div class="event-combat-details-body muted">Нет сохранённых шагов расчёта.</div>');
+      parts.push("</details>");
+    }
+    return parts.join("");
+  };
+
+  const extractFleetNameFromMessage = (msg) => {
+    const m = String(msg || "").match(/«([^»]+)»/);
+    return m ? m[1].trim() : "";
+  };
+
+  /** Системное напоминание о втором подтверждении боя — выше заметность, чем рядовой лог. */
+  const formatCombatPromptArrivalRowHtml = (e) => {
+    const pl = e && e.payload && typeof e.payload === "object" ? e.payload : {};
+    const tg = pl.target && typeof pl.target === "object" ? pl.target : {};
+    const nameRaw = typeof pl.enemy_fleet_name === "string" ? pl.enemy_fleet_name.trim() : "";
+    const name = nameRaw || extractFleetNameFromMessage(e.message);
+    const hasXYZ = tg.x != null && tg.y != null;
+    const cord = hasXYZ ? ` (${tg.x}, ${tg.y}, ${tg.z != null ? tg.z : 0})` : "";
+    const foe = name ? `«${name}»` : "противник";
+    const line1 = `Бой: враг ${foe}${cord}`;
+    return `<div class="event event-combat-prompt" data-event-variant="prompt">
+          <span class="muted">Сол ${escHtml(e.tick)}</span> —
+          <span class="event-combat-prompt-title">⚠ ${escHtml(line1)}</span>
+          <div class="event-combat-prompt-sub muted">${escHtml("Подтвердите бой в течение 30 с")}</div>
+        </div>`;
   };
 
   /** Системные события мира — только `#events` (вкладка «Система»). Общий чат — отдельный поток `/api/chat/global`, сюда не подмешивается. */
@@ -1230,16 +1795,71 @@
     eventsEl.innerHTML = [...list]
       .reverse()
       .map((e) => {
+        const ps =
+          e.type === "fleet_combat" &&
+          e.payload &&
+          e.payload.player_story &&
+          typeof e.payload.player_story === "object"
+            ? e.payload.player_story
+            : null;
+
+        if (e.type === "combat_prompt_arrival") return formatCombatPromptArrivalRowHtml(e);
+
+        const warfarePriorityTypes = new Set([
+          "field_building_capture_tick",
+          "building_captured",
+          "building_lost_capture",
+          "fleet_bombards_outpost",
+          "outpost_under_bombardment",
+          "outpost_destroyed",
+          "bandit_strike_spawned",
+          "bandit_strike_chasing",
+          "bandit_patrol_spawned",
+        ]);
+        if (warfarePriorityTypes.has(String(e.type))) {
+          return `<div class="event event-warfare-priority" data-event-variant="warfare">
+            <span class="event-warfare-priority-badge" title="Важное">!</span>
+            <span class="muted">Сол ${escHtml(e.tick)}</span> —
+            <span class="event-warfare-priority-msg">${escHtml(e.message)}</span>
+          </div>`;
+        }
+
+        if (e.type === "fleet_combat" && e.payload && ps) {
+          const head = formatFleetCombatHeadHtml(ps);
+          const body = `<div class="event-combat-wrap">${formatFleetCombatBlockHtml(e.payload, e.id)}</div>`;
+          return `<div class="event event-fleet-combat" data-event-variant="combat-result">
+              <span class="muted">Сол ${escHtml(e.tick)}</span> —
+              ${head}
+              ${body}
+            </div>`;
+        }
+
         const detail =
           e.type === "fleet_combat" && e.payload
-            ? `<div class="event-combat-detail muted" style="margin-top:6px;font-size:88%;white-space:pre-wrap;line-height:1.35;">${formatFleetCombatPayloadRu(e.payload)}</div>`
+            ? `<div class="event-combat-wrap">${formatFleetCombatBlockHtml(e.payload, e.id)}</div>`
             : "";
         return `<div class="event"><span class="muted">Сол ${escHtml(e.tick)}</span> — ${escHtml(e.message)}${detail}</div>`;
       })
       .join("");
+    for (const det of eventsEl.querySelectorAll(
+      "details.event-combat-details[data-event-id]",
+    )) {
+      const sid = det.getAttribute("data-event-id");
+      if (sid != null && openFleetCombatDetailIds.has(sid)) det.open = true;
+    }
   };
 
   const cellHasPlanet = (c) => Boolean(c && Array.isArray(c.objects) && c.objects.some((o) => o && o.type === "planet"));
+
+  const cellHasOwnOutpost = (c) =>
+    Boolean(
+      playerId &&
+        c &&
+        Array.isArray(c.objects) &&
+        c.objects.some(
+          (o) => o && o.type === "outpost" && String(o.owner) === String(playerId),
+        ),
+    );
 
   /** Клетка не «пустой космос без метки» — по краю окна сначала выбираем, не панорамируя. */
   const mapCellHasMeaningfulContent = (c) => {
@@ -1264,7 +1884,7 @@
       if (fleetSelectEl) fleetSelectEl.value = activeFleetId;
     }
     updateSelectedPanel();
-    if (cellHasPlanet(c)) void openPlanetModal(c);
+    if (cellHasPlanet(c) || cellHasOwnOutpost(c)) void openPlanetModal(c);
     else closePlanetModal();
     renderMap();
   };
@@ -1298,6 +1918,53 @@
         const id = btn.getAttribute("data-bupgrade");
         if (!id) return;
         await upgradeBuilding(id);
+      });
+    }
+    const surfaceGroupIdsFromBtn = (btn) => {
+      const wrap = btn && btn.closest("[data-surface-group-ids]");
+      if (!wrap) return [];
+      const raw = wrap.getAttribute("data-surface-group-ids") || "";
+      return raw.split(",").map((s) => String(s).trim()).filter(Boolean);
+    };
+    for (const btn of root.querySelectorAll("button[data-demolish-surface-one]")) {
+      btn.addEventListener("click", async () => {
+        const ids = surfaceGroupIdsFromBtn(btn);
+        const first = ids[0];
+        if (!first || !confirm("Снести одну постройку этого типа на клетке? Вернётся ~50% стоимости на дом.")) return;
+        await dismantleBuilding(first);
+      });
+    }
+    for (const btn of root.querySelectorAll("button[data-bupgrade-surface-one]")) {
+      btn.addEventListener("click", async () => {
+        const ids = surfaceGroupIdsFromBtn(btn);
+        const first = ids[0];
+        if (!first) return;
+        await upgradeBuilding(first);
+      });
+    }
+    for (const btn of root.querySelectorAll("button[data-bupgrade-surface-all]")) {
+      btn.addEventListener("click", async () => {
+        const ids = surfaceGroupIdsFromBtn(btn);
+        if (ids.length < 2) return;
+        if (
+          !confirm(
+            `Улучшить по очереди все ${ids.length} построек этой группы? У каждого шага списание ресурсов с домашней планеты при остановке или ошибке.`
+          )
+        )
+          return;
+        let okN = 0;
+        for (let i = 0; i < ids.length; i++) {
+          const id = ids[i];
+          setStatus(`Улучшение группы: ${i + 1} / ${ids.length}…`);
+          const ok = await upgradeBuilding(id, { skipUiRefresh: true });
+          if (!ok) {
+            await refreshPlanetAfterBuildingAction();
+            return;
+          }
+          okN += 1;
+        }
+        setStatus(`Готово: улучшено ${okN}`, "ok");
+        await refreshPlanetAfterBuildingAction();
       });
     }
   };
@@ -1334,6 +2001,13 @@
         await upgradeOutpostModule(moduleId);
       });
     }
+    for (const btn of root.querySelectorAll("button[data-module-dismantle]")) {
+      btn.addEventListener("click", async () => {
+        const moduleId = btn.getAttribute("data-module-dismantle");
+        if (!moduleId) return;
+        await dismantleOutpostModule(moduleId);
+      });
+    }
   };
 
   const buildButtonsHtml = () => `
@@ -1343,7 +2017,7 @@
       <button type="button" class="build-card" data-b="fuel_depot"><span class="ic">⛽</span><span>Топливник</span></button>
       <button type="button" class="build-card" data-b="crystal_farm"><span class="ic">💎</span><span>Кристаллы</span></button>
       <button type="button" class="build-card" data-b="habitat"><span class="ic">🏠</span><span>Жильё</span></button>
-      <button type="button" class="build-card" data-b="basic_farm"><span class="ic">🌾</span><span>Пайок</span></button>
+      <button type="button" class="build-card" data-b="basic_farm"><span class="ic">🌾</span><span>Ферма</span></button>
       <button type="button" class="build-card" data-b="basic_water"><span class="ic">💦</span><span>Опреснитель</span></button>
       <button type="button" class="build-card" data-b="research_lab"><span class="ic">🔬</span><span>Лаборатория</span></button>
       <button type="button" class="build-card" data-b="drydock_mini"><span class="ic">🛠</span><span>Мини-верфь</span></button>
@@ -1351,7 +2025,7 @@
       <button type="button" class="build-card" data-b="cargo_yard"><span class="ic">📦</span><span>Грузовая</span></button>
       <button type="button" class="build-card" data-b="sensor_mast"><span class="ic">📡</span><span>Сенсоры</span></button>
       <button type="button" class="build-card" data-b="hydro_farm"><span class="ic">🍲</span><span>Гидропоника</span></button>
-      <button type="button" class="build-card" data-b="atmospheric_reclaim"><span class="ic">💧</span><span>Вода</span></button>
+      <button type="button" class="build-card" data-b="atmospheric_reclaim"><span class="ic">💧</span><span>Конденсатор</span></button>
     </div>
   `;
 
@@ -1532,6 +2206,71 @@
     water: "вода",
   };
 
+  const formatBalanceCostRuPlain = (cost) => {
+    if (!cost || typeof cost !== "object") return "";
+    const parts = [];
+    for (const k of ["metal", "crystal", "energy", "fuel", "food", "water"]) {
+      const v = Number(cost[k]);
+      if (Number.isFinite(v) && v > 0) {
+        parts.push(`${OUTPOST_COST_RES_RU[k] || k} ${v}`);
+      }
+    }
+    return parts.join(", ");
+  };
+
+  const formatUpkeepDeltaPlain = (d) => {
+    if (!d || typeof d !== "object") return "";
+    const parts = [];
+    for (const k of ["metal", "crystal", "energy", "fuel"]) {
+      const v = Number(d[k]);
+      if (!Number.isFinite(v) || v === 0) continue;
+      const lab = OUTPOST_COST_RES_RU[k] || k;
+      parts.push(`${lab} ${v > 0 ? "+" : ""}${v}`);
+    }
+    return parts.join(", ");
+  };
+
+  const formatOutpostEffectsSummaryPlain = (eff) => {
+    if (!eff || typeof eff !== "object") return "";
+    const parts = [];
+    const vis = eff.vision;
+    if (vis && typeof vis === "object" && Number(vis.radius_add)) {
+      parts.push(`обзор +${Number(vis.radius_add)}`);
+    }
+    const cm = eff.combat;
+    if (cm && typeof cm === "object") {
+      if (Number(cm.hp_add)) parts.push(`HP +${Number(cm.hp_add)}`);
+      if (Number(cm.attack_add)) parts.push(`атака +${Number(cm.attack_add)}`);
+      if (Number(cm.defense_add)) parts.push(`защита +${Number(cm.defense_add)}`);
+    }
+    const upk = eff.upkeep;
+    if (upk && typeof upk === "object") {
+      for (const [key, delta] of Object.entries(upk)) {
+        if (key.endsWith("_add") && Number(delta)) {
+          const nk = key.replace(/_add$/, "");
+          parts.push(`${OUTPOST_COST_RES_RU[nk] || nk} ${Number(delta) > 0 ? "+" : ""}${delta}/сол`);
+        }
+      }
+    }
+    const rf = eff.refuel;
+    if (rf && typeof rf === "object" && rf.travel_fuel_discount_pct != null) {
+      parts.push(`скидка топлива полёта ${Number(rf.travel_fuel_discount_pct)}%`);
+    }
+    const sup = eff.supply;
+    if (sup && typeof sup === "object" && sup.supply_per_supplier_add != null) {
+      parts.push(`снабжение +${sup.supply_per_supplier_add} на снабженца`);
+    }
+    return parts.join(" · ");
+  };
+
+  const rootInstallableOutpostModules = (list) => {
+    if (!Array.isArray(list)) return [];
+    const toTargets = new Set(
+      list.filter((m) => m && m.upgrade && m.upgrade.to).map((m) => String(m.upgrade.to)),
+    );
+    return list.filter((m) => m && m.id && !toTargets.has(String(m.id)));
+  };
+
   const formatBalanceCostRuHtml = (cost) => {
     if (!cost || typeof cost !== "object") return "";
     const parts = [];
@@ -1634,31 +2373,37 @@
     if (selObjectsEl) {
       if (objs.length === 0) selObjectsEl.textContent = "нет";
       else {
+        const uuidRe = /^[\da-f-]{36}$/i;
+        const ownerParenLink = (o) => {
+          const oid = o && o.owner ? String(o.owner).trim() : "";
+          const oname = o && o.owner_name ? String(o.owner_name) : "";
+          if (oid && oname && uuidRe.test(oid)) {
+            return ` (<a href="/operator/${escAttr(oid)}" class="chat-player-link sector-owner-link">${escHtml(oname)}</a>)`;
+          }
+          return oname ? ` (${escHtml(oname)})` : "";
+        };
         const buildings = objs.filter((o) => o && o.type === "building");
         const others = objs.filter((o) => !(o && o.type === "building"));
         const fmt = (o) => {
           if (o.type === "planet") {
-            const owner = o.owner_name ? ` (${o.owner_name})` : "";
-            return `${o.name || "Планета"}${owner}`;
+            return `${escHtml(o.name || "Планета")}${ownerParenLink(o)}`;
           }
           if (o.type === "fleet") {
-            const owner = o.owner_name ? ` (${o.owner_name})` : "";
             const c = o.composition ? formatComposition(o.composition) : "";
-            const label = c ? c : `${o.unit_type}×${o.qty}`;
+            const label = c ? c : `${escHtml(o.unit_type)}×${escHtml(String(o.qty ?? ""))}`;
             const e = Number.isFinite(Number(o.energy)) && Number.isFinite(Number(o.max_energy))
-              ? ` • E ${Number(o.energy)}/${Number(o.max_energy)}`
+              ? ` • E ${escHtml(String(Number(o.energy)))}/${escHtml(String(Number(o.max_energy)))}`
               : "";
-            return `${label}${e}${owner}`;
+            return `${label}${e}${ownerParenLink(o)}`;
           }
           if (o.type === "outpost") {
-            const owner = o.owner_name ? ` (${o.owner_name})` : "";
-            return `${o.name || "Форпост"}${owner}`;
+            return `${escHtml(o.name || "Форпост")}${ownerParenLink(o)}`;
           }
           if (o.type === "building") {
             const bt = o.building_type ? String(o.building_type) : "постройка";
-            return buildingLabelRu(bt);
+            return escHtml(buildingLabelRu(bt));
           }
-          return o.type || "объект";
+          return escHtml(o.type || "объект");
         };
         const parts = [];
         if (others.length) parts.push(others.map(fmt).join(", "));
@@ -1673,18 +2418,18 @@
           const top = Object.entries(counts)
             .sort((a, b) => b[1] - a[1])
             .slice(0, 3)
-            .map(([k, v]) => `${k}×${v}`)
+            .map(([k, v]) => `${escHtml(k)}×${escHtml(String(v))}`)
             .join(", ");
-          parts.push(`постройки×${buildings.length}${top ? ` (${top}${Object.keys(counts).length > 3 ? ", …" : ""})` : ""}`);
+          parts.push(`постройки×${escHtml(String(buildings.length))}${top ? ` (${top}${Object.keys(counts).length > 3 ? ", …" : ""})` : ""}`);
         }
-        selObjectsEl.textContent = parts.join(" • ");
+        selObjectsEl.innerHTML = parts.join(" • ");
       }
     }
 
     if (selInfluenceEl) {
       const vis = selectedCell.flags && selectedCell.flags.is_visible;
       if (!vis) selInfluenceEl.textContent = "— (не в обзоре)";
-      else selInfluenceEl.textContent = formatInfluenceHud(selectedCell.influence);
+      else selInfluenceEl.innerHTML = formatInfluenceHud(selectedCell.influence, true);
     }
     void refreshSupplyHud(selectedCell);
 
@@ -1802,13 +2547,14 @@
         } else if (body.error === "outpost_too_close") {
           setStatus(`Форпост слишком близко к вашему: нужно расстояние ≥ ${body.need_distance ?? "?"} (сейчас ${body.nearest ?? "?"})`, "err");
         } else if (body.error === "planet_slots_full") {
-          setStatus(`На планете больше нет слотов под постройки (${body.built ?? "?"}/${body.total ?? "?"})`, "err");
+          const u = body.built_surface ?? body.built;
+          setStatus(`На тайле колонии заняты все слоты поверхности (${u ?? "?"}/${body.total ?? "?"}); полевая экспансия на других клетках этого лимита не использует`, "err");
         } else if (body.error === "planet_required") {
           setStatus("Эту постройку можно возводить только в клетке планеты", "err");
         } else if (body.error === "not_enough_fleet_energy") {
           setStatus(`Не хватает энергии флота для действия (нужно ${body.need ?? "?"}, есть ${body.have ?? "?"})`, "err");
         } else if (body.error === "tech_required") {
-          setStatus(`Нужно исследование: ${(body.missing_techs || body.required_techs || []).join(", ")}`, "err");
+          setStatus(`Нужны исследования: ${techIdsToRuCsv(body.missing_techs || body.required_techs || [])}`, "err");
           } else if (body.error === "wrong_foundation_terrain") {
             const exp = Array.isArray(body.expected) ? body.expected.join(", ") : "—";
             setStatus(`Неверное основание: требуется ${exp}, на клетке ${body.terrain || "—"}`, "err");
@@ -1819,7 +2565,7 @@
         }
         return;
       }
-      setStatus(`Построено: ${body.building?.building_type || "ok"}`, "ok");
+      setStatus(`Построено: «${buildingStatusCaptionRu(body.building?.building_type)}»`, "ok");
       const sx = selectedCell ? selectedCell.x : null;
       const sy = selectedCell ? selectedCell.y : null;
       const sz = selectedCell ? selectedCell.z : null;
@@ -1836,11 +2582,7 @@
       }
       await loadWorldState();
       if (selectedCell && planetModalOverlay && !planetModalOverlay.classList.contains("hidden")) {
-        if (cellHasPlanet(selectedCell)) {
-          await fillPlanetModalFromApi(selectedCell);
-        } else {
-          planetModalOverlay.classList.add("hidden");
-        }
+        await fillPlanetModalFromApi(selectedCell);
       }
       updateSelectedPanel();
     } catch (_e) {
@@ -1885,7 +2627,8 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        if (body.error === "tech_required") setStatus(`Нужно исследование: ${(body.missing_techs || []).join(", ")}`, "err");
+        if (body.error === "tech_required")
+          setStatus(`Нужны исследования: ${techIdsToRuCsv(body.missing_techs || [])}`, "err");
         else if (body.error === "not_enough_engineers" || body.error === "engineer_required")
           setStatus(`Нужен инженер в клетке (need=${body.need_engineers ?? 1})`, "err");
         else if (body.error === "outpost_too_close") {
@@ -1920,7 +2663,8 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        if (body.error === "tech_required") setStatus(`Нужно исследование: ${(body.missing_techs || []).join(", ")}`, "err");
+        if (body.error === "tech_required")
+          setStatus(`Нужны исследования: ${techIdsToRuCsv(body.missing_techs || [])}`, "err");
         else setStatus(`Ошибка: ${body.error || "outpost_upgrade_failed"}`, "err");
         return;
       }
@@ -1940,12 +2684,14 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        if (body.error === "tech_required") setStatus(`Нужно исследование: ${(body.missing_techs || []).join(", ")}`, "err");
+        if (body.error === "tech_required")
+          setStatus(`Нужны исследования: ${techIdsToRuCsv(body.missing_techs || [])}`, "err");
         else if (body.error === "not_enough_engineers") setStatus("Не хватает инженеров для модуля", "err");
+        else if (body.error === "module_work_queue_full") setStatus("Уже идёт монтаж/апгрейд модуля в империи — дождитесь завершения", "err");
         else setStatus(`Ошибка: ${body.error || "module_install_failed"}`, "err");
         return;
       }
-      await handleOutpostResult(body, "Модуль установлен");
+      await handleOutpostResult(body, "Монтаж модуля запущен. Инженеры списаны — дождитесь готовности.");
     } catch (_e) {
       setStatus("Ошибка: network_error", "err");
     }
@@ -1961,17 +2707,60 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        if (body.error === "tech_required") setStatus(`Нужно исследование: ${(body.missing_techs || []).join(", ")}`, "err");
+        if (body.error === "tech_required")
+          setStatus(`Нужны исследования: ${techIdsToRuCsv(body.missing_techs || [])}`, "err");
+        else if (body.error === "module_work_queue_full") setStatus("Дождитесь завершения другого монтажа модуля", "err");
+        else if (body.error === "module_busy") setStatus("Этот слот уже в работе или недоступен", "err");
         else setStatus(`Ошибка: ${body.error || "module_upgrade_failed"}`, "err");
         return;
       }
-      await handleOutpostResult(body, "Модуль улучшен");
+      await handleOutpostResult(body, "Улучшение модуля запущено");
     } catch (_e) {
       setStatus("Ошибка: network_error", "err");
     }
   };
 
-  const upgradeBuilding = async (building_id) => {
+  const dismantleOutpostModule = async (moduleId) => {
+    if (
+      !      confirm(
+        "Разобрать модуль? Количество инженеров, соответствующее слоту (1-й / 2-й / 3-й), вернётся на ваш инженерный флот на клетке. Монтаж в процессе снять нельзя.",
+      )
+    )
+      return;
+    setStatus("Разбираем модуль...");
+    try {
+      const r = await fetch("/api/outposts/modules/dismantle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ module_id: moduleId }),
+      });
+      const body = await r.json();
+      if (!r.ok || !body.ok) {
+        if (body.error === "engineer_required") {
+          setStatus("Нужен ваш инженерный флот на клетке, чтобы забрать инженеров", "err");
+        } else {
+          setStatus(`Ошибка: ${body.error || "module_dismantle_failed"}`, "err");
+        }
+        return;
+      }
+      await handleOutpostResult(body, "Модуль разобран");
+    } catch (_e) {
+      setStatus("Ошибка: network_error", "err");
+    }
+  };
+
+  const refreshPlanetAfterBuildingAction = async () => {
+    await refreshWindow();
+    await loadWorldState();
+    if (selectedCell && planetModalOverlay && !planetModalOverlay.classList.contains("hidden")) {
+      await fillPlanetModalFromApi(selectedCell);
+    }
+    updateSelectedPanel();
+  };
+
+  /** @returns {Promise<boolean>} */
+  const upgradeBuilding = async (building_id, opts = {}) => {
+    const skipUiRefresh = Boolean(opts.skipUiRefresh);
     setStatus("Улучшение постройки...");
     try {
       const r = await fetch("/api/buildings/upgrade", {
@@ -1984,27 +2773,28 @@
         if (body.error === "building_upgrade_unavailable") {
           setStatus("Для этой постройки нет улучшения в балансе", "err");
         } else if (body.error === "tech_required") {
-          setStatus(`Нужны исследования: ${(body.missing_techs || []).join(", ")}`, "err");
+          setStatus(`Нужны исследования: ${techIdsToRuCsv(body.missing_techs || [])}`, "err");
         } else if (body.error === "not_enough_resources") {
           setStatus("Не хватает ресурсов на улучшение", "err");
         } else if (body.error === "planet_type_cap") {
           setStatus("Достигнут лимит таких построек на планете", "err");
+        } else if (body.error === "inside_enemy_control_zone") {
+          setStatus("В зоне вражеского контроля улучшение недоступно", "err");
         } else setStatus(`Ошибка: ${body.error || "upgrade_failed"}`, "err");
-        return;
+        return false;
       }
-      setStatus(`Улучшено: ${body.building?.building_type || "ok"}`, "ok");
-      await refreshWindow();
-      await loadWorldState();
-      if (selectedCell && planetModalOverlay && !planetModalOverlay.classList.contains("hidden")) {
-        await fillPlanetModalFromApi(selectedCell);
-      }
-      updateSelectedPanel();
+      setStatus(`Улучшено до «${buildingStatusCaptionRu(body.building?.building_type)}»`, "ok");
+      if (!skipUiRefresh) await refreshPlanetAfterBuildingAction();
+      return true;
     } catch (_e) {
       setStatus("Ошибка: network_error", "err");
+      return false;
     }
   };
 
-  const dismantleBuilding = async (building_id) => {
+  /** @returns {Promise<boolean>} */
+  const dismantleBuilding = async (building_id, opts = {}) => {
+    const skipUiRefresh = Boolean(opts.skipUiRefresh);
     setStatus("Снос постройки...");
     try {
       const r = await fetch("/api/buildings/dismantle", {
@@ -2015,17 +2805,14 @@
       const body = await r.json();
       if (!r.ok || !body.ok) {
         setStatus(`Ошибка: ${body.error || "dismantle_failed"}`, "err");
-        return;
+        return false;
       }
       setStatus("Постройка снесена (50% стоимости возвращено)", "ok");
-      await refreshWindow();
-      await loadWorldState();
-      if (selectedCell && planetModalOverlay && !planetModalOverlay.classList.contains("hidden")) {
-        await fillPlanetModalFromApi(selectedCell);
-      }
-      updateSelectedPanel();
+      if (!skipUiRefresh) await refreshPlanetAfterBuildingAction();
+      return true;
     } catch (_e) {
       setStatus("Ошибка: network_error", "err");
+      return false;
     }
   };
 
@@ -2069,11 +2856,22 @@
       const fp = pr.fuel_per_sol != null ? pr.fuel_per_sol : pr.fuel_per_tick || 0;
       const fdp = pr.food_per_sol != null ? pr.food_per_sol : pr.food_per_tick || 0;
       const wp = pr.water_per_sol != null ? pr.water_per_sol : pr.water_per_tick || 0;
-      const ownName = planetOwn.owner_name ? ` • ${planetOwn.owner_name}` : "";
+      const pOwnId = planetOwn.owner ? String(planetOwn.owner).trim() : "";
+      let ownName = "";
+      if (planetOwn.owner_name && pOwnId && /^[\da-f-]{36}$/i.test(pOwnId)) {
+        ownName = ` • <a href="/operator/${escAttr(pOwnId)}" class="chat-player-link sector-owner-link">${escHtml(String(planetOwn.owner_name))}</a>`;
+      } else if (planetOwn.owner_name) {
+        ownName = ` • ${escHtml(String(planetOwn.owner_name))}`;
+      }
       const cls = d.planet_class ? String(d.planet_class) : "—";
+      const fld = d.build_slots && d.build_slots.field_buildings != null ? Number(d.build_slots.field_buildings) : NaN;
       const slotsLine =
         d.build_slots && typeof d.build_slots === "object"
-          ? `Слоты: <b>${Number(d.build_slots.used || 0)}</b> / <b>${Number(d.build_slots.total || 0)}</b>`
+          ? `Слоты поверхности: <b>${Number(d.build_slots.used || 0)}</b> / <b>${Number(d.build_slots.total || 0)}</b>${
+              Number.isFinite(fld) && fld > 0
+                ? ` <span class="muted">• полевых: <b>${fld}</b></span>`
+                : ""
+            }`
           : "";
       const supN = Number(d.supplier_count) || 0;
       const supBase = Number(d.supply_base) || 5;
@@ -2085,78 +2883,132 @@
       const canBuild = Boolean(flags.zone_build_self) && !Boolean(flags.zone_build_enemy) && Boolean(flags.is_visible);
       const cellBuildings = objs.filter((o) => o && o.type === "building");
       const cellBuilding = cellBuildings[0] || null;
-      let buildHtml = "";
+      let planetSurfaceBuildingsActions = "";
+      if (cell.terrain === "planet" && cellBuildings.length > 0) {
+        const catOrder = { food: 0, water: 1, other: 2 };
+        const catTitles = { food: "Еда", water: "Вода", other: "Прочее" };
+        const grpMap = new Map();
+        for (const b of cellBuildings) {
+          if (!b || b.type !== "building") continue;
+          const bt = b.building_type ? String(b.building_type) : "";
+          const bid = b.id ? String(b.id) : "";
+          const def = resolveBuildingDef(bt);
+          const cat = buildingSurfaceProduceCat(def);
+          const canon = resolveBuildingCanonId(bt) || bt.toLowerCase();
+          const lvl = Number(b.level) || 1;
+          const grpTitle = buildingSurfaceGroupTitle(def);
+          const gk = `${cat}|${canon}|${grpTitle}|${lvl}`;
+          let g = grpMap.get(gk);
+          if (!g) {
+            g = { cat, canon, lvl, grpTitle, bt, ids: [] };
+            grpMap.set(gk, g);
+          }
+          if (bid) g.ids.push(bid);
+        }
+        const groups = Array.from(grpMap.values()).sort((a, b) => {
+          const c = catOrder[a.cat] - catOrder[b.cat];
+          return c !== 0 ? c : a.grpTitle.localeCompare(b.grpTitle, "ru");
+        });
+        let prevCat = null;
+        const parts = [];
+        for (const g of groups) {
+          if (g.cat !== prevCat) {
+            parts.push(`<div class="planet-build-category-title">${escHtml(catTitles[g.cat] || g.cat)}</div>`);
+            prevCat = g.cat;
+          }
+          const cnt = g.ids.length;
+          parts.push(
+            `<div class="planet-build-group"><div class="planet-build-group-head"><strong>${escHtml(g.grpTitle)}</strong> <span class="muted">×${escHtml(String(cnt))}</span></div>${planetSurfaceGroupActionsHtml(g.bt, g.ids)}</div>`
+          );
+        }
+        planetSurfaceBuildingsActions = parts.join("");
+      }
+
+      let buildDetailsInner = "";
       if (!canBuild) {
-        buildHtml = "<div class='muted'>Стройка: нельзя в этой клетке (вне зоны, туман или зона врага).</div>";
+        buildDetailsInner = "<div class='muted'>Стройка недоступна (вне зоны, туман или зона врага).</div>";
       } else if (cellBuildings.length && cell.terrain !== "planet") {
         const b = cellBuilding;
         const bid = b && b.id ? String(b.id) : "";
-        buildHtml = `<div>На клетке: <b>${escHtml(buildingLabelRu(b && b.building_type ? String(b.building_type) : "постройка"))}</b> (ур. ${Number((b && b.level) || 1) || 1}).</div>`;
-        if (bid) {
-          buildHtml += `<div class="row" style="gap:8px;margin-top:8px;"><button type="button" data-demolish="${escHtml(bid)}">Снести постройку</button></div>`;
-        }
+        const bl = Number((b && b.level) || 1) || 1;
+        const blPart = bl > 1 ? ` <span class="muted">(ур. ${bl})</span>` : "";
+        buildDetailsInner = `<div>На клетке: <b>${escHtml(buildingLabelRu(b && b.building_type ? String(b.building_type) : "постройка"))}</b>${blPart}.</div>${
+          bid
+            ? `<div class="row build-action-icons" style="gap:6px;margin-top:10px;"><span>${upgradeBuildingButtonHtml(bid, b && b.building_type ? String(b.building_type) : "")}</span><button type="button" class="btn-icon-action btn-demolish-build" data-demolish="${escHtml(bid)}" title="Снести постройку (~50% стоимости)" aria-label="Снести постройку"><span class="ico-recycle" aria-hidden="true">♻</span></button></div>`
+            : ""
+        }`;
       } else {
-        // Клетка планеты: допускаем несколько построек (слоты планеты ограничивают).
-        if (cell.terrain === "planet" && cellBuildings.length) {
-          const lines = cellBuildings
-            .map((b) => {
-              const bid = b && b.id ? String(b.id) : "";
-              const nm = buildingLabelRu(b && b.building_type ? String(b.building_type) : "");
-              const lvl = Number(b && b.level ? b.level : 1) || 1;
-              const btnDm = bid ? `<button type="button" data-demolish="${escHtml(bid)}">Снести</button>` : "";
-              const btnUp = bid ? `<button type="button" data-bupgrade="${escHtml(bid)}">Улучшить</button>` : "";
-              const btn = bid ? `<span class="row" style="gap:6px;margin-left:auto;">${btnUp}${btnDm}</span>` : "";
-              return `<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;"><span><b>${escHtml(nm)}</b> (ур. ${lvl})</span>${btn}</div>`;
-            })
-            .join("");
-          buildHtml += `<div class="section-title">Постройки на планете</div>${lines}`;
-        }
-        buildHtml = `
+        buildDetailsInner = `
           <label class="row" style="gap:8px;align-items:center;margin:6px 0 0 0;">
             <input type="checkbox" id="show-all-build" />
             <span class="muted">Показать все варианты</span>
           </label>
           ${buildButtonsHtml()}
-          <div class="muted" style="margin-top:8px;">Ресурс списывается с домашней планеты (имперский склад).</div>
-        `;
+          <div class="muted" style="margin-top:8px;">Ресурс списывается с домашней планеты (имперский склад).</div>`;
       }
 
       planetModalBody.innerHTML = `
-        <div class="section-title">Основное</div>
-        <div><b>${planetOwn.name || "Планета"}</b> (${sector.x}, ${sector.y}, ${sector.z})${ownName}</div>
-        <div class="muted" style="margin-top:6px;">Ландшафт: ${formatTerrainRu(cell.terrain)}</div>
-        <div class="section-title">Население</div>
-        <div>Население: <b>${d.population != null ? escHtml(String(d.population)) : "—"}</b> / <b>${d.max_population != null ? escHtml(String(d.max_population)) : "—"}</b></div>
-        ${
-          d.population_vitals
-            ? `<div class="muted" style="margin-top:6px;">Содержание населения: <b>${escHtml(String(d.population_vitals.food_per_sol ?? 0))}</b> еды и <b>${escHtml(String(d.population_vitals.water_per_sol ?? 0))}</b> воды за сол (списывается после выработки).</div>`
-            : ""
-        }
-        ${slotsLine ? `<div class="muted" style="margin-top:6px;">${slotsLine} • класс: ${escHtml(cls)}</div>` : `<div class="muted" style="margin-top:6px;">класс: ${escHtml(cls)}</div>`}
-        <div class="section-title">Снабжение (эта планета)</div>
-        <div>Снабженцев: <b>${supN}</b></div>
-        <div class="muted">Базовый радиус: <b>${supBase}</b> • бонус за снабженца: <b>+${supPer}</b> • <b>итого снабжение: ${supR} клеток</b></div>
-        <div class="muted" style="margin-top:6px;font-size:88%;">Линии: от планеты L-маршрут (сначала X, затем Y); чужой флот на пути обрывает снабжение. Активный форпост вне планеты тянет еду/воду с хаба за сол (см. форпост).</div>
-        <div class="row" style="gap:8px;margin-top:8px;">
-          <button type="button" id="hire-supplier-btn" data-planet-id="${escHtml(String(planetOwn.id || mapPlanet?.id || ""))}">Нанять снабженца</button>
+        <div class="game-modal-grid">
+          <div class="game-modal-col game-modal-col--entity">
+            <div class="section-title">Колония</div>
+            <div><b>${escHtml(planetOwn.name || "Планета")}</b> (${escHtml(String(sector.x))}, ${escHtml(String(sector.y))}, ${escHtml(String(sector.z))})${ownName}</div>
+            <div class="muted" style="margin-top:6px;">Ландшафт: ${formatTerrainRu(cell.terrain)}</div>
+            <div style="margin-top:8px;">
+              Население: <b>${d.population != null ? escHtml(String(d.population)) : "—"}</b> / <b>${d.max_population != null ? escHtml(String(d.max_population)) : "—"}</b>
+            </div>
+            ${
+              slotsLine
+                ? `<div class="muted" style="margin-top:6px;">${slotsLine} • класс: <b>${escHtml(cls)}</b></div>`
+                : `<div class="muted" style="margin-top:6px;">Класс: <b>${escHtml(cls)}</b></div>`
+            }
+            ${unitsNz.length ? `<div class="section-title">Юниты</div>\n            <div>${u}</div>` : ""}
+          </div>
+          <div class="game-modal-col game-modal-col--state">
+            <div class="section-title">Состояние</div>
+            <div class="muted" style="margin:0 0 6px;font-size:84%;">Производство и содержание населения за сол</div>
+            <div>⛏+<b>${mp}</b> 💎+<b>${cp}</b> ⚡+<b>${ep}</b> ⛽+<b>${fp}</b> 🍲+<b>${fdp}</b> 💧+<b>${wp}</b></div>
+            ${
+              d.population_vitals
+                ? `<div style="margin-top:10px;">🍲 <b>−${escHtml(String(Number(d.population_vitals.food_per_sol ?? 0) || 0))}</b> 💧 <b>−${escHtml(String(Number(d.population_vitals.water_per_sol ?? 0) || 0))}</b> <span class="muted">население</span></div>`
+                : ""
+            }
+            ${
+              d.population_vitals
+                ? `<div class="muted" style="margin-top:6px;font-size:82%;">Оценка к производству: еда <b>${Math.max(0, (Number(fdp) || 0) - Number(d.population_vitals.food_per_sol || 0))}</b> • вода <b>${Math.max(0, (Number(wp) || 0) - Number(d.population_vitals.water_per_sol || 0))}</b>.</div>`
+                : ""
+            }
+            <div class="section-title">Снабжение</div>
+            <div>Снабженцев: <b>${supN}</b> • радиус: <b>${supR}</b> клеток</div>
+            <div class="muted" style="margin-top:4px;font-size:82%;">База <b>${supBase}</b> • за снабженца <b>+${supPer}</b>. Чужой флот на L-пути режет линию.</div>
+            <div class="section-title">Склад</div>
+            <div>⛏${d.resources.metal} 💎${d.resources.crystal} ⚡${d.resources.energy} ⛽${d.resources.fuel ?? 0} 🍲${d.resources.food ?? 0} 💧${d.resources.water ?? 0}</div>
+            <div class="muted" style="margin-top:10px;font-size:82%;">
+              Стройка: активно <b>${d.build && d.build.active ? escHtml(String(d.build.active)) : "нет"}</b> • в очереди <b>${d.build && Array.isArray(d.build.queue) ? d.build.queue.length : 0}</b>
+            </div>
+          </div>
+          <div class="game-modal-col game-modal-col--actions">
+            <div class="game-modal-actions-stack">
+              <button type="button" id="hire-supplier-btn" data-planet-id="${escHtml(String(planetOwn.id || mapPlanet?.id || ""))}" class="btn-secondary">Нанять снабженца</button>
+              <button type="button" class="btn-primary btn-create-fleet" data-planet-id="${escHtml(String(planetOwn.id || mapPlanet?.id || ""))}">Создать флот…</button>
+            </div>
+            ${
+              planetSurfaceBuildingsActions
+                ? `<details class="game-modal-details">
+              <summary class="game-modal-details-summary">Постройки на поверхности · действия</summary>
+              <div class="game-modal-details-inner">
+                <div class="muted" style="font-size:82%;line-height:1.4;margin:0 0 12px;">Одна строка — один тип здания (×сколько есть). ♻ убирает одну постройку, 🔧 улучшает одну до следующего шага из баланса, 🔧∞ — оплатить улучшение для всех в строке по очереди (ресурсы с домашней планеты каждый шаг).</div>
+                ${planetSurfaceBuildingsActions}
+              </div>
+            </details>`
+                : ""
+            }
+            <details class="game-modal-details">
+              <summary class="game-modal-details-summary">Строительство</summary>
+              <div class="game-modal-details-inner">${buildDetailsInner}</div>
+            </details>
+            <div class="muted" style="font-size:82%;margin-top:4px;">Снабженец — логистика планеты (не юнит на карте).</div>
+          </div>
         </div>
-        <div class="muted" style="margin-top:6px;font-size:88%;">Снабженец — логистическая единица планеты (не корабль на карте).</div>
-        <div class="section-title">Ресурсы на планете</div>
-        <div>Металл <b>${d.resources.metal}</b> • Кристалл <b>${d.resources.crystal}</b> • Энергия <b>${d.resources.energy}</b> • Топливо <b>${d.resources.fuel ?? 0}</b> • Еда <b>${d.resources.food ?? 0}</b> • Вода <b>${d.resources.water ?? 0}</b></div>
-        <div class="section-title">Производство (за сол)</div>
-        <div>+<b>${mp}</b> металл • +<b>${cp}</b> кристалл • +<b>${ep}</b> энергия • +<b>${fp}</b> топливо • +<b>${fdp}</b> еда • +<b>${wp}</b> вода</div>
-        ${
-          d.population_vitals
-            ? `<div class="muted" style="margin-top:6px;font-size:88%;">Баланс еды/воды (оценка): <b>${Math.max(0, (Number(fdp) || 0) - Number(d.population_vitals.food_per_sol || 0))}</b> / <b>${Math.max(0, (Number(wp) || 0) - Number(d.population_vitals.water_per_sol || 0))}</b> в плюс. Если склад остаётся 0 — обычно уходит в содержание населения и логистику снабжения форпостов.</div>`
-            : ""
-        }
-        ${unitsNz.length ? `<div class="section-title">Юниты на планете</div>\n        <div>${u}</div>` : ""}
-        <div class="section-title">Флоты</div>
-        <div class="muted" style="margin-bottom:6px;">Создать у родной планеты или у планеты с мини-верфью (drydock).</div>
-        <button type="button" class="btn-create-fleet" data-planet-id="${escHtml(String(planetOwn.id || mapPlanet?.id || ""))}">Создать флот…</button>
-        <div class="section-title">Стройка</div>
-        <div class="muted">Активно: ${d.build && d.build.active ? d.build.active : "нет"} • очередь: ${d.build && Array.isArray(d.build.queue) ? d.build.queue.length : 0}</div>
-        ${buildHtml}
       `;
 
       bindBuildButtons(planetModalBody, x, y, z, null);
@@ -2214,35 +3066,256 @@
     }
 
     if (outpostOwn && outpostOwn.details) {
+      await fetchBalanceCached();
       const d = outpostOwn.details;
-      planetModalBody.innerHTML = `
-        <div class="section-title">Форпост</div>
-        <div><b>${escHtml(d.name || "Форпост")}</b> (${x}, ${y}, ${z})</div>
-        <div class="muted" style="margin-top:6px;">Статус: ${escHtml(d.status || "active")} • уровень: <b>${Number(d.level) || 1}</b> • старт: <b>${Number(d.started_at_tick || 0)}</b> • готов: <b>${Number(d.finish_tick || 0)}</b></div>
-        <div class="section-title">Территория и обзор</div>
-        <div>Влияние: <b>${Number(d.territory?.influence_strength || 0)}</b> • радиус влияния: <b>${Number(d.territory?.influence_radius || 0)}</b></div>
-        <div>Радиус обзора: <b>${Number(d.vision?.radius || 0)}</b></div>
-        <div class="section-title">Бой</div>
-        <div>HP <b>${Number(d.combat?.hp || 0)}</b> • атака <b>${Number(d.combat?.attack || 0)}</b> • защита <b>${Number(d.combat?.defense || 0)}</b></div>
-        <div class="section-title">Слоты</div>
-        <div>Занято <b>${Number(d.slots?.used || 0)}</b> / <b>${Number(d.slots?.total || 0)}</b></div>
+      const oid = String(outpostOwn.id || "");
+      const mods = Array.isArray(d.modules) ? d.modules : [];
+      const bb = window.__guardstarBalanceCache && window.__guardstarBalanceCache.body;
+      const allBalMods = bb && Array.isArray(bb.outpost_modules) ? bb.outpost_modules : [];
+      const installCandidates = rootInstallableOutpostModules(allBalMods);
+      const empireBusy = Boolean(d.empire_module_work_busy);
+
+      const vBase = Number(d.vision_base_radius ?? d.vision?.radius ?? 0);
+      const vAdd = Number(d.module_bonuses?.vision_radius_add || 0);
+      const vTot = Number(d.vision?.radius ?? vBase + vAdd);
+      const mb = d.module_bonuses || {};
+
+      let upkeepHtml = "";
+      const uBase = d.upkeep_per_tick_base;
+      const uDelta = d.upkeep_per_tick_modules_delta;
+      const uTot = d.upkeep_per_tick_total;
+      if (
+        uBase &&
+        typeof uBase === "object" &&
+        uTot &&
+        typeof uTot === "object"
+      ) {
+        upkeepHtml = `
+        <div class="muted" title="Ресурс списывается с домашней планеты (имперский склад).">База форпоста: ${escHtml(formatBalanceCostRuPlain(uBase) || "—")}</div>
         ${
-          d.supply_line
-            ? `<div class="section-title">Логистика снабжения</div><div class="muted">С хаба (планета) за сол: еда <b>${Number(d.supply_line.food_per_sol || 0)}</b>, вода <b>${Number(d.supply_line.water_per_sol || 0)}</b>. При нехватке на хабе форпост отключится.</div>`
+          uDelta && formatUpkeepDeltaPlain(uDelta)
+            ? `<div class="muted">Модули: ${escHtml(formatUpkeepDeltaPlain(uDelta))}</div>`
             : ""
         }
-        <div class="section-title">Модули</div>
-        <div class="muted">Каркас модулей уже заложен в данных и БД, но в первом проходе они ещё не активированы в UI.</div>
+        <div>Итого за сол: <b>${escHtml(formatBalanceCostRuPlain(uTot) || "—")}</b></div>`;
+      }
+
+      const structure = d.structure_upgrade;
+      let structureHtml = "";
+      if (structure && oid) {
+        const costH = formatBalanceCostRuHtml(structure.cost);
+        const miss = Array.isArray(structure.missing_techs) ? structure.missing_techs.join(", ") : "";
+        structureHtml = `
+        <div class="section-title">Структура</div>
+        <div>Цель: <b>${escHtml(String(structure.to_name || structure.to || ""))}</b></div>
+        ${
+          structure.can_apply
+            ? `<div style="margin-top:10px;"><button type="button" class="btn-primary btn-upgrade-build" style="width:100%;max-width:360px;" data-outpost-upgrade="${escHtml(oid)}">Улучшить форпост…</button></div>`
+            : `<div class="muted" style="margin-top:6px;">Нужны исследования: <b>${escHtml(miss || "—")}</b></div>`
+        }
+        ${costH ? `<div class="muted" style="margin-top:6px;">Ресурсы: ${costH}</div>` : ""}<div class="muted" style="margin-top:6px;font-size:84%;">Апгрейд корпуса не требует инженеров на клетке — только ресурсы с домашней планеты.</div>`;
+      }
+
+      const moduleRows =
+        mods.length === 0
+          ? `<div class="muted">Нет установленных модулей.</div>`
+          : mods
+              .map((m) => {
+                const mid = m.id ? String(m.id) : "";
+                const st = String(m.status || "active");
+                const effAuto = formatOutpostEffectsSummaryPlain(m.effects);
+                const descr =
+                  m.effects_summary_ru != null &&
+                  typeof m.effects_summary_ru === "string" &&
+                  m.effects_summary_ru.trim()
+                    ? String(m.effects_summary_ru).trim()
+                    : effAuto;
+                const up = m.upgrade;
+                const canUp = Boolean(m.can_upgrade_module) && !empireBusy;
+                const miss = Array.isArray(m.upgrade_missing_techs) ? m.upgrade_missing_techs.join(", ") : "";
+                let upHint = "";
+                if (up) {
+                  if (canUp) {
+                    const durUp = Number(up.time_ticks) || 1;
+                    upHint += `<div class="muted" style="font-size:88%;margin-top:4px;">Улучшение → ${escHtml(String(up.to_name || up.to || ""))} · срок монтажа <b>~${escHtml(String(durUp))}</b> ${escHtml(solWord(durUp))} · инженеров как у слота <b>${escHtml(String(m.need_engineers ?? m.slot_cost_engineers ?? 1))}</b></div>`;
+                    if (up.summary_ru) {
+                      upHint += `<div style="margin-top:4px;line-height:1.35;font-size:86%;color:rgba(232,226,206,0.92);">${escHtml(String(up.summary_ru))}</div>`;
+                    }
+                  } else {
+                    upHint = `<div class="muted" style="font-size:88%;margin-top:4px;">Улучшение: нужны исследования — ${escHtml(miss)}</div>`;
+                    if (!empireBusy && up.summary_ru) {
+                      upHint += `<div class="muted" style="margin-top:4px;font-size:84%;">${escHtml(String(up.summary_ru))}</div>`;
+                    }
+                  }
+                }
+                const progLine =
+                  st === "in_progress"
+                    ? (() => {
+                        const rem = Number(m.ticks_remaining ?? 0) || 0;
+                        const ft = m.finish_tick;
+                        const remRu = `${escHtml(String(rem))} ${escHtml(solWord(rem))}`;
+                        const solRu =
+                          ft != null && ft !== ""
+                            ? `до <b>${escHtml(String(ft))}</b>-го сола`
+                            : "";
+                        return `<div style="margin-top:6px;font-size:88%;color:#e8c37a;line-height:1.35;"><b>Монтаж:</b> осталось ≈ ${remRu}${solRu ? ` (${solRu})` : ""}.</div>`;
+                      })()
+                    : "";
+                const btnDism =
+                  mid && st === "active"
+                    ? `<button type="button" class="btn-icon-action btn-demolish-build" data-module-dismantle="${escHtml(mid)}" title="Разобрать модуль" aria-label="Разобрать модуль"><span class="ico-recycle" aria-hidden="true">♻</span></button>`
+                    : "";
+                const btnUpg =
+                  mid && up && st === "active" && empireBusy ? (
+                    `<button type="button" class="btn-icon-action btn-upgrade-build" disabled title="Дождитесь другого монтажа" aria-label="Улучшить модуль">🔧</button>`
+                  ) : mid && up && canUp ? (
+                    `<button type="button" class="btn-icon-action btn-upgrade-build" data-module-upgrade="${escHtml(mid)}" title="Улучшить модуль" aria-label="Улучшить модуль">🔧</button>`
+                  ) : mid && up ? (
+                    `<button type="button" class="btn-icon-action btn-upgrade-build" disabled title="Сначала исследования" aria-label="Улучшить модуль (нужны исследования)">🔧</button>`
+                  ) : "";
+                const tierL = m.tier != null ? ` <span class="muted">T${Number(m.tier)}</span>` : "";
+                const engN = Number(m.need_engineers ?? m.slot_cost_engineers ?? 1) || 1;
+                const engLine =
+                  st === "in_progress" && !m.pending_module_type
+                    ? `<div class="muted" style="font-size:86%;margin-top:4px;">Списано инженеров под этот слот: <b>${engN}</b> · монтаж к новому уровню модуля</div>`
+                    : st === "in_progress" && m.pending_module_type
+                      ? `<div class="muted" style="font-size:86%;margin-top:4px;">Списано инженеров слота <b>${engN}</b> · апгрейд установки до следующего блока баланса</div>`
+                      : `<div class="muted" style="font-size:86%;margin-top:4px;">Слот: инженеры при установке — <b>${engN}</b> (расходуется один раз как «рабочая сила»)</div>`;
+                const descrBlock = descr
+                  ? `<div style="margin-top:6px;font-size:87%;line-height:1.4;">${escHtml(descr)}</div>`
+                  : effAuto
+                    ? `<div class="muted" style="font-size:88%;margin-top:6px;">${escHtml(effAuto)}</div>`
+                    : "";
+                return `<div style="margin-top:10px;padding:10px;border:1px solid rgba(120,140,170,0.35);border-radius:8px;"><div class="row" style="justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;"><div><b>${escHtml(String(m.name || m.module_type))}</b>${tierL}${engLine}${descrBlock}${progLine}${upHint}</div><span class="row" style="gap:6px;flex-shrink:0;">${btnUpg}${btnDism}</span></div></div>`;
+              })
+              .join("");
+
+      const slotsUsed = Number(d.slots?.used || 0);
+      const slotsTotal = Number(d.slots?.total || 0);
+      const freeSlots = Math.max(0, slotsTotal - slotsUsed);
+
+      const installBlocks =
+        freeSlots <= 0 || !oid || installCandidates.length === 0
+          ? ""
+          : empireBusy
+            ? `<div class="section-title">Установка (свободно слотов: ${freeSlots})</div>
+          <div class="muted" style="font-size:88%;line-height:1.4;color:#e8c37a;">Сейчас в империи уже идёт монтаж или апгрейд модуля. Дождитесь завершения (несколько солов), затем ставьте следующий модуль.</div>`
+            : `<div class="section-title">Установка (свободно слотов: ${freeSlots})</div>
+          <div class="muted" style="margin-bottom:8px;font-size:88%;line-height:1.35;">Нужен инженерный флот на клетке форпоста. Оплачивается только <b>инженерами по номеру слота</b> (1-й слот — 1, 2-й — 2, 3-й — 3). Одновременно в империи — не больше <b>одного</b> монтажа/апгрейда модуля. Ресурсы металла/кристалла за модуль не берутся.</div>
+          ${installCandidates
+            .map((m) => {
+              const mt = m.id ? String(m.id) : "";
+              const rawCost = (m.build && m.build.cost) || null;
+              const cst =
+                rawCost && typeof rawCost === "object" ? formatBalanceCostRuPlain(rawCost) : "";
+              const dur = Number((m.build && m.build.time_ticks) ?? 3) || 3;
+              const timingRu = `<span class="muted">${cst ? `${escHtml(cst)} · ` : ""}срок установки ~<b>${escHtml(String(dur))}</b> ${escHtml(solWord(dur))}</span>`;
+              const descM =
+                m.effects_summary_ru != null &&
+                typeof m.effects_summary_ru === "string" &&
+                m.effects_summary_ru.trim()
+                  ? `<div class="muted" style="font-size:84%;margin-top:4px;max-width:520px;line-height:1.35;">${escHtml(String(m.effects_summary_ru).trim())}</div>`
+                  : "";
+              return `<div style="margin-top:12px;"><div class="row" style="gap:10px;align-items:flex-start;margin-top:4px;flex-wrap:wrap;">
+                <button type="button" data-module-install="${escHtml(mt)}" data-outpost-id="${escHtml(oid)}">${escHtml(String(m.name || mt))}</button>
+                <span style="font-size:88%;line-height:1.35;">${timingRu}</span></div>${descM}</div>`;
+            })
+            .join("")}`;
+
+      let supplyCenterHtml = "";
+      if (d.supply_line && typeof d.supply_line === "object") {
+        const sl = d.supply_line;
+        const hubLabel = sl.hub_planet_name
+          ? escHtml(String(sl.hub_planet_name))
+          : sl.hub_planet_id
+            ? `планета <span class="muted">(${escHtml(String(sl.hub_planet_id).slice(0, 8))}…)</span>`
+            : "—";
+        const lineOk = Boolean(sl.in_supply && sl.route_clear);
+        const lineRu = lineOk ? "активна" : "прервана";
+        let blk = "";
+        if (!lineOk && sl.route_blocked_at && sl.route_blocked_at.x != null && sl.route_blocked_at.y != null) {
+          blk = ` • узел (${escHtml(String(sl.route_blocked_at.x))},${escHtml(String(sl.route_blocked_at.y))})`;
+        }
+        supplyCenterHtml = `
+          <div class="section-title">Снабжение</div>
+          <div>Хаб: <b>${hubLabel}</b></div>
+          <div style="margin-top:6px;">Линия: <b>${lineRu}</b>${blk}</div>
+          ${
+            lineOk
+              ? `<div class="muted" style="margin-top:6px;font-size:88%;line-height:1.35;">За сол с хаба (логистика): 🍲 <b>${Number(sl.food_per_sol || 0)}</b> 💧 <b>${Number(sl.water_per_sol || 0)}</b>. При нехватке еды/воды на планете-хабе форпост может отключиться.</div>`
+              : `<div class="muted" style="margin-top:6px;font-size:88%;line-height:1.35;">Поставки по маршруту не идут — восстановите линию (радиус снабжения и чужие корабли на L-пути).</div>`
+          }
+          ${
+            !lineOk
+              ? `<div style="margin-top:10px;color:#e88;font-size:90%;"><b>Внимание:</b> при длительных сбоях форпост отключается, как при неоплатимом содержании.</div>`
+              : ""
+          }`;
+      } else if ((cell.z ?? 0) === 0) {
+        supplyCenterHtml = `<div class="section-title">Снабжение</div><div class="muted" style="font-size:88%;">Для этой клетки отдельная линия с хабом не считается (например, зона домашней планеты).</div>`;
+      }
+
+      planetModalBody.innerHTML = `
+        <div class="game-modal-grid">
+          <div class="game-modal-col game-modal-col--entity">
+            <div class="section-title">Форпост</div>
+            <div><b>${escHtml(String(d.name || "Форпост"))}</b> (${x}, ${y}, ${z})</div>
+            <div class="muted" style="margin-top:6px;">Статус: ${escHtml(String(d.status || "active"))} • тип: ${escHtml(String(d.outpost_type || ""))} • уровень: <b>${Number(d.level) || 1}</b></div>
+            <div class="section-title">Территория и обзор</div>
+            <div>Влияние: <b>${Number(d.territory?.influence_strength || 0)}</b> • радиус: <b>${Number(d.territory?.influence_radius || 0)}</b></div>
+            <div>Обзор: база <b>${vBase}</b>${vAdd ? ` • модули <b>+${vAdd}</b>` : ""} • всего <b>${vTot}</b></div>
+            <div class="section-title">Бой</div>
+            <div>
+              HP <b>${Number(d.combat?.hp || 0)}</b>${Number(mb.hp_add) ? ` <span class="muted">(+${Number(mb.hp_add)})</span>` : ""}
+              • урон <b>${Number(d.combat?.attack || 0)}</b>${Number(mb.attack_add) ? ` <span class="muted">(+${Number(mb.attack_add)})</span>` : ""}
+              • защита <b>${Number(d.combat?.defense || 0)}</b>${Number(mb.defense_add) ? ` <span class="muted">(+${Number(mb.defense_add)})</span>` : ""}
+            </div>
+            <div class="section-title">Слоты модулей</div>
+            <div>Занято <b>${slotsUsed}</b> / <b>${slotsTotal}</b></div>
+          </div>
+          <div class="game-modal-col game-modal-col--state">
+            <div class="section-title">Состояние</div>
+            ${upkeepHtml ? `<div class="section-title" style="margin-top:0;font-size:0.85rem;">Содержание (за сол)</div>${upkeepHtml}` : ""}
+            ${supplyCenterHtml}
+          </div>
+          <div class="game-modal-col game-modal-col--actions">
+            ${structureHtml}
+            ${
+              moduleRows
+                ? `<details class="game-modal-details">
+              <summary class="game-modal-details-summary">Установленные модули</summary>
+              <div class="game-modal-details-inner">${moduleRows}</div>
+            </details>`
+                : ""
+            }
+            <details class="game-modal-details">
+              <summary class="game-modal-details-summary">Установить модуль…</summary>
+              <div class="game-modal-details-inner">${
+                installBlocks || `<span class="muted">Нет доступных установок (слоты или баланс).</span>`
+              }</div>
+            </details>
+          </div>
+        </div>
       `;
+      bindOutpostButtons(planetModalBody, { x, y, z, fleetId: null });
       return;
     }
 
     if (mapPlanet) {
-      const owner = mapPlanet.owner_name ? String(mapPlanet.owner_name) : mapPlanet.owner ? String(mapPlanet.owner) : "—";
+      const moid = mapPlanet.owner ? String(mapPlanet.owner).trim() : "";
+      let ownerInner;
+      if (mapPlanet.owner_name && moid && /^[\da-f-]{36}$/i.test(moid)) {
+        ownerInner = `<a href="/operator/${escAttr(moid)}" class="chat-player-link sector-owner-link">${escHtml(String(mapPlanet.owner_name))}</a>`;
+      } else if (mapPlanet.owner_name) {
+        ownerInner = `<b>${escHtml(String(mapPlanet.owner_name))}</b>`;
+      } else if (mapPlanet.owner) {
+        ownerInner = `<b>${escHtml(String(mapPlanet.owner))}</b>`;
+      } else {
+        ownerInner = "—";
+      }
       planetModalBody.innerHTML = `
         <div class="section-title">Объект</div>
-        <div><b>${mapPlanet.name || "Планета"}</b> (${x}, ${y}, ${z})</div>
-        <div>Владелец: <b>${owner}</b></div>
+        <div><b>${escHtml(mapPlanet.name || "Планета")}</b> (${escHtml(String(x))}, ${escHtml(String(y))}, ${escHtml(String(z))})</div>
+        <div>Владелец: ${ownerInner}</div>
         <div class="muted" style="margin-top:10px;">Детальное производство и стройка доступны только для ваших планет.</div>
       `;
       return;
@@ -2270,8 +3343,25 @@
           </select>`;
       }
       let buildHtml = "";
-      if (outpostHere) {
-        buildHtml = `<div>На клетке уже стоит <b>${escHtml(outpostHere.name || "форпост")}</b>.</div>`;
+      const outpostHereOwned =
+        outpostHere &&
+        playerId &&
+        outpostHere.owner &&
+        String(outpostHere.owner) === String(playerId);
+      if (outpostHereOwned) {
+        buildHtml = `<div class="muted" style="line-height:1.4;"><b>Ваш форпост</b> на этой клетке — выберите клетку (или откройте объект на карте), чтобы увидеть модули, содержание и улучшения. Это же окно открывается при выборе клетки с вашим форпостом.</div>`;
+      } else if (outpostHere) {
+        buildHtml = (() => {
+          const ooid = outpostHere.owner ? String(outpostHere.owner).trim() : "";
+          const onm = outpostHere.owner_name ? String(outpostHere.owner_name) : "";
+          let ownBit = "";
+          if (onm && ooid && /^[\da-f-]{36}$/i.test(ooid)) {
+            ownBit = ` (<a href="/operator/${escAttr(ooid)}" class="chat-player-link sector-owner-link">${escHtml(onm)}</a>)`;
+          } else if (onm) {
+            ownBit = ` (${escHtml(onm)})`;
+          }
+          return `<div>На клетке уже стоит <b>${escHtml(outpostHere.name || "форпост")}</b>${ownBit}.</div>`;
+        })();
       } else if (buildingHere) {
         buildHtml = `<div>На клетке уже стоит <b>${escHtml(buildingLabelRu(buildingHere.building_type || "постройка"))}</b>.</div>`;
       } else {
@@ -2612,21 +3702,27 @@
         u && typeof u.description === "string" && u.description.trim()
           ? escHtml(u.description.trim())
           : "Корабль из баланса: стоимость набора и возврат при уменьшении совпадают с сервером при сохранении.";
+      const roleStr = escHtml(fleetUnitRolePurposeRu(k));
       return `
-        <div class="fleet-ship-card" data-unit-card="${escHtml(k)}">
-          <div class="fleet-ship-card-head">
-            <span class="fleet-ship-glyph" aria-hidden="true">${gl}</span>
-            <div style="flex:1;min-width:0;">
-              <div style="font-weight:700;">${escHtml(lab)} <span class="muted" style="font-weight:500;">(${escHtml(k)})</span></div>
-              <div class="fleet-ship-meta">Цена 1 шт: ${escHtml(costLine)}</div>
-              <div class="fleet-ship-meta">HP ${escHtml(String(hp))} · урон ${escHtml(String(dmg))} · клеток/сол ${escHtml(String(spd))} · топл./клетку ${escHtml(String(fu))}</div>
+        <div class="fleet-ship-slot" data-unit-card="${escHtml(k)}">
+          <div class="fleet-ship-slot-row">
+            <details class="fleet-ship-acc">
+              <summary class="fleet-ship-acc-sum">
+                <span class="fleet-ship-glyph" aria-hidden="true">${gl}</span>
+                <span class="fleet-ship-sum-text"><strong>${escHtml(lab)}</strong> <span class="muted">×${escHtml(String(q))}</span></span>
+              </summary>
+              <div class="fleet-ship-acc-body">
+                <div class="fleet-ship-role-line muted">${roleStr}</div>
+                <div class="fleet-ship-meta">Цена 1 шт: ${escHtml(costLine)}</div>
+                <div class="fleet-ship-meta">HP ${escHtml(String(hp))} · урон ${escHtml(String(dmg))} · клеток/сол ${escHtml(String(spd))} · топл./клетку ${escHtml(String(fu))}</div>
+                <div class="fleet-ship-desc">${desc}</div>
+              </div>
+            </details>
+            <div class="fleet-ship-qty">
+              <button type="button" class="fleet-qty-step" data-u="${escHtml(k)}" data-s="-1" ${dis}>−</button>
+              <input type="number" class="fleet-qty-input" data-u="${escHtml(k)}" min="0" max="99999" step="1" value="${q}" ${blocked ? "disabled" : ""}/>
+              <button type="button" class="fleet-qty-step" data-u="${escHtml(k)}" data-s="1" ${dis}>+</button>
             </div>
-          </div>
-          <div class="fleet-ship-desc">${desc}</div>
-          <div class="fleet-ship-qty">
-            <button type="button" class="fleet-qty-step" data-u="${escHtml(k)}" data-s="-1" ${dis}>−</button>
-            <input type="number" class="fleet-qty-input" data-u="${escHtml(k)}" min="0" max="99999" step="1" value="${q}" style="width:72px;padding:5px 6px;" ${blocked ? "disabled" : ""}/>
-            <button type="button" class="fleet-qty-step" data-u="${escHtml(k)}" data-s="1" ${dis}>+</button>
           </div>
         </div>`;
     };
@@ -2641,26 +3737,82 @@
         : "";
 
     fleetModalBody.innerHTML = `
-      <div class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center;">
-        <label class="muted" style="flex:100%;margin:0;font-size:90%;"><b>Имя флота</b></label>
-        <input type="text" class="fleet-rename-input" maxlength="64" value="${escHtml(fn)}" style="flex:1;min-width:140px;padding:6px 8px;" />
-        <button type="button" class="fleet-modal-save btn-primary" ${dis}>Сохранить</button>
-        <button type="button" class="fleet-locate-this btn-secondary" title="Показать на карте и выделить">На карте</button>
-      </div>
-      <div class="muted" style="margin-bottom:10px;font-size:90%;">
-        Набор кораблей оплачивается со склада домашней планеты по цене постройки; при уменьшении числа — возврат примерно <b>50%</b> стоимости в ресурсах.
-      </div>
-      ${blocked ? "<div style='margin-bottom:10px;color:#e88'><b>В пути</b> — нельзя менять состав, слияние и разделение.</div>" : ""}
-      ${roleSection(byRole.recon, "Разведка")}
-      ${roleSection(byRole.combat, "Боевой состав")}
-      ${roleSection(byRole.tech, "Техника и логистика")}
-      <div id="fleet-comp-net-preview" class="fleet-comp-net-preview"></div>
-      <div class="fleet-modal-actions-muted">
-        <button type="button" class="btn-secondary fleet-open-merge" ${dis}>Слить другой флот сюда…</button>
-        <button type="button" class="btn-secondary fleet-open-split" ${dis}>Разделить флот…</button>
-        <button type="button" class="btn-secondary fleet-open-disband" ${dis}>Расформировать этот флот…</button>
+      <div class="game-modal-grid">
+        <div class="game-modal-col game-modal-col--entity">
+          <div class="section-title">Флот</div>
+          <div><b>${escHtml(fn)}</b></div>
+          <div class="muted" style="margin-top:6px;">Клетка: (${escHtml(String(f.x))}, ${escHtml(String(f.y))}, ${escHtml(String(f.z ?? 0))})</div>
+          <div style="margin-top:10px;">Статус: <b>${escHtml(ruFleetStatus(f.status))}</b></div>
+          ${blocked ? `<div style="margin-top:10px;color:#e88;"><b>В пути</b> — состав, слияние и разделение недоступны.</div>` : ""}
+          <div class="section-title">Сводка состава</div>
+          <div class="muted" style="font-size:88%;line-height:1.4;">${escHtml(formatComposition(f.composition) || "нет кораблей")}</div>
+          <div class="section-title">Содержание (за сол)</div>
+          <div id="fleet-upkeep-preview" class="fleet-upkeep-core" style="min-height:2em;">Загрузка…</div>
+          <div class="muted" style="margin-top:10px;font-size:82%;line-height:1.35;">
+            Изменение кораблей списывается с домашней планеты; при распуске части состава возможен частичный возврат (~50%). Сохранение — по кнопке «Сохранить».
+          </div>
+        </div>
+        <div class="game-modal-col game-modal-col--state">
+          <div class="section-title">Корабли</div>
+          <p class="muted" style="margin:0 0 10px;font-size:82%;">Чтобы открыть роль и характеристики корпуса, нажмите на строку с названием.</p>
+          ${roleSection(byRole.recon, "Разведка")}
+          ${roleSection(byRole.combat, "Боевой состав")}
+          ${roleSection(byRole.tech, "Техника и логистика")}
+        </div>
+        <div class="game-modal-col game-modal-col--actions">
+          <div class="fleet-modal-name-block">
+            <label class="muted" style="margin:0 0 4px;font-size:90%;display:block;"><b>Имя флота</b></label>
+            <input type="text" class="fleet-rename-input" maxlength="64" value="${escHtml(fn)}" ${blocked ? "disabled" : ""} />
+          </div>
+          <div class="game-modal-actions-stack fleet-modal-primary-actions">
+            <button type="button" class="fleet-modal-save btn-primary" ${dis}>Сохранить</button>
+            <button type="button" class="fleet-locate-this btn-secondary" title="Показать на карте и выделить">На карте</button>
+          </div>
+          <div class="fleet-modal-actions-muted" style="margin-top:12px;display:flex;flex-direction:column;gap:8px;">
+            <button type="button" class="btn-secondary fleet-open-merge" ${dis}>Слить другой флот сюда…</button>
+            <button type="button" class="btn-secondary fleet-open-split" ${dis}>Разделить флот…</button>
+            <button type="button" class="btn-secondary fleet-open-disband" ${dis}>Расформировать этот флот…</button>
+          </div>
+        </div>
       </div>
     `;
+
+    const upKeeEl = fleetModalBody.querySelector("#fleet-upkeep-preview");
+    if (upKeeEl) {
+      void (async () => {
+        try {
+          const r = await fetch(`/api/fleets/${encodeURIComponent(String(f.id))}/upkeep-preview`);
+          const b = await r.json();
+          if (!r.ok || !b.ok) {
+            upKeeEl.innerHTML = `<span class="muted">Расход за сол не удалось загрузить.</span>`;
+            return;
+          }
+          const esp = b.empire_supply_per_sol || {};
+          const en = Number(b.energy_upkeep_per_sol) || 0;
+          const fe = Number(b.fleet_energy_current);
+          const pen = Number(b.energy_penalty_on_unpaid_maintenance) || 0;
+          const penTitle =
+            pen > 0
+              ? `Если империи не хватает металла, кристалла, еды или воды на оплату: штраф ${pen} энергии с борта за сол.`
+              : "";
+          upKeeEl.innerHTML = `
+            <div class="fleet-upkeep-line">⚡ Борт: <b>−${escHtml(String(en))}</b> / сол</div>
+            <div class="fleet-upkeep-line" style="margin-top:8px;">Империя: ⛏ <b>${escHtml(String(esp.metal ?? 0))}</b> 💎 <b>${escHtml(String(esp.crystal ?? 0))}</b> 🍲 <b>${escHtml(String(esp.food ?? 0))}</b> 💧 <b>${escHtml(String(esp.water ?? 0))}</b> <span class="muted">/ сол</span></div>
+            ${
+              en > 0 && Number.isFinite(fe)
+                ? `<div class="fleet-upkeep-line" style="margin-top:8px;">Автономность: <b>~${escHtml(String(Math.floor(fe / en)))}</b> ${escHtml(solWord(Math.floor(fe / en)))} <span class="muted">(энергия на корпус)</span></div>`
+                : ""
+            }
+            ${
+              pen > 0
+                ? `<div class="muted" style="margin-top:8px;font-size:80%;" title="${escHtml(penTitle)}">Штраф при неоплате с империи: ${escHtml(String(pen))} ⚡/сол</div>`
+                : ""
+            }`;
+        } catch (_e) {
+          upKeeEl.innerHTML = `<span class="muted">Расход за сол недоступен.</span>`;
+        }
+      })();
+    }
 
     const readCompositionFromInputs = () => {
       const o = {};
@@ -2669,18 +3821,6 @@
         o[k] = inp ? Math.max(0, Math.floor(Number(inp.value) || 0)) : 0;
       }
       return o;
-    };
-
-    const refreshNetPreview = () => {
-      const el = fleetModalBody.querySelector("#fleet-comp-net-preview");
-      if (!el) return;
-      const next = readCompositionFromInputs();
-      const { net } = fleetCompositionNet(comp, next);
-      el.innerHTML = `<div><b>Склад домашней планеты</b> (оценка до сохранения)</div><div style="margin-top:6px;">${formatImpWarehouseNetHtml(net)}</div>`;
-    };
-    refreshNetPreview();
-    fleetModalBody.oninput = (ev) => {
-      if (ev.target && ev.target.classList && ev.target.classList.contains("fleet-qty-input")) refreshNetPreview();
     };
 
     for (const btn of fleetModalBody.querySelectorAll("button.fleet-qty-step")) {
@@ -2692,7 +3832,6 @@
         if (!inp || inp.disabled) return;
         const v = Math.max(0, Math.floor(Number(inp.value) || 0) + s);
         inp.value = String(v);
-        refreshNetPreview();
       });
     }
 
@@ -2781,6 +3920,39 @@
       });
   };
 
+  const RESOURCE_TOPBAR_KEYS = [
+    "metal",
+    "crystal",
+    "energy",
+    "fuel",
+    "food",
+    "water",
+  ];
+
+  const syncTopbarResourceDrain = (economyBlock) => {
+    const bar = document.getElementById("resources-chip");
+    if (!bar) return;
+    const rawNet =
+      economyBlock &&
+      typeof economyBlock === "object" &&
+      typeof economyBlock.net_per_sol === "object" &&
+      economyBlock.net_per_sol
+        ? economyBlock.net_per_sol
+        : null;
+    for (const key of RESOURCE_TOPBAR_KEYS) {
+      const chip = bar.querySelector(`.res-chip[data-res="${key}"]`);
+      if (!chip) continue;
+      let drain = false;
+      if (rawNet && Object.prototype.hasOwnProperty.call(rawNet, key)) {
+        const n = Number(rawNet[key]);
+        drain = Number.isFinite(n) && n < 0;
+      }
+      chip.classList.toggle("res-chip--drain", drain);
+      const mark = chip.querySelector(".res-drain-marker");
+      if (mark) mark.toggleAttribute("hidden", !drain);
+    }
+  };
+
   const loadWorldState = async () => {
     try {
       const r = await fetch("/api/world/state");
@@ -2829,6 +4001,7 @@
           }
         }
       }
+      if (body) syncTopbarResourceDrain(body.economy || null);
 
       const fleet = body.fleet;
       const fleets = Array.isArray(body.fleets) ? body.fleets : [];
@@ -2896,6 +4069,7 @@
   };
 
   const closeTechModal = () => {
+    techModalPathGuide = null;
     if (techModalOverlay) techModalOverlay.classList.add("hidden");
   };
 
@@ -2943,7 +4117,15 @@
       const netHome = body.net_home_per_sol || {};
       const prod = body.production_per_sol || {};
       const costs = body.costs_per_sol || {};
+      const expensesAgg = body.expenses_aggregate_per_sol || {};
       const binfo = body.buildings || {};
+      const buildOnTile = Number(binfo.planet_buildings ?? 0) || 0;
+      const buildFieldShown = Number(binfo.external_buildings ?? 0) || 0;
+      const buildFieldHidden = Number(binfo.external_buildings_hidden ?? 0) || 0;
+      const buildTotalEmpire =
+        buildOnTile +
+        buildFieldShown +
+        buildFieldHidden;
       const fleets = Array.isArray(body.fleets) ? body.fleets : [];
       const fd = body.field_data || {};
       const cref = body.construction_reference || {};
@@ -2990,10 +4172,50 @@
           })
           .join("")}</div>`;
 
-      const showExtChk = `<div class="econ-card">
-        <label class="econ-toggle"><input type="checkbox" id="econ-show-ext" ${showExt ? "checked" : ""} />
-        <span>Учитывать/показывать внешние постройки</span></label>
-      </div>`;
+      const showExtChk = `<label class="econ-toggle econ-toggle--inline"><input type="checkbox" id="econ-show-ext" ${showExt ? "checked" : ""} />
+        <span>Внешние постройки в сводке</span></label>`;
+
+      const ep = readEconPrefs();
+      const detailsReadOpen = Boolean(ep.econModalDetailsReadTable);
+      const detailsRefsOpen = Boolean(ep.econModalDetailsBuildings);
+
+      const expenseWeight = (m) =>
+        resKeys.reduce((acc, k) => acc + Math.max(0, Number(m && m[k]) || 0), 0);
+      const expenseCategories = [
+        { key: "population_vitals", label: "Население (еда и вода)", map: costs.population_vitals },
+        {
+          key: "outpost_supply_logistics",
+          label: "Логистика форпостов",
+          map: costs.outpost_supply_logistics || {},
+        },
+        { key: "outpost_upkeep", label: "Содержание форпостов", map: costs.outpost_upkeep || {} },
+        {
+          key: "fleet_empire_upkeep",
+          label: "Содержание флотов (империя)",
+          map: costs.fleet_empire_upkeep || {},
+        },
+        {
+          key: "fleet_energy_upkeep",
+          label: "Энергия на борту флотов",
+          map: costs.fleet_energy_upkeep || {},
+        },
+      ];
+      let biggestCategory = expenseCategories[0];
+      let biggestW = expenseWeight(biggestCategory.map);
+      for (let i = 1; i < expenseCategories.length; i++) {
+        const c = expenseCategories[i];
+        const w = expenseWeight(c.map);
+        if (w > biggestW) {
+          biggestW = w;
+          biggestCategory = c;
+        }
+      }
+      const rowKeysBig = resKeys.filter((k) => Number(biggestCategory.map && biggestCategory.map[k]) > 0);
+      const biggestExpenseBlock =
+        biggestW <= 0
+          ? `<p class="econ-muted" style="margin:0;">Статьи расхода по API — нули; при росте нагрузки здесь будет самая «тяжёлая» статья.</p>`
+          : `<div class="econ-muted" style="margin:0 0 10px;line-height:1.35;"><b>${escHtml(biggestCategory.label)}</b> — крупнейшая суммарная статья за сол среди расходов (по включённым ресурсам).</div>
+             ${costRow("За сол", biggestCategory.map, rowKeysBig)}`;
 
       const fleetsHtml = fleets.length
         ? `<p class="econ-muted">Расформирование возвращает часть ресурсов на домашнюю планету.</p>
@@ -3009,89 +4231,131 @@
              .join("")}`
         : `<p class="econ-muted">Нет активных флотов.</p>`;
 
+      const runway = body.runway_sols || {};
+      const runwayCells = resKeys
+        .map((k) => {
+          const ic = resIcons[k] || k;
+          const e = runway[k];
+          let txt = "—";
+          if (e && e.trend === "drain" && e.approx_sols != null) {
+            const n = Number(e.approx_sols);
+            txt = `≈ ${n} ${solWord(n)}`;
+          } else if (e && e.trend === "surplus") {
+            txt = "растёт";
+          }
+          return `<span>${ic} <b>${escHtml(txt)}</b></span>`;
+        })
+        .join("");
+
       economyModalBody.innerHTML = `
         <div class="econ-modal">
-          <div class="econ-lead">Текущий сол: <b>${escHtml(String(body.current_sol ?? body.current_tick ?? 0))}</b> • Наука: <b>${escHtml(
-        String(body.research_points ?? 0)
-      )}</b> <span class="muted">(+${escHtml(String(body.research_points_per_sol ?? 0))}/сол)</span></div>
-          ${showExtChk}
+          <div class="econ-lead econ-lead-tools">
+            <span class="econ-lead-main">Текущий сол: <b>${escHtml(String(body.current_sol ?? body.current_tick ?? 0))}</b> • Наука: <b>${escHtml(String(body.research_points ?? 0))}</b>
+            <span class="muted"> (+${escHtml(String(body.research_points_per_sol ?? 0))}/сол)</span></span>
+            ${showExtChk}
+          </div>
 
-          <section class="econ-section">
-            <h4 class="econ-section-title">Строительство (справочно)</h4>
-            <div class="econ-card">
-              <p class="econ-muted">${escHtml(String(cref.note || ""))}</p>
-              <div class="econ-section-title" style="margin-top:0;font-size:0.76rem;">Постройки (сумма цен по балансу, ×уровень)</div>
-              ${resGridFour(crefB)}
-              <div class="econ-section-title" style="margin-top:12px;">Корабли во флотах (сумма цен по балансу)</div>
-              ${resGridFour(crefF)}
-            </div>
-          </section>
-
-          <section class="econ-section">
-            <h4 class="econ-section-title">Склад</h4>
-            <div class="econ-card">
-              <p class="econ-muted">Еда/вода копятся на планетах, автоперевоза между планетами нет. Поэтому «дом» может быть 0 при положительном балансе по империи.</p>
-              <div class="econ-section-title" style="margin-top:0;font-size:0.76rem;">Дом</div>
-              ${resGrid(tHome)}
-              <div class="econ-section-title" style="margin-top:12px;">Империя (сумма планет)</div>
-              ${resGrid(tEmp)}
-            </div>
-          </section>
-
-          <section class="econ-section">
-            <h4 class="econ-section-title">Баланс за сол</h4>
-            <div class="econ-card">
-              <div class="econ-section-title" style="margin-top:0;font-size:0.76rem;">Итог по империи</div>
+          <div class="game-modal-grid econ-three">
+            <div class="game-modal-col game-modal-col--entity">
+              <div class="section-title">Чистый приток за сол</div>
+              <p class="muted" style="margin:0 0 8px;font-size:82%;">По сумме складов империи после всех статей.</p>
               ${resGrid(net, true)}
-              <p class="econ-muted" style="margin-top:10px;margin-bottom:0;">Домашняя планета (за сол)</p>
+              <div class="section-title" style="margin-top:14px;">Домашняя планета</div>
+              <p class="muted" style="margin:0 0 8px;font-size:80%;">Отдельно от имперских списаний флотов с капитала.</p>
               ${resGrid(netHome, true)}
             </div>
-          </section>
-
-          <section class="econ-section">
-            <h4 class="econ-section-title">Доходы за сол</h4>
-            <div class="econ-card">
-              <p class="econ-muted">Сумма по всем вашим планетам (включая постройки/техи/расу/влияние).</p>
+            <div class="game-modal-col game-modal-col--state">
+              <div class="section-title">Производство планет</div>
+              <p class="muted" style="margin:0 0 8px;font-size:80%;">Сумма колоний</p>
               ${resGrid(prod)}
-            </div>
-          </section>
-
-          <section class="econ-section">
-            <h4 class="econ-section-title">Расходы за сол</h4>
-            <div class="econ-card">
+              <div class="section-title" style="margin-top:14px;">Расходы за сол</div>
               ${costRow("Население", costs.population_vitals, ["food", "water"])}
               ${costRow("Логистика форпостов", costs.outpost_supply_logistics || {}, ["food", "water"])}
               ${costRow("Содержание форпостов", costs.outpost_upkeep, ["metal", "crystal", "energy", "fuel"])}
-              ${costRow("Имперские расходы флотов", costs.fleet_empire_upkeep, ["metal", "crystal"])}
-              ${costRow("Энергия флотов (upkeep)", costs.fleet_energy_upkeep, ["energy"])}
+              ${costRow("Имперские расходы флотов", costs.fleet_empire_upkeep, ["metal", "crystal", "food", "water"])}
+              ${costRow("Энергия флотов на борту", costs.fleet_energy_upkeep, ["energy"])}
+              <p class="muted" style="margin:10px 0 4px;font-size:78%;line-height:1.35;">Итого по строкам выше (металл, кристалл, энергия, топливо) в основном даёт <b>содержание форпостов</b> и энергия флотов; при отдельных настройках — имперское снабжение кораблей. Сумма всех списаний по складам за сол:</p>
+              ${costRow("Всего списано за сол", expensesAgg, resKeys)}
+              <div class="section-title" style="margin-top:14px;">Запасы</div>
+              <div class="muted" style="margin:0 0 6px;font-size:80%;">Империя и дом</div>
+              <div class="econ-resource-grid">${resKeys
+                .map((k) => {
+                  const ic = resIcons[k] || k;
+                  const a = tEmp && tEmp[k] != null ? fmt(tEmp[k]) : "0";
+                  const h = tHome && tHome[k] != null ? fmt(tHome[k]) : "0";
+                  return `<span>${ic} <b>${escHtml(a)}</b><span class="muted"> / ${escHtml(h)}</span></span>`;
+                })
+                .join("")}</div>
+              <div class="section-title" style="margin-top:14px;">Горизонт</div>
+              <p class="muted" style="margin:0 0 6px;font-size:78%;">Оценка «хватит на N солов» при текущем чистом расходе</p>
+              <div class="econ-resource-grid">${runwayCells}</div>
             </div>
-          </section>
-
-          <section class="econ-section">
-            <h4 class="econ-section-title">Постройки</h4>
-            <div class="econ-card">
-              На планетах: <b>${escHtml(String(binfo.planet_buildings ?? 0))}</b> • Внешние: <b>${escHtml(
-        String(binfo.external_buildings ?? 0)
-      )}</b>${binfo.external_buildings_hidden ? ` <span class="muted">(скрыто: ${escHtml(String(binfo.external_buildings_hidden))})</span>` : ""}
+            <div class="game-modal-col game-modal-col--actions econ-col-spend">
+              <div class="section-title">Главный расход</div>
+              <div class="econ-card econ-card-nested">${biggestExpenseBlock}</div>
             </div>
-          </section>
+          </div>
 
-          <section class="econ-section">
-            <h4 class="econ-section-title">Полевые данные</h4>
-            <div class="econ-card">
-              <p class="econ-muted">Нужно для части исследований.</p>
-              <div>ruin_archives: <b>${escHtml(String(fd.ruin_archives ?? 0))}</b> • anomaly_data: <b>${escHtml(
+          <details class="game-modal-details econ-modal-details" data-econ-details="guide" style="margin-top:12px;"${detailsReadOpen ? " open" : ""}>
+            <summary class="game-modal-details-summary">Как читать таблицу</summary>
+            <div class="game-modal-details-inner">
+              <ol class="econ-flow-hints econ-muted" style="margin:8px 0 0;">
+                <li><b>Слева</b> — прирост/спад складов империи за сол (домашняя планета отдельно).</li>
+                <li><b>Центр</b> — производство колоний, статьи расхода и запасы с горизонтом.</li>
+                <li><b>Справа</b> — статья с наибольшей суммарной нагрузкой по ресурсам.</li>
+              </ol>
+            </div>
+          </details>
+
+          <details class="game-modal-details econ-modal-details" data-econ-details="refs"${detailsRefsOpen ? " open" : ""}>
+            <summary class="game-modal-details-summary">Строительство (справочно), постройки, полевые данные, флоты</summary>
+            <div class="game-modal-details-inner">
+              <section class="econ-section" style="margin-top:0;">
+                <h4 class="econ-section-title">Строительство (справочно)</h4>
+                <div class="econ-card">
+                  <p class="econ-muted">${escHtml(String(cref.note || ""))}</p>
+                  <div class="econ-section-title" style="margin-top:0;font-size:0.76rem;">Постройки (сумма цен по балансу, ×уровень)</div>
+                  ${resGridFour(crefB)}
+                  <div class="econ-section-title" style="margin-top:12px;">Корабли во флотах (сумма цен по балансу)</div>
+                  ${resGridFour(crefF)}
+                </div>
+              </section>
+              <section class="econ-section">
+                <h4 class="econ-section-title">Постройки (счётчики)</h4>
+                <div class="econ-card">
+                  На тайле колонии (клетка планеты): <b>${escHtml(String(buildOnTile))}</b> • Полевые (остальные клетки): <b>${escHtml(
+        String(buildFieldShown)
+      )}</b>${buildFieldHidden ? ` <span class="muted">(скрыто в сводке: ${escHtml(String(buildFieldHidden))})</span>` : ""}
+                  <p class="econ-muted" style="margin:8px 0 0;font-size:82%;line-height:1.4;">Всего построек империи: <b>${escHtml(String(buildTotalEmpire))}</b>. Счётчик <b>«Слоты»</b> у колонии учитывает только <b>тайл планеты</b> (число при старте с небольшим разбросом). Полевые постройки <b>не расходуют</b> эти слоты — их ограничивают ресурсы, зона и правило «одна постройка на клетку».</p>
+                </div>
+              </section>
+              <section class="econ-section">
+                <h4 class="econ-section-title">Полевые данные</h4>
+                <div class="econ-card">
+                  <p class="econ-muted">Нужно для части исследований.</p>
+                  <div>ruin_archives: <b>${escHtml(String(fd.ruin_archives ?? 0))}</b> • anomaly_data: <b>${escHtml(
         String(fd.anomaly_data ?? 0)
       )}</b> • research_fragments: <b>${escHtml(String(fd.research_fragments ?? 0))}</b></div>
+                </div>
+              </section>
+              <section class="econ-section">
+                <h4 class="econ-section-title">Флоты</h4>
+                <div class="econ-card">${fleetsHtml}</div>
+              </section>
             </div>
-          </section>
-
-          <section class="econ-section">
-            <h4 class="econ-section-title">Флоты</h4>
-            <div class="econ-card">${fleetsHtml}</div>
-          </section>
+          </details>
         </div>
       `;
+
+      const bindEconomyDetailPref = (selector, prefKey) => {
+        const el = economyModalBody.querySelector(selector);
+        if (!el) return;
+        el.addEventListener("toggle", () => {
+          writeEconPrefs({ [prefKey]: Boolean(el.open) });
+        });
+      };
+      bindEconomyDetailPref('[data-econ-details="guide"]', "econModalDetailsReadTable");
+      bindEconomyDetailPref('[data-econ-details="refs"]', "econModalDetailsBuildings");
 
       const chk = economyModalBody.querySelector("#econ-show-ext");
       if (chk) {
@@ -3125,6 +4389,33 @@
     if (economyModalOverlay) economyModalOverlay.classList.add("hidden");
   };
 
+  const TECH_RES_LABEL_RU = {
+    metal: "металл",
+    crystal: "кристалл",
+    energy: "энергия",
+    fuel: "топливо",
+    food: "еда",
+    water: "вода",
+  };
+  const TECH_RES_ICONS = {
+    metal: "⛏",
+    crystal: "💎",
+    energy: "⚡",
+    fuel: "⛽",
+    food: "🍲",
+    water: "💧",
+  };
+
+  const fieldDataRequirementRu = (k) => {
+    const key = String(k || "").trim();
+    const map = {
+      ruin_archives: "архивы развалин",
+      anomaly_data: "данные аномалии",
+      research_fragments: "исследовательские фрагменты",
+    };
+    return map[key] || key.replace(/_/g, " ");
+  };
+
   const formatTechCost = (cost) => {
     if (!cost || typeof cost !== "object") return "—";
     const parts = [];
@@ -3139,17 +4430,101 @@
     if (!eff || typeof eff !== "object") return [];
     const lines = [];
     if (typeof eff.travel_fuel_multiplier === "number") {
-      lines.push(`Топливо на полёт: множитель ×${eff.travel_fuel_multiplier} (чем меньше, тем дешевле).`);
+      lines.push(`расход топлива в полёте ×${eff.travel_fuel_multiplier} (ниже — дешевле)`);
     }
     if (eff.production_multiplier && typeof eff.production_multiplier === "object") {
       for (const [k, v] of Object.entries(eff.production_multiplier)) {
-        lines.push(`Производство «${k}»: ×${v}`);
+        const lab = TECH_RES_LABEL_RU[k] || k;
+        lines.push(`производство «${lab}» ×${v}`);
       }
     }
     for (const [k, v] of Object.entries(eff)) {
       if (k === "travel_fuel_multiplier" || k === "production_multiplier") continue;
-      if (typeof v === "number") lines.push(`${k}: ×${v}`);
-      else if (v && typeof v === "object") lines.push(`${k}: ${JSON.stringify(v)}`);
+      if (typeof v === "number") lines.push(`${TECH_RES_LABEL_RU[k] || k} ×${v}`);
+      else if (v && typeof v === "object") lines.push(`${k}: данные см. сервер`);
+    }
+    return lines;
+  };
+
+  /** Пояснения к эффекту теха с числами «сейчас → после» по сводке экономики игрока. */
+  const describeTechEffectsForTooltipLines = (eff, econ) => {
+    if (!eff || typeof eff !== "object") return [];
+    const prod =
+      econ && econ.production_per_sol && typeof econ.production_per_sol === "object"
+        ? econ.production_per_sol
+        : null;
+    const costs =
+      econ && econ.costs_per_sol && typeof econ.costs_per_sol === "object" ? econ.costs_per_sol : null;
+    const fmtSolInt = (n) => {
+      const x = Number(n);
+      if (!Number.isFinite(x)) return "?";
+      return String(Math.round(x));
+    };
+
+    const lines = [];
+    if (eff.production_multiplier && typeof eff.production_multiplier === "object" && prod) {
+      for (const [k, multRaw] of Object.entries(eff.production_multiplier)) {
+        const mult = Number(multRaw);
+        if (!Number.isFinite(mult) || mult <= 0) continue;
+        const cur = Number(prod[k]);
+        if (!Number.isFinite(cur)) continue;
+        const after = Math.round(cur * mult);
+        const ic = TECH_RES_ICONS[k] || "";
+        const lab = TECH_RES_LABEL_RU[k] || k;
+        lines.push(`${ic} ${lab}: суммарное произв. колоний сейчас +${fmtSolInt(cur)}/сол → после +${fmtSolInt(after)}/сол (×${mult})`);
+      }
+    } else if (eff.production_multiplier && typeof eff.production_multiplier === "object") {
+      for (const [k, v] of Object.entries(eff.production_multiplier)) {
+        const lab = TECH_RES_LABEL_RU[k] || k;
+        lines.push(`производство «${lab}» ×${v} (откройте сводку «Империя» для цифр)`);
+      }
+    }
+
+    if (typeof eff.travel_fuel_multiplier === "number") {
+      lines.push(`расход топлива за клетку перелёта ×${eff.travel_fuel_multiplier} (ниже — дешевле; суммируется с другими техами)`);
+    }
+
+    if (typeof eff.upkeep_energy_multiplier === "number" && costs && costs.fleet_energy_upkeep) {
+      const u = Number(costs.fleet_energy_upkeep.energy);
+      if (Number.isFinite(u) && u > 0) {
+        const nu = Math.round(u * eff.upkeep_energy_multiplier);
+        lines.push(
+          `${TECH_RES_ICONS.energy || "⚡"} энергия на борт флотов (статья): сейчас ${fmtSolInt(u)}/сол → после ${fmtSolInt(nu)}/сол (×${eff.upkeep_energy_multiplier})`
+        );
+      } else {
+        lines.push(`энергоудержание флотов ×${eff.upkeep_energy_multiplier} (ниже — дешевле)`);
+      }
+    } else if (typeof eff.upkeep_energy_multiplier === "number") {
+      lines.push(`энергоудержание флотов ×${eff.upkeep_energy_multiplier} (ниже — дешевле)`);
+    }
+
+    if (typeof eff.combat_damage_multiplier === "number") {
+      lines.push(`боевой урон флотов ×${eff.combat_damage_multiplier} (перемножается с другими завершёнными техами)`);
+    }
+    if (typeof eff.combat_hp_multiplier === "number") {
+      lines.push(`боевая выживаемость (HP-подобное) ×${eff.combat_hp_multiplier} (перемножается)`);
+    }
+
+    if (typeof eff.supply_base_add === "number") {
+      lines.push(`📡 базовый радиус снабжения колонии: +${eff.supply_base_add} к «базе» узла`);
+    }
+    if (typeof eff.supply_per_supplier_add === "number") {
+      lines.push(`📡 вклад каждого поставщика в радиус: +${eff.supply_per_supplier_add}`);
+    }
+
+    const handled = new Set([
+      "production_multiplier",
+      "travel_fuel_multiplier",
+      "upkeep_energy_multiplier",
+      "combat_damage_multiplier",
+      "combat_hp_multiplier",
+      "supply_base_add",
+      "supply_per_supplier_add",
+    ]);
+    for (const [key, val] of Object.entries(eff)) {
+      if (handled.has(key)) continue;
+      if (typeof val === "number") lines.push(`${TECH_RES_LABEL_RU[key] || key}: ×${val}`);
+      else if (val && typeof val === "object") lines.push(`${key}: см. описание технологии`);
     }
     return lines;
   };
@@ -3160,9 +4535,59 @@
     return arr
       .map((id) => {
         const t = byTechId[id];
-        return t && t.name ? `${t.name} (${id})` : String(id);
+        return t && t.name ? String(t.name) : "Неизвестная технология";
       })
       .join(", ");
+  };
+
+  const techDetailTooltipPlain = (t, byTechId, effectsBody, econSnap) => {
+    const lines = [];
+    const fdReq = Array.isArray(t.field_data_requirements)
+      ? t.field_data_requirements.filter((x) => typeof x === "string" && x.trim())
+      : [];
+    const effs = effectsBody && Array.isArray(effectsBody.effects) ? effectsBody.effects : [];
+    const effCount = (k) => effs.filter((e) => e && e.effect_type === k && e.used_at_tick == null).length;
+    const fdReqRu = fdReq.filter((kk) => effCount(kk) < 1);
+    lines.push(`Тир: ${t.tier ?? "—"}`);
+    const tickN = Number(t.time_ticks);
+    const residualN = Number(t.residual_time_ticks);
+    const workTicks = Number.isFinite(residualN) && residualN > 0 ? residualN : tickN;
+    if (Number.isFinite(workTicks) && workTicks > 0) lines.push(`Длительность работы: ${Math.round(workTicks)} ${solWord(workTicks)}`);
+    const rpNeed = Number(t.research_points_cost);
+    const payBits = [];
+    if (Number.isFinite(rpNeed) && rpNeed > 0) payBits.push(`наука ${rpNeed}`);
+    const cst = formatTechCost(t.cost);
+    if (cst && cst !== "—") payBits.push(cst);
+    lines.push(`Оплата при запуске: ${payBits.length ? payBits.join(", ") : "—"}`);
+    const desc = typeof t.description === "string" && t.description.trim() ? t.description.trim() : "";
+    if (desc) lines.push(`Описание: ${desc}`);
+    const efLines = describeTechEffectsForTooltipLines(
+      t.effects && typeof t.effects === "object" ? t.effects : {},
+      econSnap && econSnap.ok ? econSnap : null
+    );
+    if (efLines.length) lines.push(`Эффекты:\n${efLines.join("\n")}`);
+    lines.push(`Нужные технологии: ${formatPrereqNames(t.prereq, byTechId)}`);
+    lines.push(`Полевые данные для старта: ${fdReq.length ? fdReq.map(fieldDataRequirementRu).join(", ") : "нет"}`);
+    if (fdReqRu.length) lines.push(`Не хватает полевых данных: ${fdReqRu.map(fieldDataRequirementRu).join(", ")}`);
+    return lines.join("\n");
+  };
+
+  const researchStepsWordRu = (n) => {
+    const v = Math.abs(Math.floor(Number(n) || 0));
+    const mod100 = v % 100;
+    const mod10 = v % 10;
+    if (mod100 >= 11 && mod100 <= 14) return "исследований";
+    if (mod10 === 1) return "исследование";
+    if (mod10 >= 2 && mod10 <= 4) return "исследования";
+    return "исследований";
+  };
+
+  const scrollTechCardIntoView = (techId) => {
+    if (!techModalBody || !techId) return;
+    const id = String(techId).replace(/\\/g, "").replace(/"/g, "");
+    const el = techModalBody.querySelector(`[data-tech-card="${id}"]`);
+    if (el && typeof el.scrollIntoView === "function")
+      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
   };
 
   const techUiPrefsKey = "gs.techModal.v1";
@@ -3207,13 +4632,7 @@
         techModalBody.innerHTML = "<div class='muted'>Состояние исследований недоступно.</div>";
         return;
       }
-      const currentTick = Number.isInteger(stBody.current_sol)
-        ? stBody.current_sol
-        : Number.isInteger(stBody.current_tick)
-          ? stBody.current_tick
-          : 0;
       const rpPlayerBal = Number(stBody.research_points) || 0;
-      const rpPlayerPerSol = Number(stBody.research_points_per_sol);
       const rows = Array.isArray(stBody.techs) ? stBody.techs : [];
       const byId = {};
       for (const r of rows) byId[r.tech_id] = r;
@@ -3225,18 +4644,34 @@
       const enabled = techList.filter((t) => t && t.enabled !== false);
 
       let effectsBody = null;
+      let econSnap = null;
       try {
-        const er = await fetch("/api/effects/active");
-        const eb = await er.json();
+        const [er, econR] = await Promise.all([
+          fetch("/api/effects/active"),
+          fetch("/api/economy/summary?include_external_buildings=1"),
+        ]);
+        const eb = await er.json().catch(() => null);
         if (er.ok && eb && eb.ok) effectsBody = eb;
+        const ecb = await econR.json().catch(() => null);
+        if (econR.ok && ecb && ecb.ok) econSnap = ecb;
       } catch (_e2) {
         effectsBody = null;
+        econSnap = null;
       }
 
       const prefs = readTechUiPrefs();
-      const validTechTabs = new Set(["all", "available", "in_progress", "done"]);
-      let activeTab = validTechTabs.has(prefs.tab) ? prefs.tab : "available";
-      let hideDone = prefs.hideDone !== false;
+      const searchDraft =
+        typeof prefs.search === "string"
+          ? prefs.search.slice(0, 240)
+          : "";
+      const validTechTabs = new Set(["all", "available", "done"]);
+      if (prefs.tab === "in_progress") writeTechUiPrefs({ tab: "available" });
+      let activeTab =
+        prefs.tab === "in_progress"
+          ? "available"
+          : validTechTabs.has(prefs.tab)
+            ? prefs.tab
+            : "available";
 
       const techStatus = (t) => {
         const st0 = byId[t.id] || null;
@@ -3255,90 +4690,169 @@
         const effCount = (k) => effs.filter((e) => e && e.effect_type === k && e.used_at_tick == null).length;
         return fdReq.filter((k) => effCount(k) < 1);
       };
-      const techCanStart = (t) => {
+      const techRowsList = Array.isArray(stBody.techs) ? stBody.techs : [];
+      const activeResearchRow =
+        techRowsList.find((r) => r && r.status === "in_progress") || null;
+      const researchQueueBusy = Boolean(activeResearchRow);
+
+      const techReadyIgnoringQueue = (t) => {
         if (techStatus(t) !== "none") return false;
         return techPrereqMissing(t).length === 0 && techFieldDataMissing(t).length === 0;
       };
+      const techCanStart = (t) => techReadyIgnoringQueue(t) && !researchQueueBusy;
 
-      const renderCardInner = (t) => {
+      /** Следующий «рубеж»: есть неизученные прямые prereq и каждый из них готов к запуску (если бы очередь была свободна); у самого теха уже хватает полевых данных. */
+      const techQualifiesNextPreview = (t) => {
+        if (!t || techStatus(t) !== "none") return false;
+        const missP = techPrereqMissing(t);
+        if (missP.length === 0) return false;
+        if (techFieldDataMissing(t).length > 0) return false;
+        for (const pid of missP) {
+          const pt = byTechId[String(pid)];
+          if (!pt || pt.enabled === false) return false;
+          if (!techReadyIgnoringQueue(pt)) return false;
+        }
+        return true;
+      };
+
+      const previewIdSet = new Set(
+        enabled.filter(techQualifiesNextPreview).map((t) => String(t.id))
+      );
+
+      const fillTechQueuePanel = () => {
+        const el = techModalBody.querySelector("#tech-queue-panel");
+        if (!el) return;
+        const curSol = Number(stBody.current_sol ?? stBody.current_tick ?? 0);
+        const active = techRowsList.find((r) => r && r.status === "in_progress") || null;
+        const past =
+          techRowsList
+            .filter((r) => r && r.status === "done")
+            .sort(
+              (a, b) =>
+                (Number(b.finish_tick) || Number(b.finish_sol) || 0) -
+                (Number(a.finish_tick) || Number(a.finish_sol) || 0)
+            )[0] || null;
+        const nm = (tid) => {
+          const bd = tid && byTechId[String(tid)];
+          return bd && bd.name ? String(bd.name) : tid || "—";
+        };
+
+        let activeBlock = `<div class="muted tech-queue-empty">Нет активного исследования</div>`;
+        if (active) {
+          const tid = String(active.tech_id || "");
+          const start = Number(active.started_tick ?? active.started_sol ?? 0);
+          const fin = Number(active.finish_tick ?? active.finish_sol ?? 0);
+          const remRaw = Number(active.remaining_ticks ?? active.remaining_sols);
+          const rem =
+            Number.isFinite(remRaw) && remRaw >= 0
+              ? Math.floor(remRaw)
+              : Math.max(0, Math.floor(fin - curSol));
+          const totalTicks = Math.max(1, fin - start);
+          const elapsed = Math.min(totalTicks, Math.max(0, curSol - start));
+          const pct = Math.min(100, Math.max(0, Math.round((100 * elapsed) / totalTicks)));
+          const tipActive = [
+            `Сол старта: ${start}`,
+            `Примерное завершение: сол ${fin}`,
+            Number.isFinite(rem) ? `Осталось: ~${rem} ${solWord(rem)}` : "",
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          activeBlock = `<div class="tech-queue-active">
+            <div class="muted tech-queue-label">Сейчас</div>
+            <abbr class="tech-queue-name-wrap" tabindex="0" title="${escAttr(tipActive)}"><span class="tech-queue-name">${escHtml(nm(tid))}</span></abbr>
+            <div class="tech-queue-meta muted" aria-hidden="true">~${rem} ${solWord(rem)} · сол ${fin}</div>
+            <div class="tech-queue-bar-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-label="Прогресс текущего исследования">
+              <div class="tech-queue-bar-fill" style="width:${pct}%"></div>
+            </div>
+          </div>`;
+        }
+
+        let pastBlock = `<div class="tech-queue-past"><div class="muted tech-queue-label">Ранее</div><span class="muted">—</span></div>`;
+        if (past) {
+          const ptid = String(past.tech_id || "");
+          const fSol = Number(past.finish_tick ?? past.finish_sol ?? 0);
+          const tipPast = `Завершено примерно к солу ${fSol}`;
+          pastBlock = `<div class="tech-queue-past">
+            <div class="muted tech-queue-label">Ранее</div>
+            <abbr class="tech-queue-past-name-wrap" tabindex="0" title="${escAttr(tipPast)}"><span class="tech-queue-past-name">${escHtml(nm(ptid))}</span></abbr>
+          </div>`;
+        }
+
+        el.innerHTML = activeBlock + pastBlock;
+      };
+
+      const renderCardInnerCompact = (t) => {
         const st0 = byId[t.id] || null;
         const status = st0 ? st0.status : "none";
         const rem = st0 && Number.isInteger(st0.remaining_ticks) ? st0.remaining_ticks : null;
-        const fdReq = Array.isArray(t.field_data_requirements)
-          ? t.field_data_requirements.filter((x) => typeof x === "string" && x.trim())
-          : [];
-        const effs = effectsBody && Array.isArray(effectsBody.effects) ? effectsBody.effects : [];
-        const effCount = (k) => effs.filter((e) => e && e.effect_type === k && e.used_at_tick == null).length;
-        const missingFd = fdReq.filter((k) => effCount(k) < 1);
         const missingPrereq = techPrereqMissing(t);
+        const missingFd = techFieldDataMissing(t);
         const blockedReason =
           missingPrereq.length
-            ? `Нужны исследования: ${formatPrereqNames(missingPrereq, byTechId)}`
+            ? `Сначала: ${formatPrereqNames(missingPrereq, byTechId)}`
             : missingFd.length
-              ? `Нужны полевые данные: ${missingFd.join(", ")}`
+              ? `Нужно: ${missingFd.map(fieldDataRequirementRu).join(", ")}`
               : null;
-        const canStart = status === "none" && !blockedReason;
+        const queueBlockTitle =
+          researchQueueBusy && !blockedReason
+            ? "Сначала завершите текущее исследование — панель задач исследований слева."
+            : "";
+        const canStart = status === "none" && !blockedReason && !researchQueueBusy;
+        const startTitle = blockedReason || queueBlockTitle || "";
         const btn =
           status === "none"
-            ? `<button type="button" class="btn-primary" data-tech="${escHtml(t.id)}" ${canStart ? "" : "disabled"} title="${escHtml(blockedReason || "")}">${
-                canStart ? "Старт" : "Недоступно"
-              }</button>`
+            ? `<button type="button" class="btn-primary" data-tech="${escHtml(t.id)}" ${canStart ? "" : "disabled"} title="${escAttr(startTitle)}">${canStart ? "Запустить" : "Недоступно"}</button>`
             : "";
-        const statusLine =
+        const prog =
           status === "in_progress"
-            ? `<span class="muted">Идёт исследование, осталось <b>${rem ?? "?"}</b> ${rem != null && Number.isFinite(Number(rem)) ? solWord(rem) : "солов"}.</span>`
-            : status === "done"
-              ? `<span class="muted">Завершено.</span>`
-              : `<span class="muted">Не начато.</span>`;
-        const tickN = Number(t.time_ticks);
-        const residualN = Number(t.residual_time_ticks);
-        const workTicks = Number.isFinite(residualN) && residualN > 0 ? residualN : tickN;
-        const dur = Number.isFinite(workTicks) && workTicks > 0 ? `${Math.round(workTicks)} ${solWord(workTicks)}` : "—";
-        const costStr = formatTechCost(t.cost);
-        const rpNeed = Number(t.research_points_cost);
-        const payBits = [];
-        if (Number.isFinite(rpNeed) && rpNeed > 0) payBits.push(`наука ${rpNeed}`);
-        if (costStr && costStr !== "—") payBits.push(costStr);
-        const payLine = payBits.length ? payBits.join(" · ") : "—";
-        const prereqStr = formatPrereqNames(t.prereq, byTechId);
-        const fdLine = fdReq.length ? `<div class="tech-item-meta" style="margin-top:8px;">Полевые данные: <b>${escHtml(fdReq.join(", "))}</b></div>` : "";
-        const effLines = formatTechEffectsRu(t.effects);
+            ? `<div class="tech-item-progress muted">Идёт: осталось <b>${rem ?? "?"}</b> ${rem != null && Number.isFinite(Number(rem)) ? solWord(rem) : "ходов галактики"}</div>`
+            : "";
+
+        const effLines = describeTechEffectsForTooltipLines(
+          t.effects && typeof t.effects === "object" ? t.effects : {},
+          econSnap
+        );
         const desc =
           typeof t.description === "string" && t.description.trim()
-            ? escHtml(t.description.trim())
+            ? t.description.trim()
             : effLines.length
-              ? "После завершения:"
-              : "Описание в балансе не задано.";
-        const effBlock =
-          effLines.length > 0
-            ? `<ul class="tech-item-effects">${effLines.map((line) => `<li>${escHtml(line)}</li>`).join("")}</ul>`
-            : "<div class='muted' style='margin-top:6px;'>Эффекты не указаны в балансе.</div>";
+              ? effLines.slice(0, 2).join(" · ")
+              : "Подробнее — значок справа.";
+        const tooltip = techDetailTooltipPlain(t, byTechId, effectsBody, econSnap);
+        const name = escHtml(t.name || "Технология");
+        const help = `<abbr class="tech-item-help-abbr" tabindex="0" title="${escAttr(tooltip)}" aria-label="Подробная карточка">?</abbr>`;
 
         return `
-            <div class="tech-item-title">
-              <div><b>${escHtml(t.name || t.id)}</b> <span class="muted">(${escHtml(t.id)})</span></div>
-              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">${statusLine}${btn}</div>
+            <div class="tech-item-head">
+              <div class="tech-item-title-line">${name}${help}</div>
+              <div class="tech-item-act">${btn}</div>
             </div>
-            <div class="tech-item-meta">Тир ${escHtml(String(t.tier ?? "—"))} • длительность работы: <b>${escHtml(dur)}</b> • оплата при старте: ${escHtml(payLine)}</div>
-            <div class="tech-item-desc">${desc}</div>
-            ${effBlock}
-            <div class="tech-item-meta" style="margin-top:8px;">Предпосылки: ${escHtml(prereqStr)}</div>
-            ${fdLine}
+            ${prog}
+            <div class="tech-item-snippet muted">${escHtml(desc)}</div>
         `;
+      };
+
+      const techCardPathCls = (t) => {
+        if (!techModalPathGuide?.active || !Array.isArray(techModalPathGuide.prereqIds)) return "";
+        const set = new Set(techModalPathGuide.prereqIds.map(String));
+        return set.has(String(t.id)) ? " tech-item-path-focus" : "";
       };
 
       const renderCard = (t) => {
         const status = techStatus(t);
-        const inner = renderCardInner(t);
+        const tip = escAttr(techDetailTooltipPlain(t, byTechId, effectsBody, econSnap));
+        const pathCls = techCardPathCls(t);
+        const cardIdAttr = ` data-tech-card="${escAttr(String(t.id))}"`;
         if (status === "done") {
-          return `
-          <details class="tech-item tech-item-done">
-            <summary class="tech-item-summary">${escHtml(t.name || t.id)} <span class="muted">(${escHtml(t.id)}) — завершено</span></summary>
-            <div class="tech-item-details-inner">${inner}</div>
-          </details>`;
+          const nm = escHtml(t.name || "Технология");
+          return `<div class="tech-item tech-item-done-strip${pathCls}"${cardIdAttr}>
+            <span class="muted tech-done-chip">✓ готово</span>
+            <span class="tech-done-strip-name">${nm}</span>
+            <abbr class="tech-item-help-abbr" tabindex="0" title="${tip}" aria-label="Подробная карточка">?</abbr>
+          </div>`;
         }
         const activeCls = status === "in_progress" ? " tech-item-active" : "";
-        return `<div class="tech-item${activeCls}">${inner}</div>`;
+        return `<div class="tech-item${activeCls}${pathCls}"${cardIdAttr}>${renderCardInnerCompact(t)}</div>`;
       };
 
       const matchesSearch = (t, q) => {
@@ -3350,30 +4864,132 @@
 
       const filterList = (qRaw) => {
         const q = (qRaw || "").trim().toLowerCase();
+        if (techModalPathGuide?.active && Array.isArray(techModalPathGuide.prereqIds)) {
+          const allowed = new Set(techModalPathGuide.prereqIds.map(String));
+          return enabled.filter((t) => {
+            if (!allowed.has(String(t.id))) return false;
+            return matchesSearch(t, q);
+          });
+        }
         return enabled.filter((t) => {
+          if (previewIdSet.has(String(t.id))) return false;
           const st = techStatus(t);
           if (!matchesSearch(t, q)) return false;
           if (activeTab === "available") return techCanStart(t);
-          if (activeTab === "in_progress") return st === "in_progress";
           if (activeTab === "done") return st === "done";
-          if (activeTab === "all") {
-            if (hideDone && st === "done") return false;
-            return true;
-          }
           return true;
         });
       };
 
+      const filterPreviewList = (qRaw) => {
+        const q = (qRaw || "").trim().toLowerCase();
+        const arr = enabled.filter((t) => previewIdSet.has(String(t.id)) && matchesSearch(t, q));
+        arr.sort((a, b) => {
+          const ta = Number(a.tier);
+          const tb = Number(b.tier);
+          if (Number.isFinite(ta) && Number.isFinite(tb) && ta !== tb) return ta - tb;
+          const na = String(a.name || a.id || "");
+          const nb = String(b.name || b.id || "");
+          return na.localeCompare(nb, "ru");
+        });
+        return arr;
+      };
+
+      const renderPreviewCard = (t) => {
+        const tip = escAttr(techDetailTooltipPlain(t, byTechId, effectsBody, econSnap));
+        const nm = escHtml(t.name || "Технология");
+        const prereqOrder = Array.isArray(t.prereq)
+          ? t.prereq.filter((x) => typeof x === "string" && String(x).trim())
+          : [];
+        const chainHtml = prereqOrder
+          .map((pid, idx) => {
+            const pidS = String(pid);
+            const done = doneSet.has(pidS);
+            const pt = byTechId[pidS];
+            const label = pt && pt.name ? String(pt.name).trim() : pidS;
+            const mark = done ? "✔" : "✖";
+            const btn = `<button type="button" class="tech-chain-pill${done ? " tech-chain-pill--done" : " tech-chain-pill--todo"}" data-tech-preview-anchor="${escAttr(String(t.id))}" data-tech-focus-prereq="${escAttr(pidS)}">${mark} ${escHtml(label)}</button>`;
+            const arrow =
+              idx < prereqOrder.length - 1
+                ? `<span class="tech-chain-arr" aria-hidden="true">→</span>`
+                : "";
+            return `${btn}${arrow}`;
+          })
+          .join("");
+        let desc = "";
+        if (typeof t.description === "string" && t.description.trim()) {
+          const raw = t.description.trim();
+          desc =
+            raw.length > 220
+              ? `${escHtml(raw.slice(0, 220).trimEnd())}…`
+              : escHtml(raw);
+        }
+        const totalReq = prereqOrder.length || 1;
+        const doneReq = prereqOrder.filter((pid) => doneSet.has(String(pid))).length;
+        const leftReq = prereqOrder.filter((pid) => !doneSet.has(String(pid))).length;
+        const pathActive =
+          techModalPathGuide?.active && String(techModalPathGuide.targetId) === String(t.id)
+            ? " tech-item-preview--path-active"
+            : "";
+        return `<div class="tech-item tech-item-preview${pathActive}" data-tech-preview-target="${escAttr(String(t.id))}">
+          <div class="tech-item-head">
+            <div class="tech-item-title-line"><span class="tech-preview-lock" title="Откроется после зависимостей">🔒</span>${nm}
+              <abbr class="tech-item-help-abbr" tabindex="0" title="${tip}" aria-label="Подробная карточка">?</abbr>
+            </div>
+          </div>
+          <div class="tech-preview-metrics muted">
+            <span class="tech-preview-metrics-strong">${doneReq}/${totalReq} условий</span>
+            <span class="tech-preview-metrics-dot"> · </span>
+            <span>до открытия: ещё <b>${leftReq}</b> ${researchStepsWordRu(leftReq)}</span>
+          </div>
+          <div class="tech-preview-chain-wrap">
+            <div class="tech-preview-chain">${chainHtml}</div>
+          </div>
+          ${desc ? `<div class="tech-item-snippet muted">${desc}</div>` : ""}
+          <button type="button" class="btn-secondary tech-path-build-btn" data-tech-path-for="${escAttr(String(t.id))}">Построить путь</button>
+        </div>`;
+      };
+
       const paint = (searchVal) => {
-        const list = filterList(searchVal);
+        const searchLive =
+          techModalBody && techModalBody.querySelector("#tech-search")
+            ? String(techModalBody.querySelector("#tech-search").value ?? "")
+            : String(searchVal ?? "");
+        const bannerSlot = techModalBody.querySelector("#tech-path-banner-slot");
+        if (bannerSlot) {
+          if (techModalPathGuide?.active && techModalPathGuide.targetId) {
+            const gt = byTechId[String(techModalPathGuide.targetId)];
+            const gnm = gt && gt.name ? String(gt.name) : "технология";
+            bannerSlot.innerHTML = `<div class="tech-path-banner" role="region" aria-label="Маршрут исследований"><div class="tech-path-banner-inner"><span>В центре — шаги к <b>${escHtml(gnm)}</b>; подсвечены ячейки маршрута.</span><button type="button" class="btn-secondary tech-path-banner-clear">Снять маршрут</button></div></div>`;
+          } else {
+            bannerSlot.innerHTML = "";
+          }
+        }
+        const clr = bannerSlot && bannerSlot.querySelector(".tech-path-banner-clear");
+        if (clr) {
+          clr.addEventListener("click", () => {
+            techModalPathGuide = null;
+            paint(String(techModalBody.querySelector("#tech-search")?.value ?? ""));
+          });
+        }
+
+        const list = filterList(searchLive);
+        const plist = filterPreviewList(searchLive);
         const elList = techModalBody.querySelector("#tech-modal-list");
         if (!elList) return;
-        elList.innerHTML = list.map(renderCard).join("") || "<div class='muted'>Нет технологий по фильтру.</div>";
+        elList.innerHTML =
+          list.map(renderCard).join("") ||
+          `<div class="muted">${
+            techModalPathGuide?.active
+              ? "Нет шагов маршрута в списке. Снимите маршрут или измените поиск."
+              : `По фильтру ничего нет (${escHtml(activeTab)})`
+          }</div>`;
         for (const b of elList.querySelectorAll("button[data-tech]")) {
           b.addEventListener("click", async () => {
             if (b.disabled) return;
             const tech_id = b.getAttribute("data-tech");
-            setStatus("Старт исследования...");
+            const tnm = tech_id && byTechId[tech_id] && byTechId[tech_id].name ? String(byTechId[tech_id].name) : "Исследование";
+            setStatus("Запуск исследования…");
             const r = await fetch("/api/tech/start", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -3381,89 +4997,183 @@
             });
             const body = await r.json();
             if (!r.ok || !body.ok) {
-              setStatus(`Ошибка tech: ${body.error || "start_failed"}`, "err");
+              let errRu = body.error || "start_failed";
+              if (body.error === "tech_queue_full")
+                errRu =
+                  "Уже есть исследование в работе — прогресс в панели задач исследований слева. Дождитесь завершения или откройте модалку позже.";
+              setStatus(errRu, "err");
               await loadTechModalContent();
               return;
             }
             const extra = [];
             if (body.research_time_multiplier && body.research_time_multiplier < 0.999)
               extra.push(`ускорение ×${Number(body.research_time_multiplier).toFixed(2)}`);
-            if (body.blueprint_cache_consumed) extra.push("кэш чертежей");
-            setStatus(`Исследование запущено: ${tech_id}${extra.length ? " (" + extra.join(", ") + ")" : ""}`, "ok");
+            if (body.blueprint_cache_consumed) extra.push("потрачен кэш чертежей");
+            setStatus(`Запущено: «${tnm}»${extra.length ? ". " + extra.join(", ") : ""}`, "ok");
             await loadTechModalContent();
           });
         }
+        const elPv = techModalBody.querySelector("#tech-modal-preview-list");
+        if (elPv) {
+          elPv.innerHTML =
+            plist.length > 0
+              ? plist.map(renderPreviewCard).join("")
+              : `<div class="muted">Здесь появятся технологии, у которых остались только неизученные зависимости — и каждую из них вы можете начать в средней колонке.</div>`;
+          for (const b of techModalBody.querySelectorAll("[data-tech-focus-prereq]")) {
+            b.addEventListener("click", () => {
+              const anchor = b.getAttribute("data-tech-preview-anchor");
+              const prereqFocus = b.getAttribute("data-tech-focus-prereq");
+              const techT = anchor ? byTechId[String(anchor)] : null;
+              if (!techT || !prereqFocus) return;
+              const misses = techPrereqMissing(techT);
+              if (!misses.length) return;
+              techModalPathGuide = {
+                active: true,
+                targetId: String(anchor),
+                prereqIds: misses.map(String),
+              };
+              const qNow =
+                techModalBody.querySelector("#tech-search")?.value ??
+                "";
+              paint(String(qNow));
+              requestAnimationFrame(() => requestAnimationFrame(() => scrollTechCardIntoView(prereqFocus)));
+            });
+          }
+          for (const b of techModalBody.querySelectorAll("[data-tech-path-for]")) {
+            b.addEventListener("click", () => {
+              const tid = b.getAttribute("data-tech-path-for");
+              const tt = tid ? byTechId[String(tid)] : null;
+              if (!tt) return;
+              const misses = techPrereqMissing(tt);
+              if (!misses.length) return;
+              techModalPathGuide = { active: true, targetId: String(tid), prereqIds: misses.map(String) };
+              const qNow =
+                techModalBody.querySelector("#tech-search")?.value ??
+                "";
+              paint(String(qNow));
+              const firstTodo = misses.find((pid) => !doneSet.has(String(pid)));
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => scrollTechCardIntoView(firstTodo || misses[0]))
+              );
+            });
+          }
+        }
       };
 
+      const scrollKeep =
+        techModalBody && techModalBody.querySelector(".tech-research-grid")
+          ? (() => {
+              const mainEl = techModalBody.querySelector(".tech-modal-main");
+              const listEl = techModalBody.querySelector("#tech-modal-list");
+              const pvEl = techModalBody.querySelector("#tech-modal-preview-list");
+              return {
+                body: techModalBody.scrollTop,
+                main: mainEl ? mainEl.scrollTop : 0,
+                list: listEl ? listEl.scrollTop : 0,
+                preview: pvEl ? pvEl.scrollTop : 0,
+              };
+            })()
+          : null;
+
+      const rpRounded = escHtml(String(Math.round(rpPlayerBal * 100) / 100));
       techModalBody.innerHTML = `
-        <div class="muted" style="margin-bottom:10px;">Текущий сол: <b>${currentTick}</b> • Наука: <b>${escHtml(String(Math.round(rpPlayerBal * 100) / 100))}</b>${
-        Number.isFinite(rpPlayerPerSol) && rpPlayerPerSol > 0
-          ? ` <span class="muted">(+${escHtml(String(Math.round(rpPlayerPerSol * 1000) / 1000))}/сол)</span>`
-          : ""
-      }</div>
-        <div id="tech-effects" class="tech-effects"></div>
-        <div class="tech-toolbar">
-          <div class="tech-tabs" role="tablist">
-            <button type="button" class="tech-tab${activeTab === "available" ? " is-active" : ""}" data-tech-tab="available">Доступные</button>
-            <button type="button" class="tech-tab${activeTab === "all" ? " is-active" : ""}" data-tech-tab="all">Все</button>
-            <button type="button" class="tech-tab${activeTab === "in_progress" ? " is-active" : ""}" data-tech-tab="in_progress">В процессе</button>
-            <button type="button" class="tech-tab${activeTab === "done" ? " is-active" : ""}" data-tech-tab="done">Завершённые</button>
+        <div class="game-modal-grid tech-research-grid">
+          <aside class="game-modal-col tech-modal-sidebar">
+            <div class="section-title">Запасы науки</div>
+            <div class="tech-rp-balance" id="tech-rp-bal">${rpRounded}</div>
+            <div class="section-title" style="margin-top:14px;">Задачи исследований</div>
+            <div id="tech-queue-panel" class="tech-queue-panel muted"></div>
+            <div class="section-title" style="margin-top:14px;">Модификаторы</div>
+            <div id="tech-sidebar-effects" class="tech-sidebar-effects muted"></div>
+            <div class="section-title" style="margin-top:14px;">Поиск</div>
+            <input type="search" id="tech-search" class="tech-search" placeholder="Имя технологии…" autocomplete="off" value="${escAttr(searchDraft)}" />
+            <div class="section-title" style="margin-top:12px;">Фильтр</div>
+            <div class="tech-tabs tech-tabs-vertical" role="tablist">
+              <button type="button" class="tech-tab${activeTab === "available" ? " is-active" : ""}" data-tech-tab="available">Можно начать</button>
+              <button type="button" class="tech-tab${activeTab === "all" ? " is-active" : ""}" data-tech-tab="all">Все</button>
+              <button type="button" class="tech-tab${activeTab === "done" ? " is-active" : ""}" data-tech-tab="done">Изучены</button>
+            </div>
+          </aside>
+          <div class="game-modal-col tech-modal-main game-modal-col--state">
+            <div id="tech-path-banner-slot" class="tech-path-banner-slot"></div>
+            <div id="tech-modal-list" class="tech-modal-list"></div>
           </div>
-          <label class="tech-hide-done"><input type="checkbox" id="tech-hide-done" ${hideDone ? "checked" : ""}/> Скрыть завершённые</label>
-          <input type="search" id="tech-search" class="tech-search" placeholder="Поиск по имени или id…" autocomplete="off" />
+          <div class="game-modal-col tech-modal-preview game-modal-col--state">
+            <div class="section-title tech-preview-heading">Скоро доступно</div>
+            <p class="tech-preview-hint muted">Откроется после перечисленных исследований; каждый шаг уже можно начать в центральной колонке.</p>
+            <div id="tech-modal-preview-list" class="tech-modal-preview-list"></div>
+          </div>
         </div>
-        <div id="tech-modal-list" class="tech-modal-list"></div>
       `;
 
-      const effectsEl = techModalBody.querySelector("#tech-effects");
-      const renderEffects = () => {
-        if (!effectsEl) return;
+      const effectsSidebar = techModalBody.querySelector("#tech-sidebar-effects");
+      const renderSidebarEffects = () => {
+        if (!effectsSidebar) return;
         const effects = effectsBody && Array.isArray(effectsBody.effects) ? effectsBody.effects : [];
         const lines = [];
         for (const e of effects) {
           if (!e || typeof e !== "object") continue;
           const t = String(e.effect_type || "");
-          if (t === "bandit_ambush_cooldown") continue; // системное
+          if (t === "bandit_ambush_cooldown") continue;
           if (t === "research_speed_boost") {
             const m = e.payload && typeof e.payload.time_multiplier === "number" ? e.payload.time_multiplier : 1.0;
             const pct = Math.max(0, Math.round((1.0 - m) * 100));
             const rem = Number.isInteger(e.remaining_ticks) ? e.remaining_ticks : null;
-            lines.push(`- Архив/телеметрия: исследования быстрее на ${pct}%${rem != null ? `, осталось ${rem} ${solWord(rem)}` : ""}`);
+            lines.push(
+              `Архив/телеметрия: исследования быстрее на ${pct}%${rem != null ? `, ещё ${rem} ${solWord(rem)}` : ""}`
+            );
           } else if (t === "blueprint_cache") {
-            lines.push("- Кэш чертежей: скидка на следующее исследование");
+            lines.push("Кэш чертежей: скидка на следующий запуск");
           } else {
-            lines.push(`- ${escHtml(t)}`);
+            lines.push(`Эффект: ${t.replace(/_/g, " ")}`);
           }
         }
-        effectsEl.innerHTML =
-          `<div class="tech-effects-title"><b>Активные эффекты</b></div>` +
-          (lines.length ? `<div class="tech-effects-list">${lines.map((x) => `<div>${escHtml(x)}</div>`).join("")}</div>` : `<div class="muted">Нет активных эффектов.</div>`);
+        effectsSidebar.innerHTML =
+          lines.length > 0
+            ? `<ul class="tech-sidebar-effects-ul">${lines.map((x) => `<li>${escHtml(x)}</li>`).join("")}</ul>`
+            : `<div class="muted" style="font-size:82%;">Нет внешних усилений</div>`;
       };
-      renderEffects();
+      renderSidebarEffects();
+      fillTechQueuePanel();
 
       const searchInput = techModalBody.querySelector("#tech-search");
-      const hideChk = techModalBody.querySelector("#tech-hide-done");
 
       for (const tabBtn of techModalBody.querySelectorAll("button[data-tech-tab]")) {
         tabBtn.addEventListener("click", () => {
           activeTab = tabBtn.getAttribute("data-tech-tab") || "available";
           writeTechUiPrefs({ tab: activeTab });
-          for (const b of techModalBody.querySelectorAll("button[data-tech-tab]")) b.classList.toggle("is-active", b.getAttribute("data-tech-tab") === activeTab);
+          for (const b of techModalBody.querySelectorAll("button[data-tech-tab]"))
+            b.classList.toggle("is-active", b.getAttribute("data-tech-tab") === activeTab);
           paint(searchInput ? searchInput.value : "");
         });
       }
-      if (hideChk) {
-        hideChk.addEventListener("change", () => {
-          hideDone = Boolean(hideChk.checked);
-          writeTechUiPrefs({ hideDone });
-          paint(searchInput ? searchInput.value : "");
+      const restoreTechModalScroll = (sk) => {
+        if (!sk || !techModalBody) return;
+        const go = () => {
+          techModalBody.scrollTop = sk.body;
+          const m = techModalBody.querySelector(".tech-modal-main");
+          const l = techModalBody.querySelector("#tech-modal-list");
+          const pv = techModalBody.querySelector("#tech-modal-preview-list");
+          if (m) m.scrollTop = sk.main;
+          if (l) l.scrollTop = sk.list;
+          if (pv) pv.scrollTop = sk.preview ?? 0;
+        };
+        go();
+        requestAnimationFrame(() => {
+          go();
+          requestAnimationFrame(go);
         });
-      }
+      };
+
       if (searchInput) {
-        searchInput.addEventListener("input", () => paint(searchInput.value));
+        searchInput.addEventListener("input", () => {
+          writeTechUiPrefs({ search: searchInput.value });
+          paint(searchInput.value);
+        });
       }
 
-      paint(searchInput ? searchInput.value : "");
+      paint(searchDraft);
+      restoreTechModalScroll(scrollKeep);
     } catch (_e) {
       techModalBody.innerHTML = "<div class='muted'>Ошибка загрузки исследований.</div>";
     }
@@ -3570,18 +5280,35 @@
     return null;
   };
 
-  /** Размер клетки: заполняем ширину `.map-wrap`, с запасом и верхним пределом читаемости. */
-  const computeMapLayoutCellPx = (size) => {
+  /** Размеры клетки по осям: сетка size×size заполняет прямоугольник `.map-wrap` без прокрутки (ширина и высота независимо). */
+  const computeMapLayoutCellsPx = (size) => {
     const minC = 22;
     const maxC = 140;
     const baseCell =
       Number.parseInt(getComputedStyle(document.documentElement).getPropertyValue("--cell-size"), 10) || 96;
     const refCells = 13;
-    const fallback = Math.max(minC, Math.min(baseCell, Math.round((baseCell * refCells) / size)));
+    const fallbackSq = Math.max(minC, Math.min(baseCell, Math.round((baseCell * refCells) / size)));
     const w = mapWrapEl ? mapWrapEl.clientWidth : 0;
-    if (!w || w < size * minC) return fallback;
-    const slot = Math.max(0, w - 6);
-    return Math.max(minC, Math.min(maxC, Math.floor(slot / size)));
+    const h = mapWrapEl ? mapWrapEl.clientHeight : 0;
+    if (!w || !h || w < size * minC || h < size * minC) return { cw: fallbackSq, ch: fallbackSq };
+    const slotW = Math.max(0, w - 6);
+    const slotH = Math.max(0, h - 6);
+    const byW = Math.floor(slotW / size);
+    const byH = Math.floor(slotH / size);
+    return {
+      cw: Math.max(minC, Math.min(maxC, byW)),
+      ch: Math.max(minC, Math.min(maxC, byH)),
+    };
+  };
+
+  const readMapLayoutDimsFromCss = () => {
+    const fb =
+      Number.parseInt(getComputedStyle(document.documentElement).getPropertyValue("--cell-size"), 10) || 96;
+    if (!mapEl) return { cw: fb, ch: fb };
+    const st = getComputedStyle(mapEl);
+    const cw = Number.parseInt(st.getPropertyValue("--map-layout-cell-w"), 10);
+    const ch = Number.parseInt(st.getPropertyValue("--map-layout-cell-h"), 10);
+    return { cw: Number.isFinite(cw) && cw > 0 ? cw : fb, ch: Number.isFinite(ch) && ch > 0 ? ch : fb };
   };
 
   const renderMap = () => {
@@ -3593,8 +5320,9 @@
     mapEl.classList.toggle("map-mode-graphic", mapOpts.graphic);
     mapEl.classList.toggle("map-mode-tactical", !mapOpts.graphic);
     mapEl.classList.toggle("map-hide-coords", !mapOpts.mapShowCoords);
-    const layoutCell = computeMapLayoutCellPx(size);
-    mapEl.style.setProperty("--map-layout-cell", `${layoutCell}px`);
+    const dims = computeMapLayoutCellsPx(size);
+    mapEl.style.setProperty("--map-layout-cell-w", `${dims.cw}px`);
+    mapEl.style.setProperty("--map-layout-cell-h", `${dims.ch}px`);
 
     const scout = detectScoutPos();
     if (unitPosEl) unitPosEl.textContent = `${scout.x}, ${scout.y}, ${scout.z}`;
@@ -3902,26 +5630,35 @@
     renderFlightOverlay();
   };
 
-  const getCellCenter = (x, y, z) => {
-    if (!mapEl || !mapWrapEl) return null;
+  /** Центр клетки в системе координат SVG внутри `.map-layer` (как у zone-overlay). */
+  const getCellCenterInLayerSpace = (x, y, z) => {
+    if (!mapEl || !mapLayerEl) return null;
     const el = mapEl.querySelector(`button.cell[data-x='${x}'][data-y='${y}'][data-z='${z}']`);
     if (!el) return null;
-    const r1 = el.getBoundingClientRect();
-    const r2 = mapWrapEl.getBoundingClientRect();
-    // координаты внутри viewport скролл-контейнера
-    return { cx: r1.left - r2.left + r1.width / 2, cy: r1.top - r2.top + r1.height / 2 };
+    let ox = 0;
+    let oy = 0;
+    let n = el;
+    while (n && n !== mapLayerEl) {
+      ox += n.offsetLeft;
+      oy += n.offsetTop;
+      n = n.offsetParent;
+    }
+    if (n !== mapLayerEl) return null;
+    return { cx: ox + el.offsetWidth / 2, cy: oy + el.offsetHeight / 2 };
   };
 
   const renderFlightOverlay = () => {
-    if (!flightOverlayEl || !mapEl || !mapWrapEl) return;
+    if (!flightOverlayEl || !mapEl || !mapLayerEl || !currentWindow || !currentWindow.cells) return;
     // clear
     flightOverlayEl.innerHTML = "";
 
-    const w = mapWrapEl.clientWidth;
-    const h = mapWrapEl.clientHeight;
-    flightOverlayEl.setAttribute("viewBox", `0 0 ${w} ${h}`);
-    flightOverlayEl.setAttribute("width", String(w));
-    flightOverlayEl.setAttribute("height", String(h));
+    const size = currentWindow.radius * 2 + 1;
+    const { cw: cellWPx, ch: cellHPx } = readMapLayoutDimsFromCss();
+    const W = size * cellWPx;
+    const H = size * cellHPx;
+    flightOverlayEl.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    flightOverlayEl.setAttribute("width", String(W));
+    flightOverlayEl.setAttribute("height", String(H));
 
     const ns = "http://www.w3.org/2000/svg";
 
@@ -3934,8 +5671,8 @@
 
     for (const f of moving) {
       const ao = f.active_order;
-      const from = getCellCenter(ao.from_x, ao.from_y, ao.from_z ?? 0);
-      const to = getCellCenter(ao.target_x, ao.target_y, ao.target_z ?? 0);
+      const from = getCellCenterInLayerSpace(ao.from_x, ao.from_y, ao.from_z ?? 0);
+      const to = getCellCenterInLayerSpace(ao.target_x, ao.target_y, ao.target_z ?? 0);
       if (!from || !to) continue;
 
       const travelTicks = Number.isInteger(ao.travel_ticks)
@@ -3959,7 +5696,7 @@
       const dot = document.createElementNS(ns, "circle");
       dot.setAttribute("cx", String(x));
       dot.setAttribute("cy", String(y));
-      dot.setAttribute("r", "6");
+      dot.setAttribute("r", String(Math.max(4, Math.round(Math.min(cellWPx, cellHPx) * 0.07))));
       dot.setAttribute("class", isEmergency ? "flight-dot flight-dot-emergency" : "flight-dot");
 
       flightOverlayEl.appendChild(line);
@@ -3970,31 +5707,19 @@
   const renderZoneOverlay = () => {
     if (!zoneOverlayEl || !mapEl || !mapLayerEl || !currentWindow || !currentWindow.cells) return;
     const size = currentWindow.radius * 2 + 1;
-    const cellSize =
-      Number.parseInt(getComputedStyle(mapEl).getPropertyValue("--map-layout-cell"), 10) ||
-      Number.parseInt(getComputedStyle(document.documentElement).getPropertyValue("--cell-size"), 10) ||
-      96;
+    const { cw: cellWpx, ch: cellHpx } = readMapLayoutDimsFromCss();
+    const mapWpx = size * cellWpx;
+    const mapHpx = size * cellHpx;
 
-    // overlay должен совпадать с размером контента карты и скроллиться вместе с ним
-    mapLayerEl.style.width = `${size * cellSize}px`;
-    mapLayerEl.style.height = `${size * cellSize}px`;
-    zoneOverlayEl.setAttribute("viewBox", `0 0 ${size * cellSize} ${size * cellSize}`);
-    zoneOverlayEl.setAttribute("width", String(size * cellSize));
-    zoneOverlayEl.setAttribute("height", String(size * cellSize));
+    // overlay — в тех же px, что и сетка
+    mapLayerEl.style.width = `${mapWpx}px`;
+    mapLayerEl.style.height = `${mapHpx}px`;
+    zoneOverlayEl.setAttribute("viewBox", `0 0 ${mapWpx} ${mapHpx}`);
+    zoneOverlayEl.setAttribute("width", String(mapWpx));
+    zoneOverlayEl.setAttribute("height", String(mapHpx));
     zoneOverlayEl.innerHTML = "";
 
     const ns = "http://www.w3.org/2000/svg";
-
-    // DEBUG рамка (чтобы понять, виден ли слой вообще)
-    const dbg = document.createElementNS(ns, "rect");
-    dbg.setAttribute("x", "0");
-    dbg.setAttribute("y", "0");
-    dbg.setAttribute("width", String(size * cellSize));
-    dbg.setAttribute("height", String(size * cellSize));
-    dbg.setAttribute("fill", "none");
-    dbg.setAttribute("stroke", "rgba(255,0,255,0.18)");
-    dbg.setAttribute("stroke-width", "2");
-    zoneOverlayEl.appendChild(dbg);
 
     // defs: wavy filter
     const defs = document.createElementNS(ns, "defs");
@@ -4062,10 +5787,10 @@
           const k = cellIndexKey(c.x, c.y, c.z);
           if (!zoneSet.has(k)) continue;
 
-          const x0 = xi * cellSize;
-          const y0 = yi * cellSize;
-          const x1 = x0 + cellSize;
-          const y1 = y0 + cellSize;
+          const x0 = xi * cellWpx;
+          const y0 = yi * cellHpx;
+          const x1 = x0 + cellWpx;
+          const y1 = y0 + cellHpx;
 
           const nL = cellIndexKey(c.x - 1, c.y, c.z);
           const nR = cellIndexKey(c.x + 1, c.y, c.z);
@@ -4199,7 +5924,7 @@
     const drawBorder = (zoneSet, klass) => {
       const segs = collectEdges(zoneSet);
       const loops = segmentsToLoops(segs);
-      const radius = Math.max(6, Math.round(cellSize * 0.22));
+      const radius = Math.max(6, Math.round(Math.min(cellWpx, cellHpx) * 0.22));
       if (loops.length) {
         for (const loop of loops) {
           const path = document.createElementNS(ns, "path");
@@ -4228,7 +5953,9 @@
   const applyMapCellSizeFromContainer = () => {
     if (!mapEl || !currentWindow || !currentWindow.cells) return;
     const size = currentWindow.radius * 2 + 1;
-    mapEl.style.setProperty("--map-layout-cell", `${computeMapLayoutCellPx(size)}px`);
+    const d = computeMapLayoutCellsPx(size);
+    mapEl.style.setProperty("--map-layout-cell-w", `${d.cw}px`);
+    mapEl.style.setProperty("--map-layout-cell-h", `${d.ch}px`);
     renderZoneOverlay();
     renderFlightOverlay();
     syncMmoSidePanelHeights();
@@ -4246,30 +5973,42 @@
     new ResizeObserver(() => syncMmoSidePanelHeights()).observe(mapSectorCard);
   }
 
-  if (mapWrapEl) {
-    mapWrapEl.addEventListener("scroll", () => {
-      renderFlightOverlay();
-      renderZoneOverlay();
-    });
-  }
-
   // drag-pan removed
 
   const refreshWindow = async () => {
-    const fog =
-      playerIsGameAdmin && loadUiSettings().revealFogAdmin ? "&reveal_fog=1" : "";
-    const r = await fetch(
-      `/api/world/window?radius=${viewRadius}&z=${currentZ}&center_x=${viewCenter.x}&center_y=${viewCenter.y}${fog}`
-    );
-    if (!r.ok) {
+    const run = async () => {
+      const fog =
+        playerIsGameAdmin && loadUiSettings().revealFogAdmin ? "&reveal_fog=1" : "";
+      let vx = Math.round(Number(viewCenter.x));
+      let vy = Math.round(Number(viewCenter.y));
+      if (!Number.isFinite(vx) || !Number.isFinite(vy)) {
+        vx = Math.round(Number(home.x)) || 0;
+        vy = Math.round(Number(home.y)) || 0;
+        viewCenter = { x: vx, y: vy };
+      } else {
+        viewCenter = { x: vx, y: vy };
+      }
+      const r = await fetch(
+        `/api/world/window?radius=${viewRadius}&z=${currentZ}&center_x=${viewCenter.x}&center_y=${viewCenter.y}${fog}`
+      );
+      if (!r.ok) {
+        setStatus("Ошибка загрузки карты", "err");
+        return;
+      }
+      currentWindow = await r.json();
+      if (currentWindow && currentWindow.center) {
+        const cx = Math.round(Number(currentWindow.center.x));
+        const cy = Math.round(Number(currentWindow.center.y));
+        if (Number.isFinite(cx) && Number.isFinite(cy)) viewCenter = { x: cx, y: cy };
+      }
+      renderMap();
+      renderZoneOverlay();
+      await loadWorldState();
+    };
+    mapWindowRefreshQueue = mapWindowRefreshQueue.then(run, () => {}).catch(() => {
       setStatus("Ошибка загрузки карты", "err");
-      return;
-    }
-    currentWindow = await r.json();
-    if (currentWindow && currentWindow.center) viewCenter = { ...currentWindow.center };
-    renderMap();
-    renderZoneOverlay();
-    await loadWorldState();
+    });
+    return mapWindowRefreshQueue;
   };
 
   focusFleetOnMap = async (fleetId) => {
@@ -5273,6 +7012,44 @@
     });
   }
   if (privateBackThreadsBtn) privateBackThreadsBtn.addEventListener("click", () => closePrivatePeerView());
+  if (privateIntroYesBtn)
+    privateIntroYesBtn.addEventListener("click", () => void completePrivateIntro(true));
+  if (privateIntroNoBtn)
+    privateIntroNoBtn.addEventListener("click", () => void completePrivateIntro(false));
+  if (privateSendReadReceiptCb) {
+    privateSendReadReceiptCb.addEventListener("change", () => {
+      if (privateReceiptsProgrammaticToggle) return;
+      const peer = (privateChatPeer && privateChatPeer.value.trim()) || privatePeerActive;
+      if (!peer || !privatePeerActive) return;
+      void patchPrivateReceiptPrefs(peer, privateSendReadReceiptCb.checked);
+    });
+  }
+  if (privateDeleteThreadBtn) {
+    privateDeleteThreadBtn.addEventListener("click", async () => {
+      const peer = (privateChatPeer && privateChatPeer.value.trim()) || privatePeerActive;
+      if (
+        !peer ||
+        !window.confirm("Убрать переписку из списка? Сообщения на сервере сохранятся; новое сообщение снова покажет чат.")
+      )
+        return;
+      try {
+        const r = await fetch("/api/chat/private/thread/hide", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ peer_id: peer }),
+        });
+        const body = await r.json();
+        if (!r.ok || !body || !body.ok) {
+          if (statusEl) statusEl.textContent = `ЛС: ${(body && body.error) || "ошибка"}`;
+          return;
+        }
+        closePrivatePeerView();
+        void refreshPrivateBadge();
+      } catch (_e) {
+        if (statusEl) statusEl.textContent = "ЛС: сеть";
+      }
+    });
+  }
   if (privateBlockPeerBtn) {
     privateBlockPeerBtn.addEventListener("click", async () => {
       const peer = (privateChatPeer && privateChatPeer.value.trim()) || privatePeerActive;
@@ -5294,6 +7071,8 @@
       }
     });
   }
+
+  maybeAutoShowEntryTutorial();
 
   void (async () => {
     try {
@@ -5330,5 +7109,8 @@
     }
     if (activeCommsTab === "global") void fetchGlobalChat();
     if (activeCommsTab === "private" && privatePeerActive) void fetchPrivateChat();
+    void refreshPrivateBadge();
   }, 3000);
+
+  void refreshPrivateBadge();
 })();

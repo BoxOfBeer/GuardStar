@@ -19,6 +19,12 @@ from app.services.player_research_effects import (
     get_research_time_multiplier,
     list_active_player_effects,
 )
+from app.services.world_research_runtime import (
+    apply_tier_to_residual_ticks,
+    apply_tier_to_rp_cost,
+    tier_rp_multiplier,
+    tier_time_multiplier,
+)
 from app.services.world_service import WorldService
 
 
@@ -49,6 +55,7 @@ def api_balance():
             "units": list(pack.units_by_id.values()),
             "buildings": list(pack.buildings_by_id.values()),
             "outposts": list(pack.outposts_by_id.values()),
+            "outpost_modules": list(pack.outpost_modules_by_id.values()),
             "tech": list(pack.tech_by_id.values()),
         }
     )
@@ -269,9 +276,20 @@ def api_tech_start():
             residual = max(3, min(time_ticks, int(round(time_ticks * 0.45)) or 3))
         residual = max(1, residual)
 
+        tier_n = max(1, int(tech.get("tier", 1) or 1))
+        ov_json = getattr(ws, "admin_research_overrides_json", None)
+        residual = apply_tier_to_residual_ticks(
+            residual=residual,
+            tier_time_mult=tier_time_multiplier(ov_json, tier=tier_n),
+        )
+
         rp_need = float(tech.get("research_points_cost", 0) or 0)
         if rp_need < 0:
             rp_need = 0.0
+        rp_need = apply_tier_to_rp_cost(
+            rp_need=rp_need,
+            tier_rp_mult=tier_rp_multiplier(ov_json, tier=tier_n),
+        )
         player_row = s.get(Player, pid)
         if not player_row:
             return jsonify({"ok": False, "error": "player_not_found"}), 400

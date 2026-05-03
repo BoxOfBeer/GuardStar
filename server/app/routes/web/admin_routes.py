@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 
 from flask import abort, current_app, redirect, render_template, request, session, url_for
@@ -9,6 +10,11 @@ from sqlalchemy import delete, func, select
 
 from app.build_info import BUILD_ID, GAME_VERSION
 from app.db.engine import db_session
+from app.services.world_research_runtime import (
+    parse_research_overrides_json,
+    serialize_research_overrides_from_maps,
+)
+from app.services.world_service.constants import DEFAULT_MAX_FLEET_UNITS
 from app.db.models.admin_config import AdminConfig
 from app.db.models.event import Event
 from app.db.models.feedback_message import FeedbackMessage
@@ -96,7 +102,7 @@ def admin_accounts_legacy_redirect():
 def admin_hub():
     token_in = _admin_token_raw()
     tab = (request.args.get("tab") or "world").strip()
-    if tab not in ("world", "accounts", "feedback"):
+    if tab not in ("world", "npc", "balance", "accounts", "feedback"):
         tab = "world"
 
     authorized = _admin_token_valid(token_in)
@@ -137,6 +143,18 @@ def admin_hub():
             s.execute(select(func.count()).select_from(Planet)).scalar_one()
         )
 
+        t_ov, r_ov = parse_research_overrides_json(
+            getattr(ws, "admin_research_overrides_json", None)
+        )
+        research_tiers = []
+        for ti in range(1, 7):
+            research_tiers.append(
+                {
+                    "tier": ti,
+                    "time": float(t_ov.get(ti, 1.0)),
+                    "rp": float(r_ov.get(ti, 1.0)),
+                }
+            )
         data = {
             "auto_tick_enabled": bool(ws.auto_tick_enabled),
             "auto_tick_interval_seconds": float(ws.auto_tick_interval_seconds),
@@ -150,6 +168,33 @@ def admin_hub():
             "balance_schema_version": balance.balance_schema_version()
             if balance
             else None,
+            "spawn_flags": {
+                "test_block_new_fleets": bool(
+                    getattr(ws, "test_block_new_fleets", False)
+                ),
+                "admin_block_player_fleet_create": bool(
+                    getattr(ws, "admin_block_player_fleet_create", False)
+                ),
+                "admin_block_npc_transit": bool(
+                    getattr(ws, "admin_block_npc_transit", False)
+                ),
+                "admin_block_bandit_mines": bool(
+                    getattr(ws, "admin_block_bandit_mines", False)
+                ),
+                "admin_block_bandit_outposts": bool(
+                    getattr(ws, "admin_block_bandit_outposts", False)
+                ),
+                "admin_block_bandit_fleets": bool(
+                    getattr(ws, "admin_block_bandit_fleets", False)
+                ),
+            },
+            "admin_max_fleet_units": int(getattr(ws, "admin_max_fleet_units", 0) or 0),
+            "default_max_fleet_units": int(DEFAULT_MAX_FLEET_UNITS),
+            "research_tiers": research_tiers,
+            "admin_economy_overrides_json": getattr(
+                ws, "admin_economy_overrides_json", None
+            )
+            or "",
         }
 
         players = (
@@ -214,6 +259,7 @@ def admin_hub():
         data=data,
         feedback_messages=feedback_messages,
         discord_url=_DISCORD_INVITE_URL,
+        economy_json_error=(request.args.get("economy_json_error") or "").strip() == "1",
         db_connection_label=_db_connection_label(
             str(current_app.config.get("DATABASE_URL") or "")
         ),
@@ -289,6 +335,120 @@ def admin_world_spawn_settings():
         s.commit()
 
     return redirect(url_for("web.admin_hub", token=token, tab="world"))
+
+
+def _admin_checkbox_on(name: str) -> bool:
+    v = (request.form.get(name) or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+@web_bp.post("/admin/world/spawn-flags")
+def admin_world_spawn_flags():
+    token = _require_admin_token()
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        ws = world.get_or_create_world_state(s)
+        ws.test_block_new_fleets = _admin_checkbox_on("test_block_new_fleets")
+        ws.admin_block_player_fleet_create = _admin_checkbox_on(
+            "admin_block_player_fleet_create"
+        )
+        ws.admin_block_npc_transit = _admin_checkbox_on("admin_block_npc_transit")
+        ws.admin_block_bandit_mines = _admin_checkbox_on("admin_block_bandit_mines")
+        ws.admin_block_bandit_outposts = _admin_checkbox_on(
+            "admin_block_bandit_outposts"
+        )
+        ws.admin_block_bandit_fleets = _admin_checkbox_on("admin_block_bandit_fleets")
+        s.commit()
+    return redirect(url_for("web.admin_hub", token=token, tab="npc"))
+
+
+@web_bp.post("/admin/world/balance-tuning")
+def admin_world_balance_tuning():
+    token = _require_admin_token()
+    raw_max = (request.form.get("admin_max_fleet_units") or "").strip()
+    try:
+        max_v = int(raw_max)
+    except ValueError:
+        max_v = 0
+    max_v = max(0, min(max_v, 500))
+    time_map: dict[int, float] = {}
+    rp_map: dict[int, float] = {}
+    for ti in range(1, 7):
+        tt = (request.form.get(f"time_t{ti}") or "1").strip().replace(",", ".")
+        rt = (request.form.get(f"rp_t{ti}") or "1").strip().replace(",", ".")
+        try:
+            time_map[ti] = max(0.01, min(float(tt), 100.0))
+        except ValueError:
+            time_map[ti] = 1.0
+        try:
+            rp_map[ti] = max(0.01, min(float(rt), 100.0))
+        except ValueError:
+            rp_map[ti] = 1.0
+    j = serialize_research_overrides_from_maps(time_map, rp_map)
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        ws = world.get_or_create_world_state(s)
+        ws.admin_max_fleet_units = int(max_v)
+        ws.admin_research_overrides_json = j
+        s.commit()
+    return redirect(url_for("web.admin_hub", token=token, tab="balance"))
+
+
+@web_bp.post("/admin/world/economy-overrides")
+def admin_world_economy_overrides():
+    token = _require_admin_token()
+    raw = (request.form.get("admin_economy_overrides_json") or "").strip()
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        ws = world.get_or_create_world_state(s)
+        if not raw:
+            ws.admin_economy_overrides_json = None
+        else:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return redirect(
+                    url_for(
+                        "web.admin_hub",
+                        token=token,
+                        tab="balance",
+                        economy_json_error=1,
+                    )
+                )
+            if not isinstance(parsed, dict):
+                return redirect(
+                    url_for(
+                        "web.admin_hub",
+                        token=token,
+                        tab="balance",
+                        economy_json_error=1,
+                    )
+                )
+            ws.admin_economy_overrides_json = raw
+        s.commit()
+    return redirect(url_for("web.admin_hub", token=token, tab="balance"))
+
+
+@web_bp.post("/admin/world/purge-bandits")
+def admin_world_purge_bandits():
+    token = _require_admin_token()
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        world.admin_dev_purge_bandit_world(s)
+        s.commit()
+    return redirect(url_for("web.admin_hub", token=token, tab="npc"))
 
 
 @web_bp.post("/admin/world/tick_once")

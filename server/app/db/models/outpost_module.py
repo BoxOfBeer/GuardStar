@@ -26,6 +26,7 @@ class OutpostModule(Base):
         index=True,
     )
     module_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    pending_module_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     slot_idx: Mapped[int] = mapped_column(Integer, nullable=False)

@@ -34,6 +34,10 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow
     )
+    # Приватное ЛС: получатель включил «сообщать о прочтении» — когда прочитал (UTC).
+    read_receipt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     moderation_hidden: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )

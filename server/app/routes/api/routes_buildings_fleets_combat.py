@@ -291,6 +291,29 @@ def api_outpost_modules_upgrade():
         return jsonify(result)
 
 
+@api_bp.post("/outposts/modules/dismantle")
+def api_outpost_modules_dismantle():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    payload = request.get_json(silent=True) or {}
+    module_id = payload.get("module_id")
+    if not isinstance(module_id, str):
+        return jsonify({"error": "invalid_payload"}), 400
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        result = world.dismantle_outpost_module(
+            s, player_id=player_id, module_id=module_id
+        )
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+        return jsonify(result)
+
+
 @api_bp.post("/fleets/create")
 def api_fleets_create():
     player_id = _current_player_id()
@@ -371,6 +394,26 @@ def api_fleets_adjust():
         if not result.get("ok"):
             return jsonify(result), 400
         s.commit()
+        return jsonify(result)
+
+
+@api_bp.get("/fleets/<fleet_id>/upkeep-preview")
+def api_fleet_upkeep_preview(fleet_id: str):
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        result = world.get_fleet_upkeep_preview(
+            s, player_id=player_id, fleet_id=fleet_id
+        )
+        if not result.get("ok"):
+            code = 404 if result.get("error") == "not_found" else 400
+            return jsonify(result), code
         return jsonify(result)
 
 

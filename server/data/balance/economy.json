@@ -11,20 +11,24 @@
     "water_per_manhattan_from_hub": 0
   },
   "fleet_empire_upkeep": {
-    "metal_per_sol_per_fleet": 1,
-    "crystal_per_sol_per_fleet": 1,
+    "metal_per_sol_per_fleet": 0,
+    "crystal_per_sol_per_fleet": 0,
+    "food_per_sol_per_fleet": 0,
+    "water_per_sol_per_fleet": 0,
     "metal_per_sol_per_ship": 0,
     "crystal_per_sol_per_ship": 0,
+    "food_per_sol_per_ship": 0,
+    "water_per_sol_per_ship": 0,
     "energy_penalty_on_unpaid": 25
   },
   "research_points": {
-    "home_capital_per_sol": 0.1,
-    "research_lab_t1_per_sol": 0.1
+    "home_capital_per_sol": 0.13,
+    "research_lab_t1_per_sol": 0.17
   },
   "research_lab": {
     "upkeep_crystal_per_sol": 1,
-    "strain_event_chance_per_lab_per_sol": 0.02,
-    "strain_event_crystal_cost": 4
+    "strain_event_chance_per_lab_per_sol": 0.022,
+    "strain_event_crystal_cost": 5
   },
   "npc_transit": {
     "enabled": true,
@@ -32,7 +36,59 @@
     "max_active_convoys": 5,
     "min_route_manhattan": 10,
     "max_route_manhattan": 36,
-    "spawn_attempts": 48
+    "spawn_attempts": 48,
+    "spawn_attempts_floor": 12,
+    "grid_x_min": -120,
+    "grid_x_max": 120,
+    "grid_y_min": -120,
+    "grid_y_max": 120
+  },
+  "field_building_capture": {
+    "progress_per_sol": 0.25,
+    "resistance_default": 5,
+    "event_every_n_ticks": 5
+  },
+  "outpost_bombard": {
+    "fleet_range_manhattan": 3
+  },
+  "bandit_wilderness": {
+    "chunk_side": 10,
+    "max_mines_per_chunk": 5,
+    "max_outposts_per_chunk": 2,
+    "max_outposts_world": 8,
+    "every_n_ticks": 15,
+    "ai_every_n_ticks": 1,
+    "spawn_loop_attempts": 10,
+    "spawn_window_manhattan_half": 40,
+    "mine_spawn_chance": 0.5,
+    "outpost_spawn_chance": 0.28,
+    "min_separation_from_bandit_outpost_manhattan": 6,
+    "outpost_candidate_offsets": [[2, 0], [-2, 0], [0, 2], [0, -2]]
+  },
+  "bandit_patrol_wing": {
+    "orbit_radius_manhattan_min": 4,
+    "orbit_radius_manhattan_max": 5,
+    "fighter_min": 4,
+    "fighter_max": 5,
+    "aggro_radius_manhattan": 5,
+    "respawn_sol_min": 15,
+    "respawn_sol_max": 25,
+    "announce_warn_extra_manhattan": 6,
+    "spawn_energy": 200,
+    "spawn_max_energy": 240
+  },
+  "bandit_strike_wing": {
+    "cooldown_sol_min": 150,
+    "cooldown_sol_max": 200,
+    "max_spawn_per_tick_global": 1,
+    "strike_fighter_min": 3,
+    "strike_fighter_max": 5,
+    "strike_corvette_min": 3,
+    "strike_corvette_max": 5,
+    "spawn_retry_sol_min": 8,
+    "spawn_retry_sol_max": 20,
+    "spawn_energy": 220,
+    "spawn_max_energy": 260,
+    "strike_scout_count": 1
   }
 }
-

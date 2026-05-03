@@ -1,4 +1,12 @@
+import uuid
+from datetime import datetime, timezone
+
 import pytest
+from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
+
+from app.db.models.fleet import Fleet
+from app.db.models.fleet_ship import FleetShip
 
 import tests.integration_helpers as ih
 
@@ -8,6 +16,25 @@ def _integration_world_cleanup(_test_engine):
     ih.reset_world_tick(_test_engine)
     yield
     ih.delete_players_display_prefix(_test_engine)
+
+
+def test_register_rejects_short_display_name(client):
+    r = client.post("/api/register", json={"display_name": "ab"})
+    assert r.status_code == 400
+    assert r.get_json().get("error") == "too_short"
+
+
+def test_register_rejects_duplicate_display_name_case_insensitive(client, _test_engine):
+    base = ih.display_name_pytest("dupn")
+    r1 = client.post("/api/register", json={"display_name": base})
+    assert r1.status_code == 200, r1.get_data(as_text=True)
+    pid = r1.get_json()["player_id"]
+    try:
+        r2 = client.post("/api/register", json={"display_name": base.upper()})
+        assert r2.status_code == 400
+        assert r2.get_json().get("error") == "taken"
+    finally:
+        ih.delete_player_cascade(_test_engine, pid)
 
 
 def test_register_creates_player_and_start(client, _test_engine):
@@ -81,6 +108,18 @@ def test_world_state_has_home_influence_block(client, _test_engine):
         inf = st["economy"].get("influence")
         assert inf is not None
         assert "home_share" in inf
+
+
+def test_world_state_economy_includes_net_per_sol(client, _test_engine):
+    with ih.registered_player(client, _test_engine, "netsols"):
+        st = client.get("/api/world/state").get_json()
+        eco = st.get("economy")
+        assert eco is not None
+        np = eco.get("net_per_sol")
+        assert isinstance(np, dict)
+        for k in ("metal", "crystal", "energy", "fuel", "food", "water"):
+            assert k in np
+            assert isinstance(np[k], int)
 
 
 def test_world_window_z_changes_and_is_deterministic(client, _test_engine):
@@ -255,6 +294,24 @@ def test_fleet_save_deducts_metal_when_adding_ships(client, _test_engine):
         assert m1 < m0
 
 
+def test_fleet_upkeep_preview_ok(client, _test_engine):
+    with ih.registered_player(client, _test_engine, "fuprev"):
+        me = client.get("/api/me").get_json()
+        planet_id = me["planets"][0]["id"]
+        cr = client.post(
+            "/api/fleets/create",
+            json={"planet_id": planet_id, "name": "Prev", "composition": {"scout": 1}},
+        )
+        assert cr.status_code == 200, cr.get_json()
+        fid = cr.get_json()["fleet_id"]
+        r = client.get(f"/api/fleets/{fid}/upkeep-preview")
+        assert r.status_code == 200
+        b = r.get_json()
+        assert b.get("ok") is True
+        assert "energy_upkeep_per_sol" in b
+        assert b.get("empire_supply_per_sol") and isinstance(b["empire_supply_per_sol"], dict)
+
+
 def test_fleet_empire_upkeep_deducts_from_capital_on_tick(client, _test_engine):
     with ih.registered_player(client, _test_engine, "empup"):
         me = client.get("/api/me").get_json()
@@ -337,3 +394,108 @@ def test_fleet_disband_returns_deleted(client, _test_engine):
         d = client.post("/api/fleets/disband", json={"fleet_id": fid})
         assert d.status_code == 200
         assert d.get_json().get("deleted") is True
+
+
+def test_world_state_materializes_inflated_fleet_qty(client, _test_engine):
+    """Регрессия: fleets.qty > sum(fleet_ships) без записи даёт «призраков» в бою/логе — state чинит."""
+    with ih.registered_player(client, _test_engine, "matfq") as reg:
+        pid = uuid.UUID(reg["player_id"])
+        Session = sessionmaker(bind=_test_engine, expire_on_commit=False)
+        fleet_id = None
+        with Session() as s:
+            fleet = (
+                s.execute(
+                    select(Fleet)
+                    .where(Fleet.owner_player_id == pid)
+                    .order_by(Fleet.created_at.asc())
+                )
+                .scalars()
+                .first()
+            )
+            assert fleet is not None
+            fleet_id = fleet.id
+            ships = (
+                s.execute(select(FleetShip).where(FleetShip.fleet_id == fleet.id))
+                .scalars()
+                .all()
+            )
+            base = sum(int(x.qty) for x in ships)
+            assert base > 0
+            dom = str(fleet.unit_type or ships[0].unit_type)
+            setattr(fleet, "unit_type", dom)
+            setattr(fleet, "qty", base + 6)
+            s.commit()
+
+        assert client.get("/api/world/state").status_code == 200
+
+        with Session() as s:
+            fleet = s.get(Fleet, fleet_id)
+            assert fleet is not None
+            ships2 = (
+                s.execute(select(FleetShip).where(FleetShip.fleet_id == fleet.id))
+                .scalars()
+                .all()
+            )
+            after_sum = sum(int(x.qty) for x in ships2)
+            assert after_sum == base + 6
+            assert int(fleet.qty) == after_sum
+
+
+def test_fleet_move_prunes_empty_shell_at_target_cell(client, _test_engine):
+    """Регрессия: запись флота с 0 кораблей в цели не даёт cell_occupied_by_own_fleet."""
+    with ih.registered_player(client, _test_engine, "shellmv"):
+        st = client.get("/api/world/state").get_json()
+        fl = st.get("fleets") or []
+        if not fl:
+            pytest.skip("no fleet in world state")
+        f0 = fl[0]
+        fid = f0["id"]
+        fx, fy, fz = int(f0["x"]), int(f0["y"]), int(f0["z"])
+        me = client.get("/api/me").get_json()
+        pid = uuid.UUID(me["player_id"])
+        Session = sessionmaker(bind=_test_engine, expire_on_commit=False)
+        moved = False
+        last_err = None
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            tx, ty, tz = fx + dx, fy + dy, fz
+            ghost_id = None
+            with Session() as s:
+                g = Fleet(
+                    owner_player_id=pid,
+                    unit_type="scout",
+                    qty=0,
+                    name="gs_py_shell",
+                    pos_x=tx,
+                    pos_y=ty,
+                    pos_z=tz,
+                    energy=10,
+                    max_energy=10,
+                    created_at=datetime.now(timezone.utc),
+                )
+                s.add(g)
+                s.commit()
+                ghost_id = g.id
+            mv = client.post(
+                "/api/fleets/move",
+                json={
+                    "fleet_id": fid,
+                    "x": tx,
+                    "y": ty,
+                    "z": tz,
+                    "force_attack": False,
+                },
+            )
+            body = mv.get_json() if mv.is_json else {}
+            with Session() as s:
+                if ghost_id:
+                    gr = s.get(Fleet, ghost_id)
+                    if gr:
+                        s.delete(gr)
+                        s.commit()
+            if body.get("error") == "cell_occupied_by_own_fleet":
+                pytest.fail("empty shell at target should be purged, not block move")
+            last_err = body.get("error")
+            if mv.status_code == 200 and body.get("ok"):
+                moved = True
+                break
+        assert moved, f"move did not succeed (last_error={last_err!r})"

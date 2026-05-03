@@ -25,6 +25,61 @@ from app.services.world_service.constants import (
 )
 
 
+def _slim_event_payload_for_world_state_poll(
+    typ: str | None, payload: dict | None
+) -> dict | None:
+    """Уменьшаем JSON ответа ``/api/world/state``: тяжёлые поля (напр. composition) не нужны системному логу."""
+    if payload is None or not isinstance(payload, dict):
+        return payload
+    t = str(typ or "")
+    if t in ("fleet_combat", "combat_prompt_arrival"):
+        return payload
+    allow = {
+        "fleet_id",
+        "order_id",
+        "building_id",
+        "outpost_id",
+        "target",
+        "from",
+        "pos",
+        "source",
+        "source_subtype",
+        "label",
+        "terrain",
+        "cooldown_ticks",
+        "x",
+        "y",
+        "z",
+        "kind",
+        "outpost_pos",
+        "target_fleet_id",
+        "target_fleet_display_name",
+        "hunter_fleet_id",
+        "origin_outpost_id",
+        "origin_outpost_pos",
+        "damage",
+        "hp_left",
+        "hp_max",
+        "fuel_cost",
+        "distance",
+        "qty",
+        "travel_ticks",
+        "expires_at",
+        "defender_fleet_id",
+        "need",
+        "have",
+        "penalty_energy",
+        "crystal",
+        "role",
+        "result",
+        "building_type",
+        "lost_to",
+        "winner",
+    }
+    slim = {k: payload[k] for k in allow if k in payload}
+    return slim or None
+
+
 class WorldServiceMixin06:
     def process_next_tick(self, s: Session) -> dict:
         ws = self.get_or_create_world_state(s)
@@ -73,6 +128,8 @@ class WorldServiceMixin06:
                 player_id=t.player_id,
             )
 
+        self._resolve_completed_outpost_modules(s, next_tick=next_tick)
+
         # 1) Fleet orders
         self._resolve_expired_fleet_combat_prompts(s, tick=next_tick, events=events)
         ready_fleet_orders = (
@@ -116,6 +173,7 @@ class WorldServiceMixin06:
                     int(order.target_y),
                     int(order.target_z),
                 )
+                self._purge_shell_fleets_at_cell(s, x=tx, y=ty, z=tz)
                 occ = (
                     s.execute(
                         select(Fleet).where(
@@ -172,6 +230,12 @@ class WorldServiceMixin06:
                 self._purge_fleet_row(s, fleet)
                 continue
 
+            self._purge_shell_fleets_at_cell(
+                s,
+                x=int(order.target_x),
+                y=int(order.target_y),
+                z=int(order.target_z),
+            )
             occupant = (
                 s.execute(
                     select(Fleet).where(
@@ -372,17 +436,18 @@ class WorldServiceMixin06:
                     attacker_from_x=int(fleet.pos_x),
                     attacker_from_y=int(fleet.pos_y),
                 )
+                dpub = self._fleet_public_name(occupant)
                 self._emit_event(
                     s,
                     tick=next_tick,
                     type="combat_prompt_arrival",
                     message=(
-                        f"Флот у цели ({order.target_x},{order.target_y}): враг «{self._fleet_public_name(occupant)}». "
-                        f"Подтвердите бой в течение 30 с."
+                        f"⚠ Ожидание приказа: враг «{dpub}», клетка ({order.target_x}, {order.target_y}, {order.target_z})."
                     ),
                     payload={
                         "order_id": str(order.id),
                         "fleet_id": str(fleet.id),
+                        "enemy_fleet_name": dpub,
                         "target": {
                             "x": order.target_x,
                             "y": order.target_y,
@@ -546,8 +611,21 @@ class WorldServiceMixin06:
         self._apply_fleet_energy_tick(s, tick=next_tick)
         # 4) Автопилот: аварийный возврат к хабу если нет энергии/снабжения
         self._apply_emergency_return_orders(s, tick=next_tick)
-        # 5) Форпосты: автоматический обстрел вражеских флотов (каждый тик)
+        # 5а) Полевые постройки — прогресс захвата; флоты — обстрел форпостов в радиусе
+        self._apply_field_building_capture_tick(s, tick=next_tick)
+        self._apply_fleet_bombard_outposts_tick(s, tick=next_tick)
+        # 5б) Форпосты: автоматический обстрел вражеских флотов (каждый тик)
         self._apply_outpost_combat_tick(s, tick=next_tick)
+
+        wc_bandit = self._warfare_economy(s)
+        bandit_n = max(1, int(wc_bandit.get("bandit_ai_every_n_ticks", 5)))
+        if int(next_tick) % bandit_n == 0:
+            self._sync_bandit_patrol_health_and_respawn(s, tick=next_tick)
+            self._try_bandit_wilderness_tick(s, tick=next_tick)
+            self._sync_bandit_patrol_health_and_respawn(s, tick=next_tick)
+            self._apply_bandit_patrol_move_tick(s, tick=next_tick)
+            self._apply_bandit_raider_move_tick(s, tick=next_tick)
+            self._purge_dangling_bandit_fleets(s)
 
         inf_src = self._collect_influence_sources(s)
         self._apply_influence_control_tick(s, tick=next_tick, sources=inf_src)
@@ -668,14 +746,26 @@ class WorldServiceMixin06:
                 "is_game_moderator": bool(getattr(pl0, "is_game_moderator", False)) if pl0 else False,
             }
 
+        player_fleets = (
+            s.execute(
+                select(Fleet)
+                .where(Fleet.owner_player_id == pid)
+                .order_by(Fleet.created_at.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+        # Прогон синхронизации qty ↔ fleet_ships на каждый опрос состояния: иначе «призрачный»
+        # склад при legacy qty затягивает бои/экономику/лог (см. _materialize_legacy_fleet_qty_into_ship_rows).
+        for fx in player_fleets:
+            self._materialize_legacy_fleet_qty_into_ship_rows(s, fx)
+        s.flush()
+
         # Приоритет «главного» флота — больше скаутов в составе (для HUD/камеры).
         scout_fleet = None
         best_scouts = -1
-        for f in s.execute(
-            select(Fleet)
-            .where(Fleet.owner_player_id == pid)
-            .order_by(Fleet.created_at.asc())
-        ).scalars():
+        for f in player_fleets:
             um = self._fleet_units_map(s, f)
             sc = int(um.get("scout", 0))
             if sc > best_scouts:
@@ -686,7 +776,7 @@ class WorldServiceMixin06:
 
         pos = {"x": home.pos_x, "y": home.pos_y, "z": 0}
         fleet_payload = None
-        if scout_fleet and scout_fleet.qty > 0:
+        if scout_fleet and self._fleet_total_units(s, scout_fleet) > 0:
             pos = {
                 "x": scout_fleet.pos_x,
                 "y": scout_fleet.pos_y,
@@ -695,11 +785,12 @@ class WorldServiceMixin06:
             active_payload = self._fleet_active_order_payload(s, ws, scout_fleet)
             status = "moving" if active_payload else "idle"
             comp = self._fleet_units_map(s, scout_fleet)
+            tot_u = sum(int(v) for v in comp.values())
             fleet_payload = {
                 "id": str(scout_fleet.id),
                 "name": self._fleet_public_name(scout_fleet),
                 "unit_type": scout_fleet.unit_type,
-                "qty": int(scout_fleet.qty),
+                "qty": tot_u,
                 "composition": comp,
                 "status": status,
                 **pos,
@@ -707,27 +798,19 @@ class WorldServiceMixin06:
             }
 
         fleets_payload: list[dict] = []
-        all_fleets = (
-            s.execute(
-                select(Fleet)
-                .where(Fleet.owner_player_id == pid)
-                .order_by(Fleet.created_at.asc())
-            )
-            .scalars()
-            .all()
-        )
-        for f in all_fleets:
-            if int(f.qty) <= 0:
+        for f in player_fleets:
+            comp = self._fleet_units_map(s, f)
+            tot_units = sum(int(v) for v in comp.values())
+            if tot_units <= 0:
                 continue
             active_payload = self._fleet_active_order_payload(s, ws, f)
             status = "moving" if active_payload else "idle"
-            comp = self._fleet_units_map(s, f)
             fleets_payload.append(
                 {
                     "id": str(f.id),
                     "name": self._fleet_public_name(f),
                     "unit_type": f.unit_type,
-                    "qty": int(f.qty),
+                    "qty": tot_units,
                     "composition": comp,
                     "status": status,
                     "x": f.pos_x,
@@ -754,12 +837,9 @@ class WorldServiceMixin06:
         )
         prod_per_tick = {k: int(dlt_home[k]) for k in PLANET_STORE_KEYS}
 
-        fleets = (
-            s.execute(select(Fleet).where(Fleet.owner_player_id == pid)).scalars().all()
-        )
         upkeep_energy = 0
         fleet_units = 0
-        for f in fleets:
+        for f in player_fleets:
             um = self._fleet_units_map(s, f)
             if not um:
                 continue
@@ -772,9 +852,8 @@ class WorldServiceMixin06:
             population=home_pop
         )
 
-        inf_sources_hud = self._collect_influence_sources(s)
         h_scores = self._influence_scores_at(
-            inf_sources_hud, int(home.pos_x), int(home.pos_y), 0
+            inf_src_h, int(home.pos_x), int(home.pos_y), 0
         )
         h_control_rows = (
             s.execute(
@@ -811,7 +890,7 @@ class WorldServiceMixin06:
                 select(Event)
                 .where(Event.player_id == pid)
                 .order_by(Event.id.desc())
-                .limit(25)
+                .limit(14)
             )
             .scalars()
             .all()
@@ -824,6 +903,7 @@ class WorldServiceMixin06:
                     pl = json.loads(e.payload_json)
                 except Exception:
                     pl = None
+            pl = _slim_event_payload_for_world_state_poll(e.type, pl)
             events_payload.append(
                 {
                     "id": e.id,
@@ -839,11 +919,22 @@ class WorldServiceMixin06:
 
         pl_row = s.get(Player, pid)
         rp_bal = float(getattr(pl_row, "research_points", 0) or 0) if pl_row else 0.0
-        rp_per_sol = float(
-            EconomyService(world=self)._player_rp_info(s, player_id=pid).per_sol
-        )
+        rp_inf = EconomyService(world=self)._player_rp_info(s, player_id=pid)
+        rp_per_sol = float(rp_inf.per_sol)
 
-        return {
+        econ_for_net = EconomyService(world=self).get_economy_summary(
+            s,
+            player_id=str(pid),
+            include_external_buildings=True,
+            influence_sources=inf_src_h,
+            for_hud_poll=True,
+        )
+        net_per_sol_payload = {
+            k: int((econ_for_net.get("net_per_sol") or {}).get(k, 0) or 0)
+            for k in PLANET_STORE_KEYS
+        }
+
+        payload_state = {
             "current_tick": ws.current_tick,
             "current_sol": int(ws.current_tick),
             "player_id": str(pid),
@@ -868,6 +959,7 @@ class WorldServiceMixin06:
                 "water": water,
                 "research_points": round(rp_bal, 4),
                 "research_points_per_sol": round(rp_per_sol, 4),
+                "net_per_sol": net_per_sol_payload,
                 "production_per_tick": {
                     "metal": prod_per_tick["metal"],
                     "crystal": prod_per_tick["crystal"],
@@ -916,9 +1008,46 @@ class WorldServiceMixin06:
                 s, player_id=pid
             ),
         }
+        if pl_row and bool(getattr(pl_row, "is_game_admin", False)):
+            payload_state["admin_dev"] = {
+                "test_block_new_fleets": bool(getattr(ws, "test_block_new_fleets", False)),
+                "admin_block_player_fleet_create": bool(
+                    getattr(ws, "admin_block_player_fleet_create", False)
+                ),
+                "admin_block_npc_transit": bool(
+                    getattr(ws, "admin_block_npc_transit", False)
+                ),
+                "admin_block_bandit_mines": bool(
+                    getattr(ws, "admin_block_bandit_mines", False)
+                ),
+                "admin_block_bandit_outposts": bool(
+                    getattr(ws, "admin_block_bandit_outposts", False)
+                ),
+                "admin_block_bandit_fleets": bool(
+                    getattr(ws, "admin_block_bandit_fleets", False)
+                ),
+                "admin_max_fleet_units": int(getattr(ws, "admin_max_fleet_units", 0) or 0),
+                "admin_research_overrides_json": getattr(
+                    ws, "admin_research_overrides_json", None
+                ),
+                "bandit_ai_every_n_ticks": max(
+                    1,
+                    int(self._warfare_economy(s).get("bandit_ai_every_n_ticks", 5)),
+                ),
+                "admin_economy_overrides_active": bool(
+                    (getattr(ws, "admin_economy_overrides_json", None) or "").strip()
+                ),
+            }
+        return payload_state
 
     def get_economy_summary(
-        self, s: Session, *, player_id: str, include_external_buildings: bool = True
+        self,
+        s: Session,
+        *,
+        player_id: str,
+        include_external_buildings: bool = True,
+        influence_sources: list[dict] | None = None,
+        for_hud_poll: bool = False,
     ) -> dict:
         from app.services.economy_service import EconomyService
 
@@ -926,4 +1055,6 @@ class WorldServiceMixin06:
             s,
             player_id=player_id,
             include_external_buildings=include_external_buildings,
+            influence_sources=influence_sources,
+            for_hud_poll=for_hud_poll,
         )

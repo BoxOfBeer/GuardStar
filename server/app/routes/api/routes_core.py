@@ -14,7 +14,7 @@ from app.routes.api.common import (
     _clamp_map_window_radius,
     _current_player_id,
 )
-from app.services.auth_service import AuthService
+from app.services.auth_service import AuthService, DisplayNameInvalid
 from app.services.world_service import WorldService
 
 @api_bp.get("/health")
@@ -58,9 +58,7 @@ def api_version():
 @api_bp.post("/register")
 def api_register():
     payload = request.get_json(silent=True) or {}
-    display_name = (payload.get("display_name") or "").strip()
-    if not display_name:
-        return jsonify({"error": "display_name_required"}), 400
+    display_name = payload.get("display_name")
     race_id = (payload.get("race_id") or "").strip() or "human"
 
     auth = AuthService(server_salt=current_app.config["SERVER_SALT"])
@@ -74,12 +72,21 @@ def api_register():
         if not isinstance(r, dict) or r.get("enabled") is False:
             return jsonify({"error": "invalid_race_id"}), 400
 
-    with db_session() as s:
-        player, access_code = auth.register_player(
-            s, display_name=display_name, race_id=race_id
+    try:
+        with db_session() as s:
+            player, access_code = auth.register_player(
+                s, display_name=str(display_name if display_name is not None else ""),
+                race_id=race_id,
+            )
+            world.ensure_player_has_start(s, player_id=player.id)
+            s.commit()
+    except DisplayNameInvalid as exc:
+        err = (
+            "display_name_required"
+            if exc.code == "empty"
+            else exc.code
         )
-        world.ensure_player_has_start(s, player_id=player.id)
-        s.commit()
+        return jsonify({"error": err}), 400
 
     session["player_id"] = str(player.id)
     return jsonify({"player_id": str(player.id), "access_code": access_code})

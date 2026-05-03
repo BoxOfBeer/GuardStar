@@ -182,25 +182,25 @@ class WorldServiceMixin04:
         if not planet:
             return {"ok": False, "error": "no_controlling_planet"}
 
-        # Общие слоты планеты: ограничение только по "размеру" планеты, а не по типам.
-        slots_total = int(getattr(planet, "build_slots_total", 55) or 55)
-        built_total = int(
-            s.execute(
-                select(func.count(Building.id)).where(Building.planet_id == planet.id)
-            ).scalar()
-            or 0
-        )
-        if built_total >= slots_total:
-            return {
-                "ok": False,
-                "error": "planet_slots_full",
-                "built": built_total,
-                "total": slots_total,
-            }
+        on_planet_tile = self._cell_has_planet(s, x=int(x), y=int(y), z=int(z))
+        # Слоты build_slots_total — только для тайла колонии; полевая экспансия лимитом не считается.
+        if on_planet_tile:
+            slots_total = int(getattr(planet, "build_slots_total", 55) or 55)
+            built_surface = int(
+                self._surface_slot_buildings_count_for_planet(s, planet=planet)
+            )
+            if built_surface >= slots_total:
+                return {
+                    "ok": False,
+                    "error": "planet_slots_full",
+                    "built": built_surface,
+                    "built_surface": built_surface,
+                    "total": slots_total,
+                }
 
-        # На клетке планеты разрешаем несколько построек (слоты лимитируются по planet_id).
-        # На остальных клетках действует правило "1 постройка на клетку".
-        if not self._cell_has_planet(s, x=int(x), y=int(y), z=int(z)):
+        # На тайле колонии несколько построек, но суммой не больше build_slots_total.
+        # На остальных клетках — только «одна постройка на клетку», без лимита экспансии по счётчику.
+        if not on_planet_tile:
             exists = (
                 s.execute(
                     select(Building).where(
@@ -654,34 +654,22 @@ class WorldServiceMixin04:
                     "missing_techs": missing,
                 }
 
-        gate = self._can_build_at(
-            s, owner_id=pid, x=int(row.x), y=int(row.y), z=int(row.z), fleet_id=None
-        )
-        if not gate.get("ok"):
-            return gate
+        if self._cell_enemy_control_owner(
+            s, owner_id=pid, x=int(row.x), y=int(row.y), z=int(row.z)
+        ):
+            return {"ok": False, "error": "inside_enemy_control_zone"}
 
-        planet = s.get(Planet, row.planet_id) if row.planet_id else None
-        if planet:
-            mx_tgt = self._max_per_planet_for_building(target_key)
-            if mx_tgt is not None:
-                ct = int(
-                    s.execute(
-                        select(func.count(Building.id)).where(
-                            Building.planet_id == planet.id,
-                            Building.owner_player_id == pid,
-                            Building.building_type == target_key,
-                            Building.id != row.id,
-                        )
-                    ).scalar()
-                    or 0
-                )
-                if ct + 1 > mx_tgt:
-                    return {
-                        "ok": False,
-                        "error": "planet_type_cap",
-                        "building_type": target_key,
-                        "max": mx_tgt,
-                    }
+        # Улучшение на тайле колонии не требует повторных инженеров. Полевые — как новая постройка.
+        if row.planet_id is None:
+            gate = self._can_build_at(
+                s, owner_id=pid, x=int(row.x), y=int(row.y), z=int(row.z), fleet_id=None
+            )
+            if not gate.get("ok"):
+                return gate
+
+        # Лимиты по типам (max_per_planet) для планеты не используем при улучшении:
+        # на тайле колонии слотов хватает при постановке; апгрейд — замена типа на той же клетке,
+        # иначе «базовая ферма» (max 6) не могла бы стать гидропоникой (max 4) после dev-логики «только слоты».
 
         home = s.execute(
             select(Planet)
@@ -723,6 +711,8 @@ class WorldServiceMixin04:
         row.building_type = target_key
         row.level = max(1, tier)
         s.flush()
+
+        planet = s.get(Planet, row.planet_id) if row.planet_id else None
 
         ws = self.get_or_create_world_state(s)
         self._emit_event(
@@ -1049,8 +1039,9 @@ class WorldServiceMixin04:
             total_new = sum(newd.values())
             if total_new < 1:
                 return {"ok": False, "error": "fleet_empty_use_disband"}
-            if total_new > 50:
-                return {"ok": False, "error": "fleet_too_large"}
+            cap = self._world_max_fleet_units(s)
+            if total_new > cap:
+                return {"ok": False, "error": "fleet_too_large", "max_units": cap}
 
             cur = self._fleet_units_map(s, fleet)
             pay_res = self._try_apply_home_resource_net_for_fleet_change(
@@ -1086,6 +1077,59 @@ class WorldServiceMixin04:
                 player_id=pid,
             )
         return out
+
+    def get_fleet_upkeep_preview(
+        self, s: Session, *, player_id: str, fleet_id: str
+    ) -> dict:
+        """Узкий превью расходов флота за сол (энергия на кораблях + имперское снабжение)."""
+        try:
+            pid = uuid.UUID(str(player_id).strip())
+            fid = uuid.UUID(str(fleet_id).strip())
+        except Exception:
+            return {"ok": False, "error": "invalid_id"}
+        fleet = (
+            s.execute(
+                select(Fleet).where(Fleet.id == fid, Fleet.owner_player_id == pid)
+            )
+            .scalars()
+            .first()
+        )
+        if not fleet:
+            return {"ok": False, "error": "not_found"}
+        if self._fleet_total_units(s, fleet) <= 0:
+            return {
+                "ok": True,
+                "fleet_id": str(fid),
+                "energy_upkeep_per_sol": 0,
+                "empire_supply_per_sol": {
+                    "metal": 0,
+                    "crystal": 0,
+                    "food": 0,
+                    "water": 0,
+                },
+                "fleet_energy_current": int(getattr(fleet, "energy", 0) or 0),
+                "energy_penalty_on_unpaid_maintenance": int(
+                    self._fleet_empire_upkeep_unpaid_penalty_energy()
+                ),
+            }
+        um = self._fleet_units_map(s, fleet)
+        en = int(self._fleet_upkeep_energy_total(s, player_id=pid, units=um))
+        sup = self._fleet_empire_supply_need_for_fleet(s, fleet=fleet)
+        return {
+            "ok": True,
+            "fleet_id": str(fid),
+            "energy_upkeep_per_sol": en,
+            "empire_supply_per_sol": {
+                "metal": int(sup.get("metal", 0) or 0),
+                "crystal": int(sup.get("crystal", 0) or 0),
+                "food": int(sup.get("food", 0) or 0),
+                "water": int(sup.get("water", 0) or 0),
+            },
+            "fleet_energy_current": int(getattr(fleet, "energy", 0) or 0),
+            "energy_penalty_on_unpaid_maintenance": int(
+                self._fleet_empire_upkeep_unpaid_penalty_energy()
+            ),
+        }
 
     def disband_fleet(self, s: Session, *, player_id: str, fleet_id: str) -> dict:
         pid = uuid.UUID(player_id)
@@ -1181,8 +1225,9 @@ class WorldServiceMixin04:
                 newd[k] = n
         if sum(newd.values()) < 1:
             return {"ok": False, "error": "fleet_empty"}
-        if sum(newd.values()) > 50:
-            return {"ok": False, "error": "fleet_too_large"}
+        cap = self._world_max_fleet_units(s)
+        if sum(newd.values()) > cap:
+            return {"ok": False, "error": "fleet_too_large", "max_units": cap}
 
         s.delete(source)
         s.flush()
@@ -1260,6 +1305,10 @@ class WorldServiceMixin04:
                 remainder[k] = left
         if sum(remainder.values()) < 1:
             return {"ok": False, "error": "cannot_split_entire_fleet"}
+
+        cap = self._world_max_fleet_units(s)
+        if sum(take_map.values()) > cap or sum(remainder.values()) > cap:
+            return {"ok": False, "error": "fleet_too_large", "max_units": cap}
 
         spawn = self._pick_fleet_spawn_xy(
             s,

@@ -44,6 +44,17 @@ class Outpost(Base):
     family: Mapped[str] = mapped_column(String(64), nullable=False, default="outpost")
     level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     module_slots_total: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    hp_current: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    patrol_fleet_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("fleets.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    patrol_respawn_at_tick: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    strike_next_tick: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="active", index=True
     )

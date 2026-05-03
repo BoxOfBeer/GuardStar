@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import copy
+
+from app.services.world_economy_runtime import deep_merge_eco
 from app.services.world_service._deps import *  # noqa: F403
 from app.services.world_service.constants import (
     BANDIT_PLAYER_ID,
     CIVILIAN_NPC_PLAYER_ID,
+    DEFAULT_MAX_FLEET_UNITS,
     FLEET_ENERGY_MAX_ABS_CAP,
     FLEET_ENERGY_MAX_FLOOR,
     FLEET_ENERGY_MAX_UPKEEP_MULT,
@@ -26,6 +30,75 @@ from app.services.world_service.constants import (
 
 
 class WorldServiceMixin02:
+    def _world_blocks_new_fleets(self, s: Session) -> bool:
+        """«Ядерный» стоп: `world_state.test_block_new_fleets` — всё, что завязано на мастер-флаг."""
+        ws = s.get(WorldState, 1)
+        return bool(ws and getattr(ws, "test_block_new_fleets", False))
+
+    def _admin_master_spawn_block(self, s: Session) -> bool:
+        return self._world_blocks_new_fleets(s)
+
+    def _admin_block_player_fleet_create(self, s: Session) -> bool:
+        if self._admin_master_spawn_block(s):
+            return True
+        ws = s.get(WorldState, 1)
+        return bool(ws and getattr(ws, "admin_block_player_fleet_create", False))
+
+    def _admin_block_npc_transit(self, s: Session) -> bool:
+        if self._admin_master_spawn_block(s):
+            return True
+        ws = s.get(WorldState, 1)
+        return bool(ws and getattr(ws, "admin_block_npc_transit", False))
+
+    def _admin_block_bandit_mines(self, s: Session) -> bool:
+        if self._admin_master_spawn_block(s):
+            return True
+        ws = s.get(WorldState, 1)
+        return bool(ws and getattr(ws, "admin_block_bandit_mines", False))
+
+    def _admin_block_bandit_outposts(self, s: Session) -> bool:
+        if self._admin_master_spawn_block(s):
+            return True
+        ws = s.get(WorldState, 1)
+        return bool(ws and getattr(ws, "admin_block_bandit_outposts", False))
+
+    def _admin_block_bandit_extra_fleets(self, s: Session) -> bool:
+        """Патруль-респавн, ударные звена, MVP-патруль у колонии (не стартовый патруль нового форпоста)."""
+        if self._admin_master_spawn_block(s):
+            return True
+        ws = s.get(WorldState, 1)
+        return bool(ws and getattr(ws, "admin_block_bandit_fleets", False))
+
+    def _world_max_fleet_units(self, s: Session) -> int:
+        ws = self.get_or_create_world_state(s)
+        v = int(getattr(ws, "admin_max_fleet_units", 0) or 0)
+        if v <= 0:
+            return int(DEFAULT_MAX_FLEET_UNITS)
+        return max(1, min(v, 500))
+
+    def _merged_pack_economy(self, s: Session | None) -> dict:
+        """Копия `economy` из баланса + `world_state.admin_economy_overrides_json` (рекурсивно)."""
+        eco: dict = {}
+        if self._balance and isinstance(
+            getattr(self._balance, "pack", None), object
+        ):
+            raw0 = self._balance.pack.economy
+            if isinstance(raw0, dict):
+                eco = copy.deepcopy(raw0)
+        if s is None:
+            return eco
+        ws = s.get(WorldState, 1)
+        raw = getattr(ws, "admin_economy_overrides_json", None) if ws else None
+        if not raw or not str(raw).strip():
+            return eco
+        try:
+            patch = json.loads(raw)
+        except Exception:
+            return eco
+        if not isinstance(patch, dict):
+            return eco
+        return deep_merge_eco(eco, patch)
+
     def get_or_create_world_state(self, s: Session) -> WorldState:
         ws = s.execute(
             select(WorldState).where(WorldState.id == 1)
@@ -146,24 +219,59 @@ class WorldServiceMixin02:
             .first()
         )
 
-    def _fleet_empire_upkeep_costs(self, *, fleets: int, ships: int) -> dict[str, int]:
-        eco = (
-            self._balance.pack.economy
-            if self._balance
-            and isinstance(getattr(self._balance, "pack", None), object)
-            else {}
+    def _fleet_empire_overhead_per_sol(self) -> dict[str, int]:
+        keys = ("metal", "crystal", "food", "water")
+        z = {k: 0 for k in keys}
+        if not self._balance:
+            return z
+        eco = getattr(self._balance.pack, "economy", None)
+        eco = eco if isinstance(eco, dict) else {}
+        blk = eco.get("fleet_empire_upkeep")
+        blk = blk if isinstance(blk, dict) else {}
+        z["metal"] = max(0, int(blk.get("metal_per_sol_per_fleet", 0) or 0))
+        z["crystal"] = max(0, int(blk.get("crystal_per_sol_per_fleet", 0) or 0))
+        z["food"] = max(0, int(blk.get("food_per_sol_per_fleet", 0) or 0))
+        z["water"] = max(0, int(blk.get("water_per_sol_per_fleet", 0) or 0))
+        return z
+
+    def _fleet_empire_uniform_per_ship_addon(self, *, ships: int) -> dict[str, int]:
+        """Равномерная надбавка за любой корпус (economy.*_per_sol_per_ship); суммируется с units.upkeep.empire_per_sol."""
+        keys = ("metal", "crystal", "food", "water")
+        z = {k: 0 for k in keys}
+        sc = max(0, int(ships))
+        if sc <= 0 or not self._balance:
+            return z
+        eco = getattr(self._balance.pack, "economy", None)
+        eco = eco if isinstance(eco, dict) else {}
+        blk = eco.get("fleet_empire_upkeep")
+        blk = blk if isinstance(blk, dict) else {}
+        z["metal"] = max(0, int(blk.get("metal_per_sol_per_ship", 0) or 0)) * sc
+        z["crystal"] = max(0, int(blk.get("crystal_per_sol_per_ship", 0) or 0)) * sc
+        z["food"] = max(0, int(blk.get("food_per_sol_per_ship", 0) or 0)) * sc
+        z["water"] = max(0, int(blk.get("water_per_sol_per_ship", 0) or 0)) * sc
+        return z
+
+    def _fleet_empire_supply_need_for_fleet(self, s: Session, *, fleet: Fleet) -> dict[str, int]:
+        keys = ("metal", "crystal", "food", "water")
+        zero = {k: 0 for k in keys}
+        if self._fleet_total_units(s, fleet) <= 0:
+            return zero
+        units_map = self._fleet_units_map(s, fleet)
+        if not units_map:
+            return zero
+        oh = self._fleet_empire_overhead_per_sol()
+        ships = sum(max(0, int(q)) for q in units_map.values())
+        uni = self._fleet_empire_uniform_per_ship_addon(ships=ships)
+        if not self._balance:
+            return {k: int(oh.get(k, 0)) + int(uni.get(k, 0)) for k in keys}
+        rid = self._get_player_race_id(s, player_id=fleet.owner_player_id)
+        techs = self._get_player_done_techs(s, player_id=fleet.owner_player_id)
+        ucost = self._balance.calc_units_empire_supply_upkeep(
+            units=units_map, race_id=rid, techs=techs
         )
-        blk = eco.get("fleet_empire_upkeep") if isinstance(eco, dict) else None
-        if not isinstance(blk, dict):
-            return {"metal": 0, "crystal": 0}
-        mf = int(blk.get("metal_per_sol_per_fleet", 0) or 0)
-        cf = int(blk.get("crystal_per_sol_per_fleet", 0) or 0)
-        ms = int(blk.get("metal_per_sol_per_ship", 0) or 0)
-        cs = int(blk.get("crystal_per_sol_per_ship", 0) or 0)
         return {
-            "metal": max(0, mf) * max(0, int(fleets)) + max(0, ms) * max(0, int(ships)),
-            "crystal": max(0, cf) * max(0, int(fleets))
-            + max(0, cs) * max(0, int(ships)),
+            k: int(oh.get(k, 0)) + int(uni.get(k, 0)) + int(ucost.get(k, 0) or 0)
+            for k in keys
         }
 
     def _fleet_empire_upkeep_unpaid_penalty_energy(self) -> int:
@@ -179,36 +287,25 @@ class WorldServiceMixin02:
         return max(0, int(blk.get("energy_penalty_on_unpaid", 25) or 25))
 
     def _apply_fleet_empire_upkeep_tick(self, s: Session, *, tick: int) -> None:
-        """Имперское содержание флотов (кроме локальной энергии флота).
+        """Имперское снабжение флота: металл/кристалл/еда/вода с капитала (не локальная энергия).
 
-        Платим с "капитальной" (самой ранней) планеты игрока из её складских ресурсов.
-        Если не хватает — штрафуем конкретный флот снижением локальной энергии и пишем событие.
+        Учитывается состав каждого флота (units.upkeep.empire_per_sol × qty) и опционально
+        ровная надбавка economy.*_per_sol_per_ship/fleet.
+
+        Если не хватает любого ресурса — штраф энергии флоту и событие.
         """
         if not self._balance:
             return
-        eco = (
-            self._balance.pack.economy
-            if isinstance(getattr(self._balance, "pack", None), object)
-            else {}
-        )
-        blk = eco.get("fleet_empire_upkeep") if isinstance(eco, dict) else None
-        if not isinstance(blk, dict):
-            return
-
-        mf = int(blk.get("metal_per_sol_per_fleet", 0) or 0)
-        cf = int(blk.get("crystal_per_sol_per_fleet", 0) or 0)
-        ms = int(blk.get("metal_per_sol_per_ship", 0) or 0)
-        cs = int(blk.get("crystal_per_sol_per_ship", 0) or 0)
-        if max(mf, cf, ms, cs) <= 0:
-            return
-
         penalty = self._fleet_empire_upkeep_unpaid_penalty_energy()
 
-        owner_ids = (
-            s.execute(select(Fleet.owner_player_id).where(Fleet.qty > 0).distinct())
-            .scalars()
-            .all()
-        )
+        owner_ids: set[uuid.UUID] = set()
+        for f in s.execute(select(Fleet)).scalars().all():
+            if f.owner_player_id in NPC_FLEET_PLAYER_IDS:
+                continue
+            if self._fleet_total_units(s, f) <= 0:
+                continue
+            owner_ids.add(f.owner_player_id)
+
         for oid in owner_ids:
             cap = self._capital_planet_for_player(s, player_id=oid)
             if not cap:
@@ -222,24 +319,35 @@ class WorldServiceMixin02:
             fleets = (
                 s.execute(
                     select(Fleet)
-                    .where(Fleet.owner_player_id == oid, Fleet.qty > 0)
+                    .where(Fleet.owner_player_id == oid)
                     .order_by(Fleet.created_at.asc(), Fleet.id.asc())
                 )
                 .scalars()
                 .all()
             )
             for f in fleets:
-                units_map = self._fleet_units_map(s, f)
-                ships = sum(max(0, int(q)) for q in (units_map or {}).values())
-                need = self._fleet_empire_upkeep_costs(fleets=1, ships=ships)
-                if need["metal"] <= 0 and need["crystal"] <= 0:
+                if self._fleet_total_units(s, f) <= 0:
+                    continue
+                need = self._fleet_empire_supply_need_for_fleet(s, fleet=f)
+                if all(int(need.get(k, 0) or 0) <= 0 for k in need):
                     continue
 
                 have_m = int(getattr(res, "metal", 0) or 0)
                 have_c = int(getattr(res, "crystal", 0) or 0)
-                if have_m >= need["metal"] and have_c >= need["crystal"]:
-                    res.metal = have_m - need["metal"]
-                    res.crystal = have_c - need["crystal"]
+                have_f = int(getattr(res, "food", 0) or 0)
+                have_w = int(getattr(res, "water", 0) or 0)
+                nm, nc = int(need["metal"]), int(need["crystal"])
+                nf, nw = int(need["food"]), int(need["water"])
+                if (
+                    have_m >= nm
+                    and have_c >= nc
+                    and have_f >= nf
+                    and have_w >= nw
+                ):
+                    res.metal = have_m - nm
+                    res.crystal = have_c - nc
+                    res.food = have_f - nf
+                    res.water = have_w - nw
                     continue
 
                 if penalty > 0:
@@ -254,7 +362,12 @@ class WorldServiceMixin02:
                         "fleet_id": str(f.id),
                         "capital_planet_id": str(cap.id),
                         "need": need,
-                        "have": {"metal": have_m, "crystal": have_c},
+                        "have": {
+                            "metal": have_m,
+                            "crystal": have_c,
+                            "food": have_f,
+                            "water": have_w,
+                        },
                         "penalty_energy": penalty,
                     },
                     player_id=oid,
@@ -266,10 +379,12 @@ class WorldServiceMixin02:
 
         Принцип: энергия появляется только если есть снабжение или "хаб" (планета/форпост).
         """
-        fleets = s.execute(select(Fleet).where(Fleet.qty > 0)).scalars().all()
+        fleets = s.execute(select(Fleet)).scalars().all()
         if not fleets:
             return
         for f in fleets:
+            if self._fleet_total_units(s, f) <= 0:
+                continue
             self._sync_fleet_energy_scale(s, f)
             if f.owner_player_id in NPC_FLEET_PLAYER_IDS:
                 mx = int(getattr(f, "max_energy", FLEET_ENERGY_MAX_FLOOR) or FLEET_ENERGY_MAX_FLOOR)
@@ -432,11 +547,13 @@ class WorldServiceMixin02:
 
         Это "буксировка/аварийный режим": не требует топлива и энергии на постановку.
         """
-        fleets = s.execute(select(Fleet).where(Fleet.qty > 0)).scalars().all()
+        fleets = s.execute(select(Fleet)).scalars().all()
         if not fleets:
             return
         ws = self.get_or_create_world_state(s)
         for f in fleets:
+            if self._fleet_total_units(s, f) <= 0:
+                continue
             if f.owner_player_id in NPC_FLEET_PLAYER_IDS:
                 continue
             if int(getattr(f, "pos_z", 0) or 0) != 0:
@@ -650,7 +767,7 @@ class WorldServiceMixin02:
         inf_scores = self._influence_scores_at(
             sources, int(planet.pos_x), int(planet.pos_y), 0
         )
-        inf_mul = WorldService._planet_influence_production_multiplier(
+        inf_mul = self._planet_influence_production_multiplier(
             inf_scores, planet.owner_player_id
         )
 

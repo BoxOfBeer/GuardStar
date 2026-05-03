@@ -20,11 +20,13 @@ from app.db.models.outpost import Outpost  # noqa: F401
 from app.db.models.outpost_module import OutpostModule  # noqa: F401
 from app.db.models.planet import Planet  # noqa: F401
 from app.db.models.player import Player  # noqa: F401
+from app.db.models.private_chat_peer_pref import PrivateChatPeerPref  # noqa: F401
 from app.db.models.player_block import PlayerBlock  # noqa: F401
 from app.db.models.player_effect import PlayerEffect  # noqa: F401
 from app.db.models.player_tech import PlayerTech  # noqa: F401
 from app.db.models.resource import Resource  # noqa: F401
 from app.db.models.resource_tick import ResourceTick  # noqa: F401
+from app.db.models.reserved_display_name import ReservedDisplayName  # noqa: F401
 from app.db.models.unit import Unit  # noqa: F401
 from app.db.models.unit_order import UnitOrder  # noqa: F401
 from app.db.models.world_state import WorldState  # noqa: F401

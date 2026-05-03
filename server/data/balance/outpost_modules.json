@@ -6,14 +6,11 @@
       "name": "Радарный модуль I",
       "tier": 1,
       "level": 1,
-      "slot_cost_engineers": 1,
       "prereq_tech": [],
+      "effects_summary_ru": "Добавляет к базовому обзору форпоста +4 клетки радиуса — раньше видите объекты и угрозы.",
       "build": {
         "time_ticks": 3,
-        "cost": {
-          "metal": 120,
-          "crystal": 90
-        }
+        "cost": {}
       },
       "effects": {
         "vision": {
@@ -23,10 +20,8 @@
       "upgrade": {
         "to": "module_radar_t2",
         "time_ticks": 4,
-        "cost": {
-          "metal": 140,
-          "crystal": 120
-        },
+        "cost": {},
+        "summary_ru": "Усиление датчиков II: обзор +7 клеток вместо +4.",
         "prereq_tech": [
           "tech_territory_2"
         ]
@@ -38,16 +33,13 @@
       "name": "Радарный модуль II",
       "tier": 2,
       "level": 2,
-      "slot_cost_engineers": 1,
       "prereq_tech": [
         "tech_territory_2"
       ],
+      "effects_summary_ru": "Обзор +7 клеток от базы форпоста — максимальная версия без новых исследований.",
       "build": {
         "time_ticks": 4,
-        "cost": {
-          "metal": 160,
-          "crystal": 140
-        }
+        "cost": {}
       },
       "effects": {
         "vision": {
@@ -62,16 +54,13 @@
       "name": "Броневой модуль I",
       "tier": 1,
       "level": 1,
-      "slot_cost_engineers": 1,
       "prereq_tech": [
         "tech_hull_1"
       ],
+      "effects_summary_ru": "Укрепление корпуса: +18 HP и +2 к защите — форпост дольше держит удар.",
       "build": {
         "time_ticks": 4,
-        "cost": {
-          "metal": 140,
-          "crystal": 120
-        }
+        "cost": {}
       },
       "effects": {
         "combat": {
@@ -82,10 +71,8 @@
       "upgrade": {
         "to": "module_armor_t2",
         "time_ticks": 5,
-        "cost": {
-          "metal": 180,
-          "crystal": 160
-        },
+        "cost": {},
+        "summary_ru": "Тяжёлая распределённая защита: +30 HP и +3 к защите вместо +18/+2.",
         "prereq_tech": [
           "tech_territory_2"
         ]
@@ -97,16 +84,13 @@
       "name": "Броневой модуль II",
       "tier": 2,
       "level": 2,
-      "slot_cost_engineers": 1,
       "prereq_tech": [
         "tech_territory_2"
       ],
+      "effects_summary_ru": "Максимальный пассивный запас по броне: +30 HP, +3 к защите.",
       "build": {
         "time_ticks": 5,
-        "cost": {
-          "metal": 220,
-          "crystal": 180
-        }
+        "cost": {}
       },
       "effects": {
         "combat": {
@@ -122,16 +106,13 @@
       "name": "Топливный модуль I",
       "tier": 1,
       "level": 1,
-      "slot_cost_engineers": 1,
       "prereq_tech": [
         "tech_logistics_1"
       ],
+      "effects_summary_ru": "Сеть дозаправки на клетке: −15% к расходу топлива ваших флотов в перелётах с этого форпоста.",
       "build": {
         "time_ticks": 3,
-        "cost": {
-          "metal": 110,
-          "crystal": 80
-        }
+        "cost": {}
       },
       "effects": {
         "refuel": {
@@ -146,16 +127,13 @@
       "name": "Логистический модуль I",
       "tier": 2,
       "level": 1,
-      "slot_cost_engineers": 1,
       "prereq_tech": [
         "tech_supply_networks_1"
       ],
+      "effects_summary_ru": "+1 к «вкладу снабженца» в радиус имперской логистики (на планете-столице; суммируется с технологиями и постройками).",
       "build": {
         "time_ticks": 4,
-        "cost": {
-          "metal": 150,
-          "crystal": 120
-        }
+        "cost": {}
       },
       "effects": {
         "supply": {
@@ -170,16 +148,13 @@
       "name": "Энерго-батарея I",
       "tier": 2,
       "level": 1,
-      "slot_cost_engineers": 1,
       "prereq_tech": [
         "tech_energy_grid_1"
       ],
+      "effects_summary_ru": "Накопители огня форпоста: +2 к атаке в автообстреле; хитрая экономия — содержание модуля снижает энергоапкип базы форпоста на 1/сол (через дельту энергии).",
       "build": {
         "time_ticks": 4,
-        "cost": {
-          "metal": 140,
-          "crystal": 130
-        }
+        "cost": {}
       },
       "effects": {
         "combat": {
