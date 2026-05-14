@@ -154,7 +154,7 @@ class WorldServiceMixin05:
         )
 
     def _purge_fleet_row(self, s: Session, fleet: Fleet) -> None:
-        s.execute(delete(FleetShip).where(FleetShip.fleet_id == fleet.id))
+        self._delete_fleet_ships_for_fleet(s, fleet.id)
         s.execute(delete(FleetOrder).where(FleetOrder.fleet_id == fleet.id))
         s.delete(fleet)
 

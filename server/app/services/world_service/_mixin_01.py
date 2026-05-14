@@ -209,6 +209,18 @@ class WorldServiceMixin01:
             return {str(fleet.unit_type): fq}
         return {}
 
+    def _delete_fleet_ships_for_fleet(self, s: Session, fleet_id: uuid.UUID) -> None:
+        """Удалить все строки состава флота.
+
+        Важно: только ``s.delete(orm_obj)``, не Core ``DELETE`` — иначе объекты
+        ``FleetShip`` остаются в identity map сессии, и при следующем ``s.add`` flush
+        даёт ``UniqueViolation`` на ``(fleet_id, unit_type)``.
+        """
+        for row in s.scalars(
+            select(FleetShip).where(FleetShip.fleet_id == fleet_id)
+        ).all():
+            s.delete(row)
+
     def _materialize_legacy_fleet_qty_into_ship_rows(
         self, s: Session, fleet: Fleet
     ) -> None:
@@ -294,8 +306,16 @@ class WorldServiceMixin01:
     def _write_fleet_units(
         self, s: Session, fleet: Fleet, units: dict[str, int]
     ) -> None:
-        s.execute(delete(FleetShip).where(FleetShip.fleet_id == fleet.id))
-        pos = {str(k): int(v) for k, v in units.items() if int(v) > 0}
+        self._delete_fleet_ships_for_fleet(s, fleet.id)
+        pos: dict[str, int] = {}
+        for k, v in units.items():
+            q = int(v)
+            if q <= 0:
+                continue
+            ks = str(k).strip().lower()
+            if not ks:
+                continue
+            pos[ks] = pos.get(ks, 0) + q
         tot = sum(pos.values())
         if tot <= 0:
             fid = fleet.id
@@ -329,7 +349,7 @@ class WorldServiceMixin01:
         if rows:
             tot = sum(int(r.qty) for r in rows)
             if tot <= 0 and int(fleet.qty) > 0 and fleet.unit_type:
-                s.execute(delete(FleetShip).where(FleetShip.fleet_id == fleet.id))
+                self._delete_fleet_ships_for_fleet(s, fleet.id)
                 s.flush()
                 s.add(
                     FleetShip(
