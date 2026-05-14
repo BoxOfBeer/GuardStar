@@ -1,30 +1,10 @@
 # HTTP API игрока GuardStar
 
-Справка для клиентов: веб-UI, боты, скрипты, внешние интеграции. Все пути ниже относительно префикса **`/api`** (blueprint регистрируется в `server/app/__init__.py` как `url_prefix="/api"`).
+Краткая справка для клиентов (ботов, скриптов, UI). Все пути ниже относительно **`/api`** (blueprint зарегистрирован с префиксом `/api`).  
 
-**Исходники маршрутов:** `server/app/routes/api/routes_core.py`, `routes_progress.py`, `routes_world_fleets.py`, `routes_buildings_fleets_combat.py`, `routes_planets.py`, `routes_chat.py`, `routes_alliance.py`.
+Пошаговые советы, **curl**, разбор ошибок постройки/техов и цикл агента — в разделе **«Расширенный учебник»** ниже на этой странице.
 
-**Версия и актуальность:** `GET /api/version` — поля `game_version` (см. `docs/GAME_VERSION`), `balance_schema_version`, `balance_pack_id` / `balance_pack_name`. После обновления сервера сравнивайте эти поля с ожиданиями клиента.
-
----
-
-## Содержание
-
-1. [Общие правила](#общие-правила)
-2. [Полный реестр эндпоинтов](#полный-реестр-эндпоинтов)
-3. [Быстрый старт (curl и Python)](#быстрый-старт-curl-и-python)
-4. [Проверка связи и метаданные](#проверка-связи-и-метаданные-без-логина)
-5. [Аутентификация и профиль](#аутентификация-и-профиль)
-6. [Баланс, техи, экономика, эффекты](#баланс-техи-экономика-эффекты)
-7. [Мир, карта, тик, снабжение](#мир-карта-тик-снабжение)
-8. [Юниты и флоты](#юниты-и-флоты)
-9. [Постройки и форпосты](#постройки-и-форпосты)
-10. [Планеты и колонизация](#планеты-и-колонизация)
-11. [Чат](#чат-игрок)
-12. [Альянсы](#альянсы-фаза-1)
-13. [Минимальный сценарий](#минимальный-сценарий-проверка--логин--карта--постройка)
-14. [Расширенный учебник и таблицы ошибок](#расширенный-учебник-для-ботов-и-интеграций)
-15. [HTML-страницы](#замечание-про-html-страницы)
+**Версия и актуальность:** совпадение с сервером проверяйте через `GET /api/version` (`game_version`, `balance_schema_version`). Исходники маршрутов: `server/app/routes/api/routes_*.py`.
 
 ---
 
@@ -32,200 +12,54 @@
 
 | Тема | Описание |
 |------|----------|
-| **Формат** | JSON: тела `POST` / `PATCH` — заголовок `Content-Type: application/json`. |
-| **Сессия** | После `POST /api/register` или `POST /api/login` сервер выставляет **cookie-сессию Flask** (`session`). Клиент должен отправлять cookie на последующие запросы (`requests.Session()`, браузер, `curl -b/-c`). |
+| **Формат** | JSON: тела `POST`/`PATCH` — `Content-Type: application/json`. |
+| **Сессия** | После `POST /api/register` или `POST /api/login` сервер выставляет **cookie-сессию Flask** (`session`). Дальнейшие запросы должны отправлять cookie (в Python удобно `requests.Session()`). |
 | **401** | `{"error": "not_authenticated"}` — нет сессии или сессия сброшена. |
-| **403 (аккаунт)** | Для большинства эндпоинтов отключённый аккаунт приводит к очистке сессии и `{"error": "account_disabled"}` (исключения: `health`, `ready`, `version`, `register`, `login`, `logout` — см. `_SKIP_ACCOUNT_DISABLED` в `server/app/routes/api/__init__.py`). |
-| **Координаты** | Слой `z` на сервере клампится в диапазон **−10 … 10** там, где он передаётся в мир. |
-| **Окно карты** | Параметр `radius` для `/world/window`, `/buildings/list` клампится к **6 … 12** (шаги гекса от центра); константы `MAP_WINDOW_RADIUS_MIN/MAX` в `server/app/routes/api/common.py`. В ответе окна **`topology`: `"hex"`**; клетки — **диск** в осевых координатах `x`, `y` (аналог `q`, `r` в axial hex). |
+| **403 (аккаунт)** | Для большинства эндпоинтов отключённый аккаунт приводит к очистке сессии и ответу `{"error": "account_disabled"}` (исключения: health, ready, version, register, login, logout — см. `server/app/routes/api/__init__.py`). |
+| **Координаты** | Слой `z` ограничен **−10 … 10** (где применимо на сервере). |
+| **Окно карты** | Параметр `radius` для `/world/window`, `/buildings/list` клампится к **6 … 12** (шаги гекса от центра); в ответе окна поле **`topology`: `"hex"`**, клетки — **диск** в осевых координатах `x`,`y` (как `q`,`r`). |
 
-**Типичные поля ответов:** `error` (строка), часто `ok: true|false`, иногда `detail`, доменные поля (`need`/`have`, `missing_techs`, …).
-
-**Коды ответов (обзор):**
-
-- **200** — успех для большинства GET и успешных POST с телом `ok: true` (редко ошибка логики всё же в JSON при 200 — смотрите `ok`).
-- **400** — неверные параметры, игровой отказ (`ok: false` у части маршрутов).
-- **401** — нет сессии или неверный код входа (`invalid_access_code` на `login`).
-- **403** — `account_disabled`, `sector_not_visible` (разведка), `blocked_peer` (чат), `forbidden` (админ/чужие ресурсы), `not_in_alliance` (влияние альянса), и т.д.
-- **404** — не найдено (например флот в `upkeep-preview`).
-- **413** — слишком длинное сообщение чата (`message_too_long`).
-- **429** — лимит чата (`rate_limited`).
-- **500** / **503** — внутренняя ошибка, БД недоступна (`/ready`).
-
----
-
-## Полный реестр эндпоинтов
-
-Метод и путь от корня приложения (с префиксом `/api`). «Сессия» = валидная cookie после `login`/`register`, если не указано иначе.
-
-| Метод | Путь | Сессия |
-|--------|------|--------|
-| GET | `/api/health` | нет |
-| GET | `/api/ready` | нет |
-| GET | `/api/version` | нет |
-| POST | `/api/register` | создаёт сессию |
-| POST | `/api/login` | создаёт сессию |
-| POST | `/api/logout` | опционально |
-| GET | `/api/me` | да |
-| GET | `/api/balance` | да |
-| GET | `/api/tech/state` | да |
-| GET | `/api/effects/active` | да |
-| GET | `/api/economy/summary` | да |
-| POST | `/api/tech/start` | да |
-| GET | `/api/supply/state` | да |
-| POST | `/api/supply/hire_supplier` | да |
-| GET | `/api/world/sector` | нет (player_id из cookie опционален) |
-| POST | `/api/discovery/resolve` | да |
-| GET | `/api/world/window` | да |
-| POST | `/api/world/tick` | да |
-| GET | `/api/units/status` | да |
-| GET | `/api/world/state` | да |
-| POST | `/api/world/recruit_population` | да |
-| POST | `/api/world/autotick` | да |
-| POST | `/api/world/admin/dev/purge_bandits` | да, админ |
-| POST | `/api/world/admin/dev/fleet_spawn_lock` | да, админ |
-| POST | `/api/units/move_scout` | да |
-| POST | `/api/fleets/move` | да |
-| POST | `/api/fleets/cancel_order` | да |
-| GET | `/api/buildings/list` | да |
-| POST | `/api/buildings/place` | да |
-| POST | `/api/buildings/place_batch` | да |
-| POST | `/api/buildings/placement_checks` | да |
-| POST | `/api/buildings/dismantle` | да |
-| POST | `/api/buildings/upgrade` | да |
-| POST | `/api/outposts/build` | да |
-| POST | `/api/outposts/build_checks` | да |
-| POST | `/api/outposts/upgrade` | да |
-| POST | `/api/outposts/modules/install` | да |
-| POST | `/api/outposts/modules/upgrade` | да |
-| POST | `/api/outposts/modules/dismantle` | да |
-| POST | `/api/fleets/create` | да |
-| POST | `/api/fleets/rename` | да |
-| POST | `/api/fleets/adjust` | да |
-| GET | `/api/fleets/<fleet_id>/upkeep-preview` | да |
-| POST | `/api/fleets/save` | да |
-| POST | `/api/fleets/disband` | да |
-| POST | `/api/fleets/merge` | да |
-| POST | `/api/fleets/split` | да |
-| POST | `/api/fleets/combat_preview` | да |
-| POST | `/api/fleets/combat_prompt_resolve` | да |
-| POST | `/api/intel/scan_fleet` | да |
-| POST | `/api/planets/colonize` | да |
-| GET/POST | `/api/chat/global` | да |
-| GET/POST | `/api/chat/private` | да |
-| GET | `/api/chat/private/threads` | да |
-| GET | `/api/chat/private/badge` | да |
-| GET | `/api/chat/private/thread/meta` | да |
-| POST | `/api/chat/private/thread/open` | да |
-| PATCH | `/api/chat/private/thread/prefs` | да |
-| POST | `/api/chat/private/thread/hide` | да |
-| GET/POST | `/api/chat/blocks` | да |
-| DELETE | `/api/chat/blocks/<blocked_id>` | да |
-| POST | `/api/chat/global/<message_id>/hide` | да |
-| DELETE | `/api/chat/global/<message_id>` | да |
-| POST | `/api/chat/moderation/chat-ban` | да, персонал |
-| POST | `/api/chat/moderation/account-ban` | да, персонал |
-| GET/POST | `/api/chat/alliance` | да |
-| POST | `/api/alliance/create` | да |
-| POST | `/api/alliance/join` | да |
-| POST | `/api/alliance/leave` | да |
-| GET | `/api/alliance/me` | да |
-| GET | `/api/alliance/influence_at` | да |
-
----
-
-## Быстрый старт (curl и Python)
-
-Подставьте базовый URL вашего стенда (`http://127.0.0.1:5000` и т.д.).
-
-### curl: cookie-jar
-
-```bash
-BASE="http://127.0.0.1:5000"
-curl -sS "$BASE/api/health"
-curl -sS "$BASE/api/version"
-
-curl -sS -c cookies.txt -X POST "$BASE/api/register" \
-  -H "Content-Type: application/json" \
-  -d "{\"display_name\":\"Бот-Тест\",\"race_id\":\"human\"}"
-
-# В ответе будут player_id и access_code — сохраните access_code.
-curl -sS -c cookies.txt -X POST "$BASE/api/login" \
-  -H "Content-Type: application/json" \
-  -d "{\"access_code\":\"ВАШ_32_СИМВОЛА_HEX_КОД\"}"
-
-curl -sS -b cookies.txt "$BASE/api/me"
-curl -sS -b cookies.txt "$BASE/api/world/state"
-curl -sS -b cookies.txt "$BASE/api/world/window?radius=8&z=0"
-```
-
-Код доступа после регистрации — **32 шестнадцатеричных символа** (`secrets.token_hex(16)` в `AuthService`).
-
-### Python: одна сессия на все запросы
-
-```python
-import requests
-
-BASE = "http://127.0.0.1:5000"
-s = requests.Session()
-
-r = s.post(f"{BASE}/api/login", json={"access_code": "ваш_код"})
-r.raise_for_status()
-
-me = s.get(f"{BASE}/api/me").json()
-balance = s.get(f"{BASE}/api/balance").json()
-state = s.get(f"{BASE}/api/world/state").json()
-
-place = s.post(
-    f"{BASE}/api/buildings/placement_checks",
-    json={
-        "x": 0,
-        "y": 0,
-        "z": 0,
-        "building_types": ["mine_t1", "reactor_t1"],
-        "fleet_id": None,
-    },
-).json()
-```
+Типичные поля ошибок: `error` (строка), иногда `ok: false`, иногда `detail`. Успешные действия часто содержат `ok: true` и доменные поля.
 
 ---
 
 ## Проверка связи и метаданные (без логина)
 
+Имеет смысл вызывать **до** массовых запросов или после сетевых сбоев.
+
 ### `GET /api/health`
 
-Живость процесса; **БД не проверяет**.
+Живость процесса (БД не проверяет).
 
-**Пример 200:**
-
+**Пример ответа 200:**
 ```json
 {
   "status": "ok",
   "app": "GuardStar",
-  "build_id": "…"
+  "build_id": "..."
 }
 ```
 
-`build_id` — идентификатор сборки/перезапуска (`BUILD_ID` в `server/app/build_info.py`), не путать с `game_version`.
-
 ### `GET /api/ready`
 
-Проверка БД (`SELECT 1`).
+Проверка доступности БД (`SELECT 1`).
 
-- **200:** `{"status": "ready"}`
-- **503:** `{"status": "not_ready", "error": "db_unavailable"}`
+**Успех 200:** `{"status": "ready"}`  
+
+**БД недоступна 503:** `{"status": "not_ready", "error": "db_unavailable"}`
 
 ### `GET /api/version`
 
-**Пример 200:**
+Версия игры и баланса, флаги возможностей.
 
+**Пример 200:**
 ```json
 {
   "app": "guardstar",
-  "game_version": "01.189",
+  "game_version": "01.090",
   "balance_schema_version": 1,
-  "balance_pack_id": "…",
-  "balance_pack_name": "…",
+  "balance_pack_id": "...",
+  "balance_pack_name": "...",
   "features": {
     "z_layers": true,
     "procgen": true,
@@ -236,18 +70,15 @@ place = s.post(
 }
 ```
 
-`features` — стабильный набор флагов возможностей клиента; расширяется по мере игры.
-
 ---
 
 ## Аутентификация и профиль
 
 ### `POST /api/register`
 
-Создаёт игрока, резервирует отображаемое имя, генерирует код доступа, **сразу выставляет cookie-сессию**.
+Создать игрока и сразу залогинить (cookie).
 
 **Тело:**
-
 ```json
 {
   "display_name": "Оператор-7",
@@ -255,43 +86,38 @@ place = s.post(
 }
 ```
 
-- `display_name` — после нормализации пробелов; длина **3…64** символа; пустое → ошибка `display_name_required` (маппинг из кода `empty`).
-- `race_id` — строка из баланса; по умолчанию сервер подставляет `"human"`, если поле пустое. Раса должна существовать в балансе и иметь `enabled !== false`, иначе **`400`** `{"error": "invalid_race_id"}`.
-
 **Успех 200:**
-
 ```json
 {
   "player_id": "550e8400-e29b-41d4-a716-446655440000",
-  "access_code": "abcdef0123…"
+  "access_code": "...."
 }
 ```
 
-**Типовые ошибки 400:** `display_name_required`, `too_short`, `too_long`, `taken`, `invalid_race_id`.
+**Ошибки 400 (примеры):** `invalid_race_id`, `display_name_required`, `too_short`, `too_long`, `taken` (и др. коды валидации имени).
 
 ### `POST /api/login`
 
-**Тело:** `{ "access_code": "…" }` — ровно тот код, что выдали при регистрации (32 hex-символа).
+Вход по коду доступа.
 
-**Успех 200:** `{"ok": true, "player_id": "<uuid>"}`
+**Тело:**
+```json
+{ "access_code": "xxxxxxxx" }
+```
+
+**Успех 200:** `{"ok": true, "player_id": "uuid"}`  
 
 **Ошибки:** `400` — `access_code_required`; `401` — `invalid_access_code`; `403` — `account_disabled`.
 
 ### `POST /api/logout`
 
-Сброс сессии. **200:** `{"ok": true}`
+Сброс сессии. **Успех 200:** `{"ok": true}`
 
 ### `GET /api/me`
 
-Краткий обзор игрока и планет (склад столицы/колоний в терминах ресурсов и юнитов на планетах). **401** без сессии.
+Обзор игрока после старта (планеты, экономика и т.д. — см. серверную сборку).
 
-Структура строится в `WorldService.get_player_overview` (`server/app/services/world_service/_mixin_02.py`):
-
-- Всегда: `player_id`, `display_name`, `planets` (массив), `is_game_admin`, `is_game_moderator`.
-- Элемент `planets[]` для колонизированной планеты: `id`, `name`, `planet_class`, `is_capital`, `is_colonized: true`, `pos: {x,y}`, `resources` (metal, crystal, energy, fuel, food, water), `units: [{unit_type, qty}, …]`.
-- Не колонизированная (внешняя) планета в списке владений: `is_colonized: false`, `status_ru`, `resources: null`, `units: []`.
-
-Пример см. в разделе [Расширенный учебник](#расширенный-учебник-для-ботов-и-интеграций).
+**Без авторизации:** `401` — `{"error": "not_authenticated"}`
 
 ---
 
@@ -301,110 +127,29 @@ place = s.post(
 
 ### `GET /api/balance`
 
-Полная выгрузка **публичного** баланса одним JSON.
+Полная выгрузка публичного баланса: `meta`, ресурсы, расы, юниты, здания, форпости, техи и т.д. Используйте массив `buildings`, поле `id` постройки как **`building_type`** в `POST /api/buildings/place`.
 
-**Корневые поля успешного ответа:**
-
-| Поле | Смысл |
-|------|--------|
-| `ok` | `true` |
-| `meta` | Версия пакета, схема и пр. из `meta.json` |
-| `resources` | Описание типов ресурсов |
-| `economy` | Глобальные числа (в т.ч. лимиты, бандиты, `intel_scan`, `alliance`, `citizen_recruit`, …) |
-| `aliases` | В т.ч. **`building_aliases`** — источник истины для строк **`building_type`** в API построек |
-| `races` | Список рас (объекты из баланса) |
-| `units` | Все юниты |
-| `buildings` | Все типы зданий |
-| `outposts` | Типы форпостов (`id` = `outpost_type` в API) |
-| `outpost_modules` | Типы модулей (`id` = `module_type`) |
-| `tech` | Дерево технологий |
-
-**Ошибки:** `401`; при не загруженном балансе на сервере — **`500`** с `ok: false`, `error: "balance_not_loaded"`, `detail`.
+**Ошибки:** `401`; `500` — `balance_not_loaded` (+ `detail`).
 
 ### `GET /api/tech/state`
 
-Очередь исследований и запас **RP** (research points).
+Очередь исследований и запас очков науки.
 
-**Пример фрагмента:**
-
-```json
-{
-  "ok": true,
-  "current_tick": 10,
-  "current_sol": 10,
-  "research_points": 12.5,
-  "research_points_per_sol": 2.5,
-  "techs": [
-    {
-      "tech_id": "tech_mining_1",
-      "status": "in_progress",
-      "started_tick": 5,
-      "started_sol": 5,
-      "finish_tick": 15,
-      "finish_sol": 15,
-      "remaining_ticks": 5,
-      "remaining_sols": 5
-    }
-  ]
-}
-```
-
-Статусы строк `techs` в БД: в т.ч. `in_progress`, `done`. Поля `*_tick` и `*_sol` для игрока означают одно и то же число (номер **сола** мира).
+Пример ключей: `current_tick`, `research_points`, `techs[]` с `tech_id`, `status`, тиками.
 
 ### `GET /api/effects/active`
 
-Активные модификаторы игрока на текущий тик: `{"ok": true, "current_tick": N, "effects": [ … ]}`. Состав `effects` зависит от `list_active_player_effects` — для точной схемы смотрите живой ответ и `server/app/services/player_research_effects.py`.
+Активные модификаторы игрока на текущий тик.
 
 ### `GET /api/economy/summary`
 
-Query-параметр: **`include_external_buildings`** — `1` (по умолчанию) или `0`: влияет на учёт полевых построек в справочных агрегатах (`buildings.external_buildings` / `hidden`).
-
-Развёрнутая сводка империи за **один сол** (и запасы). Основные ключи успешного ответа (`EconomyService.get_economy_summary`, не режим `for_hud_poll`):
-
-- `ok`, `current_tick`, `current_sol`
-- `research_points`, `research_points_per_sol`
-- `treasury_home` — ресурсы на **первой** планете игрока по `created_at` (столица для операций «с дома»).
-- `treasury_empire` — сумма по всем планетам владельца.
-- `net_per_sol` — чистый приток/расход по империи за сол (производство минус население, логистика форпостов, апкип флотов, энергия флотов, форпосты).
-- `net_home_per_sol` — аналогично только для домашней планеты (производство дома минус нужды населения дома).
-- `production_per_sol` — суммарное «сырое» производство планет до вычета расходов.
-- `costs_per_sol` — детализация: `population_vitals`, `outpost_supply_logistics`, `outpost_upkeep`, `fleet_empire_upkeep`, `fleet_energy_upkeep`.
-- `expenses_aggregate_per_sol` — разница между производством и `net` по ресурсам.
-- `construction_reference` — справочно: оценка «стоимости восстановления» построек и кораблей (не ежесолевой расход); внутри `note`, `buildings_replacement_cost`, `fleet_ships_replacement_cost`.
-- `planets` — по каждой планете: `planet_id`, `name`, `pos`, `population`, `production_per_sol`, `population_upkeep_per_sol`.
-- `buildings` — счётчики `planet_buildings`, `external_buildings`, `external_buildings_hidden`.
-- `fleets` — краткий список флотов с `id`, `name`, `pos`, `ships`.
-- `runway_sols` — по каждому ресурсу оценка «сколько солов хватит» при текущем тренде (`trend`, `approx_sols`).
+Сводка экономики. Query: `include_external_buildings` = `1`/`0` (по умолчанию учитываются внешние постройки).
 
 ### `POST /api/tech/start`
 
-**Тело:** `{"tech_id": "some_tech"}`
+**Тело:** `{"tech_id": "some_tech"}`  
 
-При успехе **200** (фрагмент):
-
-```json
-{
-  "ok": true,
-  "tech_id": "tech_mining_1",
-  "status": "in_progress",
-  "started_tick": 11,
-  "started_sol": 11,
-  "finish_tick": 25,
-  "finish_sol": 25,
-  "research_time_multiplier": 1.0,
-  "research_ticks_base": 20,
-  "residual_time_ticks": 9,
-  "research_ticks_adjusted": 9,
-  "research_points_spent": 10.0,
-  "research_points_after": 2.5,
-  "blueprint_cache_consumed": false,
-  "blueprint_discount": null,
-  "field_data_required": [],
-  "field_data_consumed": []
-}
-```
-
-Дополнительные ошибки сверх перечисленных в учебнике: `tech_bad_prereq`, `tech_bad_field_data_requirements`, `player_not_found`, `balance_not_loaded` (**500**).
+Возможные ошибки: `unknown_tech`, `tech_disabled`, конфликт слотов, нехватка RP/данных поля — смотрите тело ответа.
 
 ---
 
@@ -412,91 +157,52 @@ Query-параметр: **`include_external_buildings`** — `1` (по умол�
 
 ### `GET /api/world/sector?x=&y=&z=0`
 
-Краткий «стаб» сектора. Сессия **не обязательна**: при наличии cookie подмешивается видимость для игрока.
+Краткие данные сектора. Сессия опциональна (влияет на видимость/объекты для игрока).
 
 ### `GET /api/world/window`
 
-**Query:**
+Параметры: `radius`, `z`, опционально `center_x`, `center_y`.  
 
-| Параметр | Тип | По умолчанию | Описание |
-|-----------|-----|----------------|----------|
-| `radius` | int | 6 | Кламп 6…12 |
-| `z` | int | 0 | Слой |
-| `center_x`, `center_y` | int, опционально | null | Центр окна; если не заданы — сервер выбирает центр по миру/игроку (логика `WorldService.get_player_map_window`) |
-| `reveal_fog` | 0/1 | 0 | Только для **`is_game_admin`**; иначе игнорируется |
-
-Ответ большой; структура с `cells[]` → `row[]` → клетки с `objects[]` описана ниже в учебнике.
+`reveal_fog=1` — только для **`is_game_admin`**; иначе игнорируется.
 
 ### `POST /api/discovery/resolve`
 
-Разведка **видимой** клетки.
+Разведка видимой клетки. **Тело:** `{"x": 0, "y": 0, "z": 0}`  
 
-**Тело:** `{"x": 0, "y": 0, "z": 0}` (все целые).
-
-**403** с `error: "sector_not_visible"` — клетка не в зоне видимости.
+**403** возможен с `error: "sector_not_visible"`.
 
 ### `POST /api/world/tick`
 
-Один игровой **тик** (сол) мира для всех игроков в инстансе. **200:** `{"ok": true, …}` плюс поля из `process_next_tick`.
+Продвинуть мир на один игровой тик (нужна сессия). Ответ включает `ok: true` и поля от `process_next_tick`.
 
 ### `GET /api/world/state`
 
-Главный «толстый» снимок для UI: текущий **сол** мира (`current_sol` / `current_tick`), флоты, события, настройки автотика на уровне мира и т.д. Полезные поля для клиента:
-
-- **`player_race_id`**, **`race_growth`**: `{ "no_passive_planet_food_water", "no_passive_population_growth" }` — флаги из `races.json` для текущей расы.
-- **`home_planet.id`** — UUID домашней планеты.
-- **`research`**: `{ "in_progress": bool, "tech_id": string|null, "progress_percent": int|null }` — для HUD науки: при активном исследовании у RP в топбаре может показываться **(N%)** готовности текущего теха; без очереди — только визуальный «простой» чипа.
-- У **администратора** (`is_game_admin`) дополнительно может приходить **`admin_dev`**: `test_block_new_fleets`, `bandit_ai_every_n_ticks` (из баланса `economy.bandit_wilderness.ai_every_n_ticks` — как часто за тик выполняется блок ИИ корсаров).
-
-Дополнительно сервер может добавлять:
-
-- `balance_error`, `auto_tick_error` — строки диагностики при проблемах загрузки баланса/планировщика.
-- `auto_tick_running`, `auto_tick_last_run_at`, `auto_tick_last_tick` — состояние фонового тика (после старта/включения автотика сервер выполняет **один сол сразу**, затем — каждые `auto_tick_interval_seconds`).
-- `build_id` — дублирование с health для отладки.
+Крупное состояние для UI: текущий **сол** мира (`current_sol` / `current_tick`), флоты, события, настройки автотика на уровне мира и т.д. Дополнительно: **`player_race_id`**, **`race_growth`**: `{ "no_passive_planet_food_water", "no_passive_population_growth" }` (флаги из `races.json` для текущей расы); **`home_planet.id`** — UUID домашней планеты. Блок **`research`**: `{ "in_progress": bool, "tech_id": string|null, "progress_percent": int|null }` — для HUD науки: при активном исследовании в топбаре у RP может показываться **(N%)** готовности текущего теха; без очереди — только визуальный «простой» чипа.
 
 ### `POST /api/world/recruit_population`
 
-Явный набор населения на **своей** колонии — только для рас с **`no_passive_population_growth`** в балансе.
-
-**Тело:** `{ "planet_id": "<uuid>", "amount": <int> }` (допускается синоним **`count`** вместо `amount` на уровне парсера маршрута).
-
-Лимит за запрос: `economy.citizen_recruit.max_population_per_request`. Стоимость: `metal_per_pop`, `crystal_per_pop`, `food_per_pop`, `water_per_pop`.
-
-**Ошибки:** `recruit_not_available_for_race` (400); `planet_not_owned` (**403**); `invalid_uuid`, `invalid_amount`, `no_resources`, `population_cap`, `not_enough_resources` (с `need`/`have`).
+Явный набор населения на **своей** колонии — только для рас с **`no_passive_population_growth`** в балансе (напр. `silicon`). **Тело:** `{ "planet_id": "<uuid>", "amount": <int> }` (лимит за запрос из `economy.citizen_recruit.max_population_per_request`). Стоимость за единицу населения: `economy.citizen_recruit` (`metal_per_pop`, `crystal_per_pop`, `food_per_pop`, `water_per_pop`). Ошибки: `recruit_not_available_for_race` (400), `planet_not_owned` (403), `not_enough_resources`, `population_cap`.
 
 ### `POST /api/world/autotick`
 
-**Тело:** `{"enabled": true, "interval_seconds": 5}`
+**Тело:** `{"enabled": true, "interval_seconds": 5}`  
 
-- `enabled` — обязательный **bool**.
-- `interval_seconds` — опционально; если передан, должен быть числом в **1…60**; иначе **`400`** `error: "interval_out_of_range"` с `min`/`max`.
+`interval_seconds` опционально, диапазон **1 … 60**. Влияет на фоновый тик-сервер (в пределах одного процесса).
 
-Настройки пишутся в `WorldState` и дублируются в `app.config`; планировщик перезапускается. При сбое переключения возможен **`500`** `autotick_toggle_failed` с `detail`.
+### Админ: тест корсаров и нагрузки (только `is_game_admin`)
 
-**Успех 200:**
+- **`POST /api/world/admin/dev/purge_bandits`** — удалить все форпосты/шахты/флоты владельца-корсара (очистка мира для замеров).
+- **`POST /api/world/admin/dev/fleet_spawn_lock`** — тело `{"enabled": true|false}`: глобально запретить **новые** флоты (создание игроком, NPC-транзит, спавн корсар); движение существующих не трогается.
 
-```json
-{
-  "ok": true,
-  "auto_tick_enabled": true,
-  "auto_tick_interval_seconds": 5.0
-}
-```
-
-### Админ: корсары и нагрузка
-
-Только **`is_game_admin`** (иначе **403** `forbidden`):
-
-- **`POST /api/world/admin/dev/purge_bandits`** — очистка мира от сущностей корсаров.
-- **`POST /api/world/admin/dev/fleet_spawn_lock`** — тело строго с boolean `enabled`; ответ `{"ok": true, "test_block_new_fleets": …}`.
+В **`GET /api/world/state`** у админа дополнительно приходит **`admin_dev`**: `test_block_new_fleets`, `bandit_ai_every_n_ticks` (из баланса `economy.bandit_wilderness.ai_every_n_ticks` — как часто за тик выполняется блок ИИ корсаров).
 
 ### `GET /api/supply/state?x=&y=&z=0`
 
-Состояние снабжения для клетки. **400** `invalid_params`, если `x`/`y` не заданы как целые.
+Состояние системы снабжения для клетки (нужна сессия и валидные `x`,`y`).
 
 ### `POST /api/supply/hire_supplier`
 
-**Тело:** `{}` или `{"planet_id": "<uuid>"}` — логика найма на планете (см. `WorldService.hire_supplier`). При `ok: false` маршрут отвечает **400** с телом ошибки.
+**Тело:** `{"planet_id": "uuid-string"}` или `{}` — см. ответ сервера при ошибке.
 
 ---
 
@@ -504,172 +210,61 @@ Query-параметр: **`include_external_buildings`** — `1` (по умол�
 
 ### Баланс юнитов (`GET /api/balance`): обзор с клетки, корпус, разблокировки
 
-Поля задаются в записях юнитов в `units.json` (после загрузки баланса попадают в массив `units` ответа **`GET /api/balance`**).
-
-- **`map_vision_radius_cells`** (необязательное поле; при загрузке баланса допускаются только целые **0…6**): вклад типа корабля в **пассивный обзор** (туман войны) с клетки, где стоит флот. Для **смешанного** состава флота сервер берёт **максимум** по присутствующим типам. Если поля нет, для логического типа **`scout`** сохраняется прежний эквивалент **2**, для остальных — **1** (обратная совместимость).
-
-- **`fleet_energy_pool_bonus_per_ship`** и **`fleet_travel_fuel_flat_discount_per_ship`** (необязательные целые **0…500**): на каждый такой корабль в составе увеличивается **потолок энергии на борту** всего флота и уменьшается **суммарное топливо** на один перелёт (скидка не опускает расход ниже **1**, если базовый расход был больше нуля). Суммарный бонус энергии и скидка топлива по всему составу ограничены сервером сверху.
-
-- **`fleet_composition_allowed`** (необязательное **bool**): при **`false`** тип не входит в состав игрока — сервер отбрасывает его из `composition` / `deltas` / `take` (с возвратом ресурсов на склад столицы по тем же правилам, что и при уменьшении числа кораблей). Радиус имперского снабжения по найму **снабженцев** на планете (`POST /api/supply/hire_supplier`) от этого не зависит.
-
+- **`map_vision_radius_cells`** (необязательное поле в записи юнита в `units.json`, при загрузке баланса допускаются только целые **0…6**): вклад типа корабля в **пассивный обзор** (туман войны) с клетки, где стоит флот. Для **смешанного** состава флота сервер берёт **максимум** по присутствующим типам. Если поля нет, для логического типа **`scout`** сохраняется прежний эквивалент **2**, для остальных — **1** (обратная совместимость).
+- **`fleet_energy_pool_bonus_per_ship`** и **`fleet_travel_fuel_flat_discount_per_ship`** (необязательные целые **0…500** в `units.json`): на каждый такой корабль в составе увеличивается **потолок энергии на борту** всего флота и уменьшается **суммарное топливо** на один перелёт (скидка не опускает расход ниже **1**, если базовый расход был больше нуля). Суммарный бонус энергии и скидка топлива по всему составу ограничены сервером сверху.
+- **`fleet_composition_allowed`** (необязательное **bool** в `units.json`): при **`false`** тип не входит в состав игрока — сервер отбрасывает его из `composition` / `deltas` / `take` (с возвратом ресурсов на склад столицы по тем же правилам, что и при уменьшении числа кораблей). Радиус имперского снабжения по найму **снабженцев** на планете (`POST /api/supply/hire_supplier`) от этого не зависит.
 - **Ось корпуса** в техах: `tech_hull_micro` … `tech_hull_heavy` (часть узлов может быть с `enabled: false` как резерв дерева). Разблокировка составных кораблей — через **`prereq_tech`** у юнита: должны быть выполнены **все** перечисленные техи (например средний корпус + сенсоры).
-
 - **Utility-флоты (дорожная карта):** тот же шаблон «уровень корпуса + подсистема» планируется для ECM, relay, mobile refinery, repair tender, носителя сенсорных платформ и т.п. — отдельные `unit_id` и флаги поведения по мере появления механик.
-
-- **Бой без лишних %%:** новые корабельные проекты в техах с **`effects: {}`**; глобальные `combat_*_multiplier` из старых тех по-прежнему могут влиять на расчёт боя — отдельные **профили оружия** (`weapon_profile` / `damage_type`) для ветвления урона зарезервированы на будущее; в текущем билде поля могут отсутствовать.
+- **Бой без лишних %%:** новые корабельные проекты в техах с **`effects: {}`**; глобальные `combat_*_multiplier` из старых тех по-прежнему могут влиять на расчёт боя — отдельные **профили оружия** (`weapon_profile` / `damage_type`) для ветвления урона зарезервированы на будущее (лазер vs баллистика и т.д.), в текущем билде поля могут отсутствовать.
 
 ### `GET /api/units/status`
 
-Статус юнитов/корабельных лимитов игрока — JSON целиком из `WorldService.get_units_status`.
+Статус боевых/мирных юнитов игрока.
 
 ### `POST /api/units/move_scout`
 
-Legacy/обучающий приказ скауту. **Тело:** `{"x": 10, "y": -3, "z": 0}` (целые).
+**Тело:** `{"x": 10, "y": -3, "z": 0}`  
 
-**Успех:** `{"ok": true, "status": "queued", …}`
+Успех: `{"ok": true, "status": "queued", ...}`
 
 ### `POST /api/fleets/move`
 
-**Тело:**
+**Тело:** `{"fleet_id": "uuid", "x": 1, "y": 2, "z": 0, "force_attack": false}`  
 
-```json
-{
-  "fleet_id": "uuid",
-  "x": 1,
-  "y": 2,
-  "z": 0,
-  "force_attack": false
-}
-```
-
-`force_attack` опционален, по умолчанию `false`. Целевая клетка не может быть клеткой планеты (`target_cell_has_planet`); флот встаёт на **соседних** клетках от планеты.
+`force_attack` опционален. Цель не может быть клеткой планеты (`target_cell_has_planet`); флот стоит только на соседних клетках.
 
 ### `POST /api/fleets/cancel_order`
 
 **Тело:** `{"fleet_id": "uuid"}`
 
-### Флоты: создание, редактирование, бой
+### Прочее (все POST, JSON)
 
-Все перечисленные маршруты — **POST**, `Content-Type: application/json`, нужна сессия.
-
-#### `POST /api/fleets/create`
-
-Создание флота на орбите/планете (логика сервера привязывает к `planet_id`).
-
-```json
-{
-  "planet_id": "uuid-планеты-игрока",
-  "name": "Разведка-1",
-  "composition": {
-    "scout": 2,
-    "engineer": 1
-  }
-}
-```
-
-- `name` — опционально.
-- Ключи `composition` — **логические** типы из баланса / `unit_aliases` (см. `GET /api/balance` → `aliases` и массив `units`).
-
-#### `POST /api/fleets/rename`
-
-```json
-{ "fleet_id": "uuid", "name": "Новое имя" }
-```
-
-#### `POST /api/fleets/adjust`
-
-Изменение состава **дельтами** относительно текущего (числа могут быть отрицательными — снимают корабли, с возвратом стоимости на столицу по правилам сервера).
-
-```json
-{
-  "fleet_id": "uuid",
-  "deltas": { "fighter": 1, "scout": -1 }
-}
-```
-
-#### `POST /api/fleets/save`
-
-Обновление имени и/или полного состава одним запросом. Должно быть хотя бы одно из полей `name` или `composition`.
-
-```json
-{
-  "fleet_id": "uuid",
-  "name": "Ударная",
-  "composition": { "fighter": 3 }
-}
-```
-
-Иначе **400** с `detail: "need_name_or_composition"`.
-
-#### `POST /api/fleets/disband`
-
-```json
-{ "fleet_id": "uuid" }
-```
-
-#### `POST /api/fleets/merge`
-
-Переливание кораблей с `source_fleet_id` в `target_fleet_id` (оба ваши, логика в `WorldService.merge_fleets`).
-
-```json
-{
-  "target_fleet_id": "uuid",
-  "source_fleet_id": "uuid"
-}
-```
-
-#### `POST /api/fleets/split`
-
-```json
-{
-  "fleet_id": "uuid",
-  "take": { "scout": 1, "fighter": 0 }
-}
-```
-
-`take` — сколько кораблей каждого логического типа забирает новый флот.
-
-#### `POST /api/fleets/combat_preview`
-
-Оценка исхода боя при прибытии на клетку **без** выполнения приказа.
-
-```json
-{
-  "fleet_id": "uuid",
-  "target_x": 5,
-  "target_y": 12,
-  "target_z": 0
-}
-```
-
-Ответ при `ok: true` содержит расчётные поля (зависят от версии сервера — смотрите фактический JSON).
-
-#### `POST /api/fleets/combat_prompt_resolve`
-
-Ответ на промпт боя, если у флота висит приказ в состоянии ожидания решения игрока.
-
-```json
-{
-  "order_id": "uuid-приказа",
-  "attack": true
-}
-```
-
-`attack` — строго **boolean** (`true`/`false` в JSON, не строка).
+| Путь | Назначение (кратко) |
+|------|---------------------|
+| `/fleets/create` | Новый флот: `planet_id`, `composition` с логическими ключами из `unit_aliases` (кроме типов с `fleet_composition_allowed: false` в балансе — например **снабженец** только через планету), опционально `name` |
+| `/fleets/rename` | `fleet_id`, `name` |
+| `/fleets/adjust` | `fleet_id`, `deltas` |
+| `/fleets/save` | `fleet_id` + `name` и/или `composition` |
+| `/fleets/disband` | `fleet_id` |
+| `/fleets/merge` | `target_fleet_id`, `source_fleet_id` |
+| `/fleets/split` | `fleet_id`, `take` |
+| `/fleets/combat_preview` | `fleet_id`, `target_x`, `target_y`, `target_z` |
+| `/fleets/combat_prompt_resolve` | `order_id`, `attack` (bool) |
+| `/intel/scan_fleet` | Скан чужого флота: `scanner_fleet_id`, `target_fleet_id` (см. ниже) |
 
 ### `POST /api/intel/scan_fleet`
 
 **Тело:** `{"scanner_fleet_id": "uuid", "target_fleet_id": "uuid"}`.
 
 - Сканер — ваш флот **без** активного приказа (`queued` / `in_progress` / `pending_combat`).
-- Цель — **чужой** флот; та же плоскость `z`; расстояние по гексу между центрами ≤ `intel_scan.max_range_hex` в [`server/data/balance/economy.json`](server/data/balance/economy.json) (по умолчанию **1**).
-- Стоимость: **RP** игрока (`intel_scan.rp_cost`, по умолчанию **3**). Если у владельца цели в завершённых техах есть `intel_scan.defender_blocking_tech` (по умолчанию `tech_fleet_doctrine_1`), возвращается `ok: false`, `error: "intel_blocked"` — **RP не списываются**; в лог попадает событие `intel_blocked`.
+- Цель — **чужой** флот; та же плоскость `z`; расстояние по гексу между центрами ≤ `intel_scan.max_range_hex` в [`server/data/balance/economy.json`](server/data/balance/economy.json) (по умолчанию 1).
+- Стоимость: **RP** игрока (`intel_scan.rp_cost`, по умолчанию 3). Если у владельца цели в завершённых техах есть `intel_scan.defender_blocking_tech` (по умолчанию `tech_fleet_doctrine_1`), возвращается `ok: false`, `error: "intel_blocked"` — **RP не списываются**; в лог попадает событие `intel_blocked`.
 - При успехе: `composition` (словарь логических типов → количество), `rp_spent`, `research_points_after`; события **`intel_scan_success`** (сканеру) и **`intel_scanned`** (владельцу цели).
 - **Связь с разведкой:** пассивный радиус с флота (`map_vision_radius_cells`, см. выше) задаёт базовый слой «что видно в тумане» без RP; активный скан — отдельный шаг. В перспективе параметры сканов (дальность, сигнатуры, **detection strength**) можно увязать с классом разведчика и подсистемами сенсоров, не дублируя ветки глобальных процентов.
 
 ### `GET /api/fleets/<fleet_id>/upkeep-preview`
 
-Path-параметр — UUID флота **строкой**. **404**, если флот не найден (`error: "not_found"`).
+Превью содержания флота.
 
 ---
 
@@ -677,14 +272,13 @@ Path-параметр — UUID флота **строкой**. **404**, если 
 
 ### `GET /api/buildings/list`
 
-Те же query-параметры, что у **`GET /api/world/window`**: `radius`, `z`, опционально `center_x`, `center_y`. Список зданий собирается из объектов карты с `type == "building"`.
+Те же query, что у `/world/window` — список зданий в окне.
 
-**Пример фрагмента 200:** `{"ok": true, "buildings": [ { "x", "y", "z", "type", "id", … } ]}`
+**Пример фрагмента 200:** `{"ok": true, "buildings": [ { "x", "y", "z", "type", "id", ... } ]}`
 
 ### `POST /api/buildings/place`
 
 **Тело:**
-
 ```json
 {
   "x": 5,
@@ -716,7 +310,6 @@ Path-параметр — UUID флота **строкой**. **404**, если 
 Проверка постройки **без** записи в БД (удобно для UI и ботов перед списанием ресурсов).
 
 **Тело:**
-
 ```json
 {
   "x": 4,
@@ -731,8 +324,8 @@ Path-параметр — UUID флота **строкой**. **404**, если 
 - **`fleet_id`** — опционально: какой свой флот считать «строителем» на клетке (инженеры).
 - **`outpost_types`** — массив строк; пустые строки отбрасываются.
 
-**Успех 200:** `{"ok": true, "results": { "<тип>": { … } } }`  
-Для каждого ключа типа значение либо **`{"ok": true}`**, либо **`{"ok": false, "error": "...", …}`** — тот же набор полей, что вернёт **`POST /api/outposts/build`** при отказе (включая **`need`** / **`have`** при **`not_enough_resources`**, **`need_distance`** / **`nearest`** при **`outpost_too_close`** и т.д.).
+**Успех 200:** `{"ok": true, "results": { "<тип>": { ...как у build/check одного типа... } } }`  
+Для каждого ключа типа значение либо **`{"ok": true}`**, либо **`{"ok": false, "error": "...", ...}`** — тот же набор полей, что вернёт **`POST /api/outposts/build`** при отказе (включая **`need`** / **`have`** при **`not_enough_resources`**, **`need_distance`** / **`nearest`** при **`outpost_too_close`** и т.д.).
 
 ### `POST /api/outposts/build`
 
@@ -796,172 +389,78 @@ Path-параметр — UUID флота **строкой**. **404**, если 
 
 ---
 
-## Планеты и колонизация
-
-### `POST /api/planets/colonize`
-
-**Тело:**
-
-```json
-{
-  "planet_id": "uuid",
-  "fleet_id": "uuid"
-}
-```
-
-Оба поля обязательны и должны быть **строками** UUID (иначе **`invalid_payload`**).
-
-**Успех:** `{"ok": true, "planet_id": "<uuid>"}`
-
-**Игровые условия (MVP, `colonize_planet` в `_mixin_08_planets_world.py`):**
-
-- Планета существует, владелец — нейтральный мир, не колонизирована.
-- Флот игрока на **`z = 0`**, на клетке планеты **или** в соседней по гексу клетке (`hex_distance` ≤ 1).
-- Во флоте есть хотя бы один корабль с флагом **`colonize_planet`** в `units.json` (`flags`).
-- Выполнены требования по **тиру тех** и списку **`colonize_required_tech_ids`** из `planet_types.json` для класса планеты.
-- На столице есть минимум **300 metal** и **200 crystal** (жёстко в коде MVP).
-- При успехе расходуется **один** «колонизатор» из состава.
-
-**Типовые `error` при `ok: false` (для колонизации маршрут отвечает HTTP 400):**
-
-| `error` | Смысл |
-|---------|--------|
-| `invalid_payload` | Неверные типы полей в JSON |
-| `invalid_uuid` | Невалидный UUID планеты или флота |
-| `balance_unavailable` | Нет баланса на сервере |
-| `planet_not_found` | Нет такой планеты |
-| `not_neutral_planet` | У планеты уже есть владелец-игрок |
-| `already_colonized` | Флаг колонизации уже установлен |
-| `fleet_not_found` | Нет флота или чужой флот |
-| `z_not_supported_yet` | Флот не на слое z=0 |
-| `fleet_not_adjacent_to_planet` | Дальше 1 гекса от планеты |
-| `no_colonizer_in_fleet` | Нет подходящего юнита |
-| `tech_tier_too_low` | Нужен больший макс. завершённый тир; см. `need_tier` |
-| `tech_required` | Не хватает тех из `planet_types`; см. `required_techs` |
-| `no_capital_planet` | Нет столицы в БД |
-| `no_resources` | Нет строки ресурсов на столице |
-| `not_enough_resources` | Мало металла/кристалла; см. `need` |
-
----
-
 ## Чат (игрок)
 
-Все маршруты требуют сессию. Глобальный чат:
+Все запросы с сессией.
 
-- **GET** `/api/chat/global?since_id=<int>` — опциональная подгрузка с id.
-- **POST** `/api/chat/global` — `{"body": "текст"}`.
+| Метод | Путь | Назначение |
+|--------|------|------------|
+| GET | `/chat/global` | Сообщения; query `since_id` (int, опционально) |
+| POST | `/chat/global` | `{"body": "текст"}` |
+| GET | `/chat/private` | `peer_id` (uuid строка), опционально `since_id` |
+| POST | `/chat/private` | `{"peer_id": "...", "body": "..."}` |
+| GET | `/chat/private/threads` | Список диалогов, бейджи |
+| GET | `/chat/private/badge` | Сжатые счётчики |
+| GET | `/chat/private/thread/meta` | `peer_id` — метаданные треда |
+| POST | `/chat/private/thread/open` | открыть/настройки прочтения |
+| PATCH | `/chat/private/thread/prefs` | настройки уведомлений о прочтении |
+| POST | `/chat/private/thread/hide` | скрыть тред из списка |
+| GET | `/chat/blocks` | Кого заблокировал игрок |
+| POST | `/chat/blocks` | `{"blocked_id": "uuid"}` |
+| DELETE | `/chat/blocks/<blocked_id>` | Снять блокировку |
+| POST | `/chat/global/<message_id>/hide` | Скрыть своё сообщение в глобале |
+| DELETE | `/chat/global/<message_id>` | Удалить своё (если разрешено логикой) |
+| GET | `/chat/alliance` | Сообщения альянса: query **`alliance_id`** (uuid), опционально **`since_id`** |
+| POST | `/chat/alliance` | `{"alliance_id": "<uuid>", "body": "..."}` — только для членов этого альянса |
 
-Приватный чат:
+Коды: `429` — `rate_limited`, `413` — `message_too_long`, `403` — например `blocked_peer`.
 
-- **GET** `/api/chat/private?peer_id=<uuid>&since_id=<int>` — `peer_id` обязателен.
-- **POST** `/api/chat/private` — `{"peer_id": "…", "body": "…"}`.
-
-Нити и настройки:
-
-- **GET** `/api/chat/private/threads`
-- **GET** `/api/chat/private/badge`
-- **GET** `/api/chat/private/thread/meta?peer_id=<uuid>`
-- **POST** `/api/chat/private/thread/open` — `{"peer_id": "…", "send_read_receipts": false}`
-- **PATCH** `/api/chat/private/thread/prefs` — `{"peer_id": "…", "send_read_receipts": true}`
-- **POST** `/api/chat/private/thread/hide` — `{"peer_id": "…"}`
-
-Блокировки:
-
-- **GET** `/api/chat/blocks`
-- **POST** `/api/chat/blocks` — `{"blocked_id": "<uuid>"}`
-- **DELETE** `/api/chat/blocks/<blocked_id>`
-
-Скрытие/удаление своих сообщений в глобале:
-
-- **POST** `/api/chat/global/<message_id>/hide`
-- **DELETE** `/api/chat/global/<message_id>`
-
-Альянсовый канал (только члены альянса):
-
-- **GET** `/api/chat/alliance?alliance_id=<uuid>&since_id=<int>`
-- **POST** `/api/chat/alliance` — `{"alliance_id": "<uuid>", "body": "…"}`
-
-Коды: **429** `rate_limited`, **413** `message_too_long`, **403** `blocked_peer` / `forbidden` (альянс).
-
-### Модерация (персонал)
-
-`POST /api/chat/moderation/chat-ban` — тело `{"player_id": "<uuid>", "hours": 24}`.
-
-`POST /api/chat/moderation/account-ban` — тело `{"player_id": "<uuid>", "disable": true}`.
-
-Для обычного игрока/бота без прав ответ будет **`403`** (`forbidden` / `admin_only`).
+**Модерация** (`POST /chat/moderation/chat-ban`, `.../account-ban`) — только для ролей персонала; для обычного бота не документируется как «игровой» API.
 
 ---
 
 ## Альянсы (фаза 1)
 
-Экономика и снабжение остаются **персональными**. Альянс даёт тег, код приглашения, чат, отображение «союзник» на карте, превью **совместного влияния** в клетке (сумма `control_value` членов с капом `economy.alliance.influence_cell_cap`).
+Все запросы с сессией. Экономика и снабжение остаются **персональными**; альянс даёт тег, код приглашения, чат, флаг **«союзник»** на карте (см. объекты флота в окне карты) и превью **совместного влияния** в клетке (сумма `control_value` членов с капом из баланса `economy.alliance.influence_cell_cap`).
 
-### `POST /api/alliance/create`
-
-```json
-{
-  "display_name": "Империя Рассвета",
-  "tag": "DAWN01"
-}
-```
-
-Допускается ключ `name` вместо `display_name`. Тег: после нормализации **2…8** символов **`A–Z`/`0–9`**. Ошибки: `already_in_alliance`, `invalid_display_name`, `invalid_tag`, `tag_taken`, `join_code_collision` (крайне редко).
-
-**Успех:** `join_code` внутри объекта `alliance` (12 символов **верхний регистр + цифры**).
-
-### `POST /api/alliance/join`
-
-```json
-{ "join_code": "ABCD1234EFGH" }
-```
-
-Допускается ключ `code`. Код сравнивается в верхнем регистре; слишком короткая строка (**< 10 символов** после trim) даёт **`invalid_join_code`** без поиска в БД.
-
-Ошибки: `already_in_alliance`, `alliance_not_found`, `alliance_full`, `invalid_join_code`, `invalid_player_id`.
-
-### `POST /api/alliance/leave`
-
-Без тела. Если выходящий — **лидер**, альянс удаляется: в ответе `disbanded: true`.
-
-### `GET /api/alliance/me`
-
-Вне альянса: `{"ok": true, "alliance": null}`. В альянсе: `id`, `display_name`, `tag`, **`join_code` только у лидера** (у членов `null`), `my_role`, `members[]` с `player_id`, `display_name`, `role`.
-
-### `GET /api/alliance/influence_at?x=&y=&z=0`
-
-Для члена альянса: `sum`, `capped`, `cap`, `alliance_id`. **403** `not_in_alliance`, если игрок не в организации.
+| Метод | Путь | Назначение |
+|--------|------|------------|
+| POST | `/alliance/create` | Тело **`display_name`** (или `name`) и **`tag`** (2–8 символов `A–Z`/`0–9`); создатель — **лидер**; ответ содержит **`join_code`**. |
+| POST | `/alliance/join` | Тело **`join_code`** (или `code`) — вступление; ошибки: `already_in_alliance`, `alliance_not_found`, `alliance_full`. |
+| POST | `/alliance/leave` | Выход; если игрок — **лидер**, альянс **распускается** (`disbanded: true`). |
+| GET | `/alliance/me` | `{ "ok": true, "alliance": null }` вне альянса; иначе `id`, `display_name`, `tag`, **`join_code` только у лидера**, `my_role`, **`members`**. |
+| GET | `/alliance/influence_at` | Query **`x`**, **`y`**, опционально **`z`** — для члена альянса: `sum`, `capped`, `cap`, `alliance_id`; `403` если не в альянсе. |
 
 ---
 
 ## Минимальный сценарий «проверка → логин → карта → постройка»
 
 1. `GET /api/health` и при необходимости `GET /api/ready`.
-2. `GET /api/version` — зафиксировать `game_version` / `balance_schema_version`.
+2. `GET /api/version` — зафиксировать `game_version`.
 3. `POST /api/login` с JSON и сохранением cookie.
-4. `GET /api/balance` — валидные типы: `buildings`, `aliases.building_aliases`, `outposts`, `outpost_modules`, `units`.
-5. `GET /api/world/window?radius=6&z=0` — картинка сектора вокруг центра по умолчанию.
+4. `GET /api/balance` — валидные типы: `buildings` / `aliases.building_aliases`, при форпостах — массив **`outposts`**.
+5. `GET /api/world/window?radius=6&z=0` — координаты своей планеты/клетки.
 6. `POST /api/buildings/placement_checks` или `POST /api/outposts/build_checks` — проверка без списания ресурсов.
-7. `POST /api/buildings/place` / `place_batch` или `POST /api/outposts/build`.
-8. `POST /api/world/tick` или ожидание автотика.
+7. `POST /api/buildings/place` / **`place_batch`** или **`POST /api/outposts/build`** — постройка; при `400` разбирать `error` и дополнительные поля (`need`/`have`, `missing_techs`, …).
+8. При необходимости `POST /api/world/tick` (или дождаться автотика).
 
 ---
 
 ## Расширенный учебник (для ботов и интеграций)
 
-Краткого списка эндпоинтов недостаточно, если клиент должен восстанавливать логику после ошибок. Ниже — практика: cookie, порядок опроса, частые `error`, минимальный цикл.
+Краткого списка эндпоинтов выше **недостаточно**, если клиент должен сам восстанавливать логику после ошибок. Ниже — практика: сессия, типовые JSON, частые `error` и минимальный игровой цикл.
 
 ### Сессия / cookie
 
-- После **`POST /api/login`** или **`POST /api/register`** сервер ставит cookie сессии Flask.
+- После успешного **`POST /api/login`** или **`POST /api/register`** сервер ставит **cookie** сессии (у стандартного Flask это обычно имя `session`; точное имя и атрибуты зависят от настроек приложения и HTTPS).
 - Любой последующий **`GET/POST /api/...`** должен **отправлять те же cookie**.
 - **Python:** один экземпляр `requests.Session()` — логин один раз, затем все вызовы через этот объект.
-- **`curl`:**  
+- **`curl`:** файлы cookie:  
   `curl -c jar.txt -X POST …/api/login -H "Content-Type: application/json" -d "{\"access_code\":\"…\"}"`  
   затем  
   `curl -b jar.txt …/api/me`
 
-Пример связки **`health` → `login` → `me`**:
+Пример связки **`health` → `login` → `me`** (подставьте базовый URL):
 
 ```bash
 curl -sS "https://example.com/api/health"
@@ -975,18 +474,18 @@ curl -sS -b cookies.txt "https://example.com/api/me"
 
 | Шаг | Зачем |
 |-----|--------|
-| `GET /api/version` | Версия клиента не расходится с сервером. |
-| `GET /api/me` или `GET /api/world/state` | Позиция дома, ресурсы, флоты, номер текущего **сола** (`current_tick` / `current_sol`). |
-| `GET /api/balance` | Справочник типов и стоимостей. |
-| `GET /api/world/window` | Сетка клеток под стройку/разведку. |
-| `POST /api/buildings/placement_checks` | Проверка типов зданий без списания ресурсов. |
-| `POST /api/outposts/build_checks` | То же для форпостов перед **`/outposts/build`**. |
+| `GET /api/version` | Версия клиента не расходится с сервером; меняется редко. |
+| `GET /api/me` или `GET /api/world/state` | Позиция дома, ресурсы, флоты, номер текущего **сола** в мире (`current_tick` / `current_sol` — одно и то же число). |
+| `GET /api/balance` | Справочник: **`building_type`** (через `aliases.building_aliases`), массивы **`outposts`** и **`outpost_modules`** (поля **`id`** / типы для API), стоимости, `build_on_terrain`, ветки **`upgrade`**, **`vision`**, слоты. |
+| `GET /api/world/window` | Сетка клеток под выбор координат для стройки/разведки. |
+| `POST /api/buildings/placement_checks` | Дёшево проверить кандидатов типов без списания ресурсов. |
+| `POST /api/outposts/build_checks` | То же для типов форпостов перед **`/outposts/build`**. |
 
 ### Откуда брать `building_type` для `POST /api/buildings/place`
 
-Сервер нормализует строку к **нижнему регистру** и проверяет ключ в **`aliases.building_aliases`**. Источник истины для API — **алиасы** (туда могут входить синонимы).
+Сервер нормализует строку к **нижнему регистру** и проверяет, что ключ есть среди **`aliases.building_aliases`** из баланса (в **`GET /api/balance`** это поле `aliases`, внутри — `building_aliases`). Обычно ключ **совпадает** с **`id`** соответствующего объекта в массиве `buildings`, но источником истины для API считайте **именно `building_aliases`** (туда могут входить синонимы/алиасы).
 
-У объекта постройки смотрите **`build_on_terrain`**, **`build.cost`**, **`build.time_ticks`**, модификатор расы **`build_time_multiplier`**.
+У объекта постройки в балансе смотрите также **`build_on_terrain`** (где можно строить) и блок **`build.cost`**, а также **`build.time_ticks`** — сколько **солов** (шагов календаря мира) длится ввод постройки в строй; умножается на **`build_time_multiplier`** расы из баланса.
 
 Успешный **`POST /api/buildings/place`** (упрощённо):
 
@@ -1008,15 +507,21 @@ curl -sS -b cookies.txt "https://example.com/api/me"
 }
 ```
 
-Пока **`ready_at_tick`** больше текущего **сола** мира, здание не даёт эффектов; при наступлении сола сервер сбрасывает **`ready_at_tick`** в **0** и шлёт **`building_ready`**. На карте: **`under_construction`**, **`remaining_ticks`**.
+Пока **`ready_at_tick`** здания **больше** текущего номера **сола** в мире (`current_tick` / `current_sol`), оно **не даёт** игровых эффектов (производство, лимиты населения и т.д.); когда календарь доходит до этого сола, сервер сбрасывает **`ready_at_tick`** в **0** и шлёт событие **`building_ready`**. На карте и в **`GET /api/world/sector`** у объекта здания: **`under_construction`**, **`remaining_ticks`** (остаток в тех же «солах»). У своей планеты в **`details.build`**: **`queue`** (незавершённые), **`active`**, **`current_tick`**.
+
+`finish_tick` / `finish_sol` в ответе **place** — то же число, что **`ready_at_tick`**: номер **сола**, к которому здание будет введено в строй (поля с суффиксом `_tick` в JSON — наследие имён, смысл для игрока — сол).
+
+Если **`builder_fleet_id` не null**, инженеры на этом флоте могли быть расходуются (см. `not_enough_engineers`).
 
 ### Откуда брать `outpost_type` и `module_type`
 
-- **`outpost_type`** — строка **`id`** из массива **`outposts`** в **`GET /api/balance`**.
-- **`module_type`** — **`id`** из **`outpost_modules`**.
-- UUID **`outpost_id`** / **`module_id`** — из **`world/state`**, окна карты или ответа **`outposts/build`**.
+- **`outpost_type`** для **`/outposts/build`** и элементов **`outpost_types`** в **`build_checks`** — строка **`id`** (или эквивалентный ключ из баланса), как задано в массиве **`outposts`** ответа **`GET /api/balance`**. Сервер ищет определение через внутренний резолвер типов; при неизвестной строке — **`invalid_outpost_type`**.
+- **`module_type`** для **`/outposts/modules/install`** — **`id`** из массива **`outpost_modules`** в том же **`balance`**. Неизвестный тип — **`invalid_module_type`**.
+- UUID **`outpost_id`** / **`module_id`** берите из **`world/state`**, окна **`world/window`** (объекты на клетке) или из ответа успешного **`outposts/build`** (`outpost.id`); после установки модуля **`module_id`** появляется в детализации форпоста в состоянии мира.
 
 ### Пример `GET /api/me`
+
+Если домашняя планета уже создана:
 
 ```json
 {
@@ -1046,7 +551,40 @@ curl -sS -b cookies.txt "https://example.com/api/me"
 }
 ```
 
+Если планеты ещё нет (редкий промежуток), возможен массив `planets`: `[]` с теми же ключами профиля.
+
+### Колонизация планеты
+
+`POST /api/planets/colonize`
+
+Тело:
+
+```json
+{ "planet_id": "uuid", "fleet_id": "uuid" }
+```
+
+Условия (MVP):
+
+- Планета существует и принадлежит нейтрали (ещё не колонизирована).
+- Флот игрока стоит **на клетке планеты или в одной из шести соседних по гексу** (расстояние 0–1 от `(pos_x,pos_y)` планеты, `z=0`) и содержит юнит с флагом колонизации (см. `units.json`, алиас `colonizer`).
+- У игрока выполнены требования технологий для `planet_class` (по `planet_types.json`) и хватает ресурсов на столице.
+
+Успех:
+
+```json
+{ "ok": true, "planet_id": "uuid" }
+```
+
 ### Пример `GET /api/world/state` (фрагмент)
+
+Большой ответ; для бота важнее всего:
+
+- **`current_tick` / `current_sol`** — «время» мира.
+- **`economy`** — запасы дома, **`net_per_sol`** (чистый приток/расход по империи за сол, как в `GET /api/economy/summary`) и часто **производство за тик** (`production_per_tick` / `_per_sol` — синонимы чисел).
+- **`fleets`**, **`fleet`** — флоты с `composition` по типам юнитов (`scout`, `engineer`, …), позиции, `active_order`.
+- **`events`** — последние события (бой, нехватка ресурсов, постройки); каждое имеет **`type`**, **`message`**, **`payload`**.
+- **`player_race_id`**, **`race_growth`** — раса и флаги «без пассивной еды/воды с планеты», «без пассивного роста населения» (см. `races.json`).
+- Поля **`auto_tick_*`** (в т.ч. `auto_tick_last_run_at` / `auto_tick_last_tick` после включения автотика сервер делает **один сол сразу**, затем — каждые `auto_tick_interval_seconds`) и наложения вроде **`balance_error`** — диагностика сервера.
 
 ```json
 {
@@ -1104,22 +642,19 @@ curl -sS -b cookies.txt "https://example.com/api/me"
       "food": 3,
       "water": 2
     }
-  },
-  "research": {
-    "in_progress": false,
-    "tech_id": null,
-    "progress_percent": null
   }
 }
 ```
 
-Полная структура **`economy`**, **`influence`**, **`pending_combat_prompts`**, **`admin_dev`** (для админа) зависят от билда — ориентируйтесь на живой JSON.
+Полная структура **`economy`** и блоки **`influence`**, **`pending_combat_prompts`** зависят от билда; смотрите фактический JSON.
 
 ### Окно карты `GET /api/world/window`
 
-Структура: объект с ключом **`cells`** — список **строк**. Каждая строка содержит **`row`**: массив клеток с **`x`,`y`,`z`**, **`terrain`**, **`fog`** / видимость и **`objects`** (планеты, флоты, здания, форпосты — у каждого объекта есть `type` и доменные поля). Точная форма — в ответе сервера и в `WorldService.get_player_map_window`.
+Структура ориентировочно: объект с ключом **`cells`** — список **строк**. Каждая строка содержит **`row`**: массив клеток с **`x`,`y`,`z`**, возможным **`terrain`**, **`fog`** / видимость и массивом **`objects`** (планеты, флоты, здания и т.д. с типом `type`). Точную форму смотрите в ответе сервера на вашем билде и при необходимости в коде сборки окна во `WorldService`.
 
 ### Ошибки постройки (`POST /api/buildings/place`, `placement_checks`)
+
+Ниже — типичные значения **`error`** (тело JSON, статус **`400`**). Не считайте список исчерпывающим: при расширении правил возможны новые коды.
 
 | `error` | Смысл (кратко) |
 |---------|----------------|
@@ -1127,66 +662,78 @@ curl -sS -b cookies.txt "https://example.com/api/me"
 | `unknown_building` | Алиас есть, но определение в балансе не найдено. |
 | `tech_required` | Не хватает исследований; см. **`missing_techs`**. |
 | `planet_required` | Для этого типа нужна клетка планеты. |
-| `wrong_foundation_terrain` | Ландшафт клетки не из `build_on_terrain`; см. **`terrain`**, **`expected`**. |
-| `z_not_supported_yet` | Стройка с **`z ≠ 0`** отклонена правилом досягаемости. |
-| `no_home_planet` | Нет стартовой планеты в БД. |
-| `engineer_required` | Вне «района дома» без инженерного флота на клетке. |
+| `wrong_foundation_terrain` | Ландшафт клетки не из `build_on_terrain`; смотрите **`terrain`**, **`expected`**. |
+| `z_not_supported_yet` | Сейчас стройка с **`z ≠ 0`** отклоняется правилом досягаемости. |
+| `no_home_planet` | У игрока нет стартовой планеты в БД. |
+| `engineer_required` | Клетка вне «района дома» (манхэттен ≤ 3 от своих планет) без инженерного флота на клетке. |
 | `inside_enemy_control_zone` | В зоне вражеского влияния. |
 | `no_controlling_planet` | Не удалось связать клетку с планетой-владельцем постройки. |
-| `cell_already_built` | На не-планетарной клетке уже есть здание. |
-| `planet_slots_full` | Исчерпан **`build_slots_total`** планеты. |
-| `no_resources` / `not_enough_resources` | См. **`need`** / **`have`**. |
-| `not_enough_engineers` | На флоте-строителе не хватило инженеров. |
+| `cell_already_built` | На этой не-планетарной клетке уже есть здание. |
+| `planet_slots_full` | Исчерпан общий **`build_slots_total`** планеты. |
+| `no_resources` / `not_enough_resources` | Нет строки склада или мало ресурсов; см. **`need`** / **`have`**. |
+| `not_enough_engineers` | Полевое строительство: на флоте-строителе не хватило инженеров. |
 
 ### Ошибки `POST /api/tech/start`
+
+Сводка кодов **`400`** с **`ok: false`** (частые):
 
 | `error` | Когда |
 |---------|--------|
 | `invalid_payload` | Нет строки **`tech_id`**. |
 | `unknown_tech` / `tech_disabled` | Нет в балансе или выключен. |
-| `tech_queue_full` | Заполнены слоты активных исследований (MVP: 1). |
+| `tech_queue_full` | Уже активное исследование (**MVP**: один слот). |
 | `tech_already_started` | Уже в работе или завершено. |
 | `tech_prereq_missing` | см. массив **`missing`**. |
-| `tech_field_data_missing` | Нет полевых данных; см. **`missing`**. |
+| `tech_field_data_missing` | Нет нужных данных поля (**`missing`**: виды полевых данных). |
 | `not_enough_research_points` | **`need`** / **`have`**. |
 
 ### Ошибки форпостов и модулей (`/api/outposts/…`)
 
+Общие для **`build`** и **`build_checks`** (где применимо): те же коды, что возвращает **`_can_build_at`**, плюс специфичные для форпоста. Для модулей — отдельные коды внизу таблицы.
+
 | `error` | Где | Смысл |
 |---------|-----|--------|
-| `invalid_payload` | HTTP-маршрут | Неверные типы полей в JSON. |
+| `invalid_payload` | HTTP-маршрут | Неверные типы полей в JSON (координаты не int, нет строки типа и т.д.). |
 | `invalid_outpost_type` | build, build_checks | Тип не найден в балансе. |
-| `outpost_too_close` | build, build_checks | Манхэттен до ближайшего своего форпоста < `need_distance`. |
-| `z_not_supported_yet` | build, build_checks | Слой **`z ≠ 0`**. |
+| `outpost_too_close` | build, build_checks | До ближайшего своего форпоста на слое **`z`** меньше **`need_distance`** (Манхэттен); см. **`nearest`**, **`nearest_outpost`**. |
+| `z_not_supported_yet` | build, build_checks | Слой **`z ≠ 0`** для этой логики не поддержан. |
 | `no_home_planet` | build, build_checks | Нет планеты игрока. |
-| `engineer_required` | build, build_checks, модули | Вне «района дома» без инженеров на клетке. |
-| `inside_enemy_control_zone` | build, build_checks | Вражеская зона контроля. |
-| `not_enough_engineers` | build, install, upgrade, dismantle | См. **`need_engineers`**. |
+| `engineer_required` | build, build_checks, модули | Вне «района дома» без своего флота с инженерами на клетке форпоста. |
+| `inside_enemy_control_zone` | build, build_checks | Клетка в зоне вражеского контроля. |
+| `not_enough_engineers` | build, build_checks, install, upgrade, dismantle | Недостаточно инженеров на флоте; см. **`need_engineers`**. |
 | `cell_already_has_outpost` | build, build_checks | Уже есть активный форпост. |
-| `cell_already_built` | build, build_checks | На клетке здание. |
-| `tech_required` | build, upgrade, install | См. **`missing_techs`**. |
-| `no_resources` / `not_enough_resources` | build, upgrade | Казна / стоимость. |
-| `invalid_outpost_id` / `outpost_not_found` / `outpost_upgrade_unavailable` | upgrade, install | См. текст ошибки. |
+| `cell_already_built` | build, build_checks | На клетке уже стоит здание. |
+| `tech_required` | build, build_checks, upgrade, install, upgrade module | Не выполнены техи; см. **`missing_techs`**, **`required_techs`**. |
+| `no_resources` | build, build_checks, upgrade | Нет строки ресурсов домашней планеты. |
+| `not_enough_resources` | build, build_checks, upgrade | Мало металла/кристалла/энергии/топлива; у **build** / **checks** обычно есть **`need`** и **`have`**. |
+| `invalid_outpost_id` | upgrade, install | Не UUID. |
+| `outpost_not_found` | upgrade, install, dismantle (через модуль) | Чужой или несуществующий форпост. |
+| `outpost_upgrade_unavailable` | upgrade | В балансе нет ветки **`upgrade.to`**. |
 | `invalid_module_type` | install | Тип модуля не из баланса. |
-| `module_work_queue_full` | install, upgrade module | Уже есть работа **`in_progress`** по империи. |
-| `outpost_slots_full` | install | Заняты все слоты модулей. |
-| `invalid_module_id` / `module_not_found` / `module_busy` / `module_upgrade_unavailable` | upgrade/dismantle | См. текст ошибки. |
+| `module_work_queue_full` | install, upgrade module | Уже есть другой модуль империи в **`in_progress`**. |
+| `outpost_slots_full` | install | Все слоты **`module_slots_total`** заняты. |
+| `invalid_module_id` | upgrade module, dismantle | Не UUID. |
+| `module_not_found` | upgrade module, dismantle | Нет строки модуля или не ваш. |
+| `module_busy` | upgrade module, dismantle | Модуль не в **`active`** (например, ещё строится). |
+| `module_upgrade_unavailable` | upgrade module | Нет ветки улучшения в балансе для этого типа. |
+
+Тела **`POST`** для форпостов и модулей описаны в разделе **«Постройки и форпосты»** выше.
 
 ### Приватный чат: вход в тред
 
-- **`POST /api/chat/private/thread/open`** — `{ "peer_id": "<uuid>", "send_read_receipts": false }`.
+- **`POST /api/chat/private/thread/open`** — тело: `{ "peer_id": "<uuid>", "send_read_receipts": false }`.
 - **`PATCH /api/chat/private/thread/prefs`** — `{ "peer_id": "…", "send_read_receipts": true|false }`.
 
 ### Рекомендуемый цикл «агента»
 
 1. Синхронизация: **`world/state`** (или **`me`** + узкий **`window`**).
-2. Решение: координаты / тип постройки / флот с инженерами.
-3. Здания: **`buildings/placement_checks`** → **`buildings/place`** или **`place_batch`**.
-4. Форпосты: **`outposts/build_checks`** → **`outposts/build`**.
-5. Время: **`world/tick`** или автотик.
-6. Туман: **`discovery/resolve`** (с видимостью).
+2. Решение (в коде или LLM): целевые координаты / тип постройки или форпоста / флот с инженерами.
+3. Для **зданий**: **`buildings/placement_checks`** → при **`ok`** в **`results`** — **`buildings/place`** (или **`place_batch`**).
+4. Для **форпостов**: **`outposts/build_checks`** → при **`ok`** для выбранного типа — **`outposts/build`** (тот же **`fleet_id`**, что в проверке).
+5. Если нужно изменить экономику времени — **`world/tick`** или ждать **автотик**.
+6. Разведка занятой клетки — **`discovery/resolve`** (с учётом видимости; иначе `sector_not_visible`).
 
-Источник истины по правилам — **код** и живые **`GET /api/balance`**, **`GET /api/world/state`** на вашем сервере; этот файл — карта и договорённости по HTTP.
+Изменения игровых правил со временем делают **источником истины** всё-таки **код** и живой **`GET /api/balance`**; этот файл — карта местности, не замена эксперимента на вашем сервере.
 
 ---
 
