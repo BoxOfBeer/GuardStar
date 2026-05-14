@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.hex_coords import hex_distance
+
 
 @dataclass(frozen=True)
 class TravelPlan:
@@ -30,15 +32,16 @@ class FuelPlan:
     fuel_cost: int
 
 
-def manhattan_distance(*, from_x: int, from_y: int, to_x: int, to_y: int) -> int:
-    return abs(to_x - from_x) + abs(to_y - from_y)
+def grid_travel_distance(*, from_x: int, from_y: int, to_x: int, to_y: int) -> int:
+    """Расстояние по гекс-сетке; поля x,y — осевые координаты (q,r)."""
+    return hex_distance(int(from_x), int(from_y), int(to_x), int(to_y))
 
 
 def calc_travel_plan(
     *, from_x: int, from_y: int, to_x: int, to_y: int, unit_type: str = "scout"
 ) -> TravelPlan:
     # MVP: базовая формула. Дальше можно подключить скорость юнита/terrain/форпосты.
-    dist = manhattan_distance(from_x=from_x, from_y=from_y, to_x=to_x, to_y=to_y)
+    dist = grid_travel_distance(from_x=from_x, from_y=from_y, to_x=to_x, to_y=to_y)
     travel_ticks = max(1, dist)
     return TravelPlan(distance=dist, travel_ticks=travel_ticks)
 

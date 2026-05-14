@@ -24,6 +24,8 @@ from app.services.world_service.constants import (
     PLANET_STORE_KEYS,
 )
 
+from app.hex_coords import hex_distance, hex_line_cells_exclusive_start
+
 
 class WorldServiceMixin01:
     def _get_building_bonus_for_player(
@@ -82,6 +84,8 @@ class WorldServiceMixin01:
                 "influence_multiplier": 1.0,
                 "supply_route_upkeep_multiplier": 1.0,
                 "fleet_unsupplied_energy_decay_multiplier": 1.0,
+                "no_passive_planet_food_water": False,
+                "no_passive_population_growth": False,
                 "production_multiplier": {
                     "metal": 1.0,
                     "crystal": 1.0,
@@ -115,6 +119,12 @@ class WorldServiceMixin01:
             ),
             "fleet_unsupplied_energy_decay_multiplier": float(
                 mods.get("fleet_unsupplied_energy_decay_multiplier", 1.0)
+            ),
+            "no_passive_planet_food_water": bool(
+                mods.get("no_passive_planet_food_water", False)
+            ),
+            "no_passive_population_growth": bool(
+                mods.get("no_passive_population_growth", False)
             ),
             "production_multiplier": {
                 "metal": float(prod_mul.get("metal", 1.0)),
@@ -386,7 +396,8 @@ class WorldServiceMixin01:
                 techs=techs,
             )
             tot += int(r.get("fuel", 0))
-        return tot
+        disc = self._fleet_travel_fuel_discount_from_units(units, raw_total=tot)
+        return max(0, tot - disc)
 
     def _fleet_upkeep_energy_total(
         self, s: Session, *, player_id: uuid.UUID, units: dict[str, int]
@@ -407,6 +418,48 @@ class WorldServiceMixin01:
             tot += int(part.get("energy", 0))
         return tot
 
+    def _fleet_energy_pool_bonus_from_units(self, units: dict[str, int]) -> int:
+        """Доп. ёмкость батареи флота с корпусов (balance: fleet_energy_pool_bonus_per_ship)."""
+        if not self._balance or not units:
+            return 0
+        tot = 0
+        for ut, q in units.items():
+            qi = int(q)
+            if qi <= 0:
+                continue
+            try:
+                u = self._balance.get_unit(str(ut))
+            except Exception:
+                continue
+            per = int(u.get("fleet_energy_pool_bonus_per_ship", 0) or 0)
+            if per > 0:
+                tot += per * qi
+        # Не раздуваем батарею бесконечно при огромном составе
+        return min(800, max(0, tot))
+
+    def _fleet_travel_fuel_discount_from_units(
+        self, units: dict[str, int], *, raw_total: int
+    ) -> int:
+        """Скидка к суммарному топливу на перелёт (balance: fleet_travel_fuel_flat_discount_per_ship)."""
+        if not self._balance or not units or raw_total <= 0:
+            return 0
+        disc = 0
+        for ut, q in units.items():
+            qi = int(q)
+            if qi <= 0:
+                continue
+            try:
+                u = self._balance.get_unit(str(ut))
+            except Exception:
+                continue
+            per = int(u.get("fleet_travel_fuel_flat_discount_per_ship", 0) or 0)
+            if per > 0:
+                disc += per * qi
+        if disc <= 0:
+            return 0
+        disc = min(disc, 600)
+        return min(disc, max(0, raw_total - 1))
+
     def _fleet_energy_max_for_units(
         self, s: Session, *, player_id: uuid.UUID, units: dict[str, int]
     ) -> int:
@@ -414,7 +467,9 @@ class WorldServiceMixin01:
         up = int(self._fleet_upkeep_energy_total(s, player_id=player_id, units=units or {}))
         up = max(1, up)
         m = up * FLEET_ENERGY_MAX_UPKEEP_MULT
-        return min(FLEET_ENERGY_MAX_ABS_CAP, max(FLEET_ENERGY_MAX_FLOOR, m))
+        base = min(FLEET_ENERGY_MAX_ABS_CAP, max(FLEET_ENERGY_MAX_FLOOR, m))
+        bonus = self._fleet_energy_pool_bonus_from_units(units or {})
+        return min(FLEET_ENERGY_MAX_ABS_CAP + 800, base + bonus)
 
     def _sync_fleet_energy_scale(self, s: Session, fleet: Fleet) -> None:
         """Пересчитать max_energy и сохранить долю заряда при смене состава."""
@@ -445,7 +500,7 @@ class WorldServiceMixin01:
         )
         best: tuple[int, Planet] | None = None
         for p in mine:
-            md = abs(p.pos_x - x) + abs(p.pos_y - y)
+            md = hex_distance(int(p.pos_x), int(p.pos_y), int(x), int(y))
             if md > 3:
                 continue
             if best is None or md < best[0]:
@@ -906,7 +961,7 @@ class WorldServiceMixin01:
                     continue
                 if int(f.pos_z) != int(op.z):
                     continue
-                d = abs(int(f.pos_x) - int(op.x)) + abs(int(f.pos_y) - int(op.y))
+                d = hex_distance(int(f.pos_x), int(f.pos_y), int(op.x), int(op.y))
                 if d <= rng:
                     in_range.append(f)
             if not in_range:
@@ -984,6 +1039,8 @@ class WorldServiceMixin01:
     def _effective_max_population(self, s: Session, planet: Planet) -> int:
         base = int(getattr(planet, "max_population", 5000) or 5000)
         add = 0
+        ws_mx = self.get_or_create_world_state(s)
+        mx_tick = int(ws_mx.current_tick)
         rows = (
             s.execute(select(Building).where(Building.planet_id == planet.id))
             .scalars()
@@ -991,6 +1048,9 @@ class WorldServiceMixin01:
         )
         if self._balance:
             for b in rows:
+                rat = int(getattr(b, "ready_at_tick", 0) or 0)
+                if rat > mx_tick:
+                    continue
                 bd = self._balance.get_building(b.building_type)
                 eff = bd.get("effects") if isinstance(bd, dict) else {}
                 if isinstance(eff, dict) and isinstance(
@@ -1031,6 +1091,40 @@ class WorldServiceMixin01:
             return set(ua.keys()) if isinstance(ua, dict) else set()
         return {"scout", "fighter", "engineer"}
 
+    def _player_owned_fleet_strip_composition(self, owner_player_id: uuid.UUID) -> bool:
+        """NPC- и бандитские флоты не фильтруем по fleet_composition_allowed (транзит «supplier» и т.п.)."""
+        oid = owner_player_id
+        return oid not in NPC_FLEET_PLAYER_IDS and oid != BANDIT_PLAYER_ID
+
+    def _unit_allows_fleet_composition(self, logical_key: str) -> bool:
+        if not self._balance:
+            return True
+        try:
+            u = self._balance.get_unit(str(logical_key).strip().lower())
+        except Exception:
+            return True
+        return u.get("fleet_composition_allowed", True) is not False
+
+    def _strip_fleet_composition_disallowed_units(
+        self, owner_player_id: uuid.UUID, units: dict[str, int] | None
+    ) -> dict[str, int]:
+        if not units:
+            return {}
+        if not self._player_owned_fleet_strip_composition(owner_player_id):
+            return {str(k): int(v) for k, v in units.items() if int(v) > 0}
+        out: dict[str, int] = {}
+        for k, v in units.items():
+            q = int(v)
+            if q <= 0:
+                continue
+            ks = str(k).strip().lower()
+            if not ks:
+                continue
+            if not self._unit_allows_fleet_composition(ks):
+                continue
+            out[ks] = q
+        return out
+
     def _unit_required_techs(self, logical_alias: str) -> list[str]:
         if not self._balance:
             return []
@@ -1042,6 +1136,31 @@ class WorldServiceMixin01:
         if not isinstance(req, list):
             return []
         return [str(x) for x in req if isinstance(x, str) and x.strip()]
+
+    def _fleet_composition_tech_violation(
+        self,
+        s: Session,
+        *,
+        player_id: uuid.UUID,
+        cur: dict[str, int],
+        newd: dict[str, int],
+    ) -> dict | None:
+        """При увеличении числа кораблей типа относительно cur — все новые единицы
+        должны удовлетворять prereq_tech юнита. cur пустой — как при create_fleet."""
+        done_tech = set(self._get_player_done_techs(s, player_id=player_id))
+        for k, v in newd.items():
+            prev = int(cur.get(k, 0))
+            if int(v) <= prev:
+                continue
+            miss = [tid for tid in self._unit_required_techs(k) if tid not in done_tech]
+            if miss:
+                return {
+                    "ok": False,
+                    "error": "tech_required",
+                    "unit_type": k,
+                    "missing_techs": miss,
+                }
+        return None
 
     # Фаза A снабжения: только счётчик на планете (не юнит на карте).
     SUPPLY_BASE_RADIUS = 5
@@ -1055,7 +1174,7 @@ class WorldServiceMixin01:
     def _manhattan_l_path_cells(
         px: int, py: int, tx: int, ty: int
     ) -> list[tuple[int, int]]:
-        return SupplyService.manhattan_l_path_cells(px, py, tx, ty)
+        return hex_line_cells_exclusive_start(int(px), int(py), int(tx), int(ty))
 
     def _supply_route_block_cell(
         self, s: Session, *, owner_id: uuid.UUID, path_cells: list[tuple[int, int]]
@@ -1297,7 +1416,7 @@ class WorldServiceMixin01:
             y = random.randint(-bounds, bounds)
             if (x, y) in occupied:
                 continue
-            if all((abs(x - ex) + abs(y - ey)) >= min_dist for ex, ey in existing):
+            if all(hex_distance(x, y, ex, ey) >= min_dist for ex, ey in existing):
                 return x, y
 
         # fallback: найдём "самую далёкую" из нескольких кандидатов
@@ -1308,7 +1427,7 @@ class WorldServiceMixin01:
             y = random.randint(-bounds, bounds)
             if (x, y) in occupied:
                 continue
-            score = min(abs(x - ex) + abs(y - ey) for ex, ey in existing)
+            score = min(hex_distance(x, y, ex, ey) for ex, ey in existing)
             if score > best_score:
                 best_score = score
                 best = (x, y)
@@ -1327,6 +1446,8 @@ class WorldServiceMixin01:
 
         x, y = self._pick_start_pos(s)
         rid = self._get_player_race_id(s, player_id=player_id) or "human"
+        rm = self._race_modifiers(s, player_id=player_id)
+        start_pop = 0 if rm.get("no_passive_population_growth") else 600
         # MVP: для "людей" (техническая/простая раса) — землеподобная планета.
         # Разброс небольшой, чтобы не ломать баланс старта.
         if rid == "human":
@@ -1343,10 +1464,13 @@ class WorldServiceMixin01:
             name="Терра Прайм",
             pos_x=x,
             pos_y=y,
-            population=600,
+            population=start_pop,
             max_population=max_pop,
             planet_class=planet_class,
             build_slots_total=slots_total,
+            is_capital=True,
+            is_colonized=True,
+            conquest_penalty_until_tick=0,
         )
         s.add(planet)
         s.flush()

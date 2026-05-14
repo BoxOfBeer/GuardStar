@@ -475,3 +475,4 @@ class EconomyService:
 
         getattr(self._world, "_apply_supply_route_logistics_tick")(s, tick=tick)
         getattr(self._world, "_apply_fleet_empire_upkeep_tick")(s, tick=tick)
+        getattr(self._world, "_apply_bandit_fleet_empire_upkeep_tick")(s, tick=tick)

@@ -48,10 +48,12 @@ def _api_reject_disabled_accounts() -> None:
 
 
 from app.routes.api import routes_core  # noqa: F401,E402
+from app.routes.api import routes_alliance  # noqa: F401,E402
 from app.routes.api import routes_buildings_fleets_combat  # noqa: F401,E402
 from app.routes.api import routes_chat  # noqa: F401,E402
 from app.routes.api import routes_progress  # noqa: F401,E402
 from app.routes.api import routes_world_fleets  # noqa: F401,E402
+from app.routes.api import routes_planets  # noqa: F401,E402
 
 from app.services.feedback_playtest_audit import register_playtest_audit_hooks
 

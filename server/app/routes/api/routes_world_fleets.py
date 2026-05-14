@@ -170,6 +170,41 @@ def api_world_state():
         return jsonify(state)
 
 
+@api_bp.post("/world/recruit_population")
+def api_world_recruit_population():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    payload = request.get_json(silent=True) or {}
+    planet_id = payload.get("planet_id")
+    amount = payload.get("amount", payload.get("count"))
+    if not isinstance(planet_id, str) or not planet_id.strip():
+        return jsonify({"ok": False, "error": "invalid_payload"}), 400
+    try:
+        amount_i = int(amount)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "invalid_amount"}), 400
+
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        result = world.recruit_planet_population(
+            s,
+            player_id=player_id,
+            planet_id=planet_id.strip(),
+            amount=amount_i,
+        )
+        if not result.get("ok"):
+            code = 400
+            if result.get("error") in ("planet_not_owned",):
+                code = 403
+            return jsonify(result), code
+        s.commit()
+        return jsonify(result)
+
+
 @api_bp.post("/world/autotick")
 def api_world_autotick():
     player_id = _current_player_id()

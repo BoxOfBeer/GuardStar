@@ -63,6 +63,21 @@ body {
   line-height: var(--ui-line-height);
 }
 
+/* Игровой /me: фото космоса под интерфейсом + лёгкий затемняющий градиент поверх */
+body:has(.me-play-layout) {
+  background-image:
+    radial-gradient(ellipse 120% 80% at 50% 20%, rgba(7, 11, 19, 0.35) 0%, rgba(7, 11, 19, 0.82) 55%, rgba(5, 8, 14, 0.94) 100%),
+    url("img/background.png");
+  background-size: cover, cover;
+  background-position: center, center;
+  background-repeat: no-repeat, no-repeat;
+  background-attachment: fixed, fixed;
+  background-color: var(--bg);
+}
+body:has(.me-play-layout) .stars-layer {
+  opacity: 0.22;
+}
+
 .stars-layer {
   position: fixed;
   inset: 0;
@@ -94,13 +109,18 @@ body {
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 16px;
-  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.32);
+  box-shadow:
+    0 8px 26px rgba(0, 0, 0, 0.32),
+    inset 0 0 0 1px rgba(230, 236, 255, 0.04);
 }
 
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 .muted { color: var(--muted); }
 .hud-warn { color: var(--danger); font-weight: 600; }
+.hud-built--own { color: var(--ok); font-weight: 600; }
+.hud-built--enemy { color: var(--danger); font-weight: 600; }
+.hud-built--neutral { color: var(--warn); font-weight: 600; }
 .error { color: var(--danger); margin-top: 8px; }
 
 .access-code-label {
@@ -191,17 +211,19 @@ pre { padding: 10px; overflow: auto; }
 
 .build-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 10px;
 }
 .build-card {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: flex-start;
   gap: 10px;
   text-align: left;
   padding: 10px 12px;
   background: rgba(13, 22, 41, 0.85);
+  border-radius: 10px;
+  border: 1px solid var(--border);
 }
 .build-card .ic {
   display: inline-flex;
@@ -215,9 +237,277 @@ pre { padding: 10px; overflow: auto; }
   font-size: 16px;
   flex: 0 0 26px;
 }
-.build-card:disabled {
-  opacity: 0.55;
+.build-card-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.build-card-top {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+}
+.build-card-name-btn {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
+.build-card-name-btn:hover {
+  text-decoration-style: solid;
+}
+.build-card-meta {
+  font-size: 86%;
+  line-height: 1.25;
+  word-break: break-word;
+}
+.build-card-cost-line {
+  font-size: 86%;
+  line-height: 1.35;
+  margin-top: 6px;
+  word-break: break-word;
+}
+.build-card--sector-field .build-card-build {
+  margin-left: 0;
+}
+.build-cost-ok {
+  opacity: 0.95;
+}
+.build-cost-miss {
+  color: var(--danger);
+  font-weight: 600;
+}
+.build-card-actions {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+.build-qty-step {
+  box-sizing: border-box;
+  flex: 0 0 2.125rem;
+  width: 2.125rem;
+  min-width: 2.125rem;
+  max-width: 2.125rem;
+  height: 2.125rem;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(7, 11, 19, 0.55);
+  color: inherit;
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.build-qty-step:disabled {
+  opacity: 0.45;
   cursor: not-allowed;
+}
+.build-qty-val {
+  flex: 0 0 3rem;
+  width: 3rem;
+  min-width: 2.5rem;
+  max-width: 4.5rem;
+  box-sizing: border-box;
+  padding: 4px 4px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(7, 11, 19, 0.75);
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  line-height: 1.2;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.build-qty-val:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.build-qty-val::-webkit-outer-spin-button,
+.build-qty-val::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.build-card-build {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 6px 10px;
+  font-size: 86%;
+}
+.build-card-build:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.build-card--cannot {
+  opacity: 0.92;
+}
+.planet-build-type-desc {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(7, 11, 19, 0.45);
+  max-width: 100%;
+  white-space: pre-wrap;
+  line-height: 1.35;
+}
+.planet-build-type-desc.hidden {
+  display: none;
+}
+
+.planet-built-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+.planet-built-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 10px;
+  text-align: left;
+  padding: 10px 12px;
+  background: rgba(13, 22, 41, 0.88);
+  border-radius: 10px;
+  border: 1px solid rgba(87, 199, 255, 0.22);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
+}
+.planet-built-card .ic {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(7, 11, 19, 0.6);
+  font-size: 16px;
+  flex: 0 0 26px;
+}
+.planet-built-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.planet-built-top {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+}
+.planet-built-name-btn {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
+.planet-built-name-btn:hover {
+  text-decoration-style: solid;
+}
+.planet-built-meta {
+  font-size: 86%;
+  line-height: 1.25;
+  word-break: break-word;
+}
+.planet-built-submeta {
+  font-size: 82%;
+  line-height: 1.35;
+  margin-top: 2px;
+  word-break: break-word;
+}
+.planet-built-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.planet-built-step {
+  box-sizing: border-box;
+  width: auto;
+  min-width: 2.125rem;
+  max-width: 2.125rem;
+  height: 2.125rem;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(7, 11, 19, 0.55);
+  color: inherit;
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.planet-built-step:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.planet-built-qty-val {
+  box-sizing: border-box;
+  flex: 0 0 3rem;
+  width: 3rem;
+  min-width: 2.5rem;
+  max-width: 4rem;
+  padding: 4px 4px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(7, 11, 19, 0.75);
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  line-height: 1.2;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.planet-built-qty-val::-webkit-outer-spin-button,
+.planet-built-qty-val::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.planet-built-upgrade {
+  margin-left: auto;
+  padding: 6px 10px;
+  font-size: 86%;
+}
+.planet-built-dismantle {
+  padding: 6px 10px;
+  font-size: 86%;
 }
 
 .page-grid {
@@ -283,7 +573,6 @@ pre { padding: 10px; overflow: auto; }
     display: flex;
     flex-direction: column;
   }
-  .me-play-layout .map-sector-card > h3,
   .me-play-layout .map-sector-card > .map-sector-toolbar {
     flex-shrink: 0;
   }
@@ -310,6 +599,47 @@ pre { padding: 10px; overflow: auto; }
     margin-top: 0;
   }
 }
+
+/* Центральная карта /me: пустые клетки просвечивают к подложке; тулбар/легенда — «острова» без жёсткой рамки карточки */
+.me-play-layout .map-sector-card.card {
+  background: transparent;
+  box-shadow: none;
+  border-color: transparent;
+}
+.me-play-layout .map-sector-card > .map-sector-toolbar {
+  margin-top: 0;
+  margin-bottom: 0;
+  padding: 10px 14px;
+  flex-shrink: 0;
+  background: var(--bg-card);
+  border: 1px solid transparent;
+  border-radius: 14px;
+  box-shadow:
+    0 8px 26px rgba(0, 0, 0, 0.32),
+    inset 0 0 0 1px rgba(230, 236, 255, 0.04);
+  backdrop-filter: blur(6px);
+}
+.me-play-layout .map-sector-card > .legend {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid transparent;
+  border-radius: 12px;
+  box-shadow:
+    0 6px 20px rgba(0, 0, 0, 0.28),
+    inset 0 0 0 1px rgba(230, 236, 255, 0.04);
+}
+.me-play-layout .map-grid {
+  background: transparent;
+}
+
+/* /me: рамки панелей не акцентируем — остаётся мягкая тень «острова» */
+body:has(.me-play-layout) .topbar.card,
+body:has(.me-play-layout) .page-grid-mmo > aside.card.hud,
+body:has(.me-play-layout) .page-grid-mmo > aside.card.comms-panel {
+  border-color: transparent;
+}
+
 .page-grid-mmo.page-grid--comms-collapsed {
   /* Узкая колонка по содержимому; панель не тянется на всю высоту — без «полосы» */
   grid-template-columns: max-content minmax(0, 1fr) 300px;
@@ -758,6 +1088,94 @@ body.entry-tutorial-open {
   font-size: clamp(0.88rem, 0.82rem + 0.35vw, 1.02rem);
   line-height: 1.45;
 }
+.entry-tutorial-intro-rp-hint {
+  display: block;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.entry-tutorial-wiki-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  margin-top: 12px;
+}
+.entry-tutorial-wiki-full-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 0.94rem;
+  color: var(--text);
+  flex-shrink: 0;
+}
+.entry-tutorial-wiki-full-label input {
+  width: auto;
+  margin: 0;
+  flex-shrink: 0;
+}
+.entry-tutorial-wiki-search {
+  flex: 1 1 200px;
+  min-width: 160px;
+  max-width: 380px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(10, 18, 36, 0.55);
+  color: inherit;
+  font: inherit;
+}
+.entry-tutorial-wiki-search::placeholder {
+  opacity: 0.45;
+}
+.entry-tutorial-wiki-search-status {
+  margin: 8px 0 0;
+  font-size: 0.88rem;
+}
+.entry-tutorial-card.wiki-mode-full .tutorial-wiki-detail {
+  display: block;
+}
+.tutorial-wiki-detail {
+  display: none;
+  margin-top: 7px;
+  padding: 8px 10px 8px 12px;
+  border-left: 2px solid rgba(97, 234, 163, 0.35);
+  font-size: 0.93em;
+  line-height: 1.5;
+}
+.tutorial-wiki-brief {
+  display: block;
+}
+a.wiki-internal-link {
+  color: rgba(157, 216, 255, 0.95);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+a.wiki-internal-link:hover {
+  color: rgba(200, 235, 255, 1);
+}
+.tutorial-wiki-item.wiki-search-hidden {
+  display: none;
+}
+.entry-tutorial-tab.wiki-tab-nohit {
+  opacity: 0.42;
+  filter: grayscale(0.22);
+}
+.tutorial-wiki-item.wiki-link-flash {
+  animation: wiki-internal-flash 1.25s ease-out 1;
+}
+@keyframes wiki-internal-flash {
+  0% {
+    box-shadow: inset 0 0 0 2px rgba(157, 216, 255, 0.85);
+    background: rgba(157, 216, 255, 0.12);
+  }
+  100% {
+    box-shadow: inset 0 0 0 0 rgba(157, 216, 255, 0);
+    background: transparent;
+  }
+}
 .entry-tutorial-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -903,6 +1321,12 @@ body.entry-tutorial-open {
 .entry-tutorial-tab--symbols:not(.is-active):hover {
   border-color: rgba(183, 157, 224, 0.65);
 }
+.entry-tutorial-tab--empire:not(.is-active):hover {
+  border-color: rgba(120, 210, 190, 0.55);
+}
+.entry-tutorial-tab--comms:not(.is-active):hover {
+  border-color: rgba(120, 170, 255, 0.55);
+}
 .entry-tutorial-tab--economy.entry-tutorial-tab.is-active {
   box-shadow:
     inset 3px 0 0 rgba(218, 176, 106, 0.95),
@@ -936,6 +1360,20 @@ body.entry-tutorial-open {
     0 0 0 1px rgba(183, 157, 224, 0.35);
   border-color: rgba(183, 157, 224, 0.55);
   background: rgba(183, 157, 224, 0.08);
+}
+.entry-tutorial-tab--empire.entry-tutorial-tab.is-active {
+  box-shadow:
+    inset 3px 0 0 rgba(120, 210, 190, 0.95),
+    0 0 0 1px rgba(120, 210, 190, 0.38);
+  border-color: rgba(120, 210, 190, 0.55);
+  background: rgba(120, 210, 190, 0.08);
+}
+.entry-tutorial-tab--comms.entry-tutorial-tab.is-active {
+  box-shadow:
+    inset 3px 0 0 rgba(120, 170, 255, 0.95),
+    0 0 0 1px rgba(120, 170, 255, 0.38);
+  border-color: rgba(120, 170, 255, 0.55);
+  background: rgba(120, 170, 255, 0.07);
 }
 
 .entry-tutorial-panels {
@@ -1112,6 +1550,8 @@ body.entry-tutorial-open {
   font-size: 0.82rem;
 }
 #resources-chip.resources-bar {
+  display: flex;
+  flex-direction: row;
   flex-wrap: nowrap;
   justify-content: flex-end;
   gap: 6px;
@@ -1136,6 +1576,25 @@ body.entry-tutorial-open {
   flex: 0 0 auto;
   white-space: nowrap;
 }
+button.res-chip {
+  font: inherit;
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: inherit;
+  margin: 0;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  cursor: pointer;
+  text-align: left;
+  appearance: none;
+  -webkit-appearance: none;
+}
+button.res-chip:focus-visible {
+  outline: 2px solid rgba(97, 234, 163, 0.65);
+  outline-offset: 2px;
+}
 .res-chip .muted {
   opacity: 0.85;
 }
@@ -1156,6 +1615,15 @@ body.entry-tutorial-open {
 .res-chip--drain.res-chip {
   border-color: rgba(220, 80, 80, 0.55);
   background: rgba(220, 60, 60, 0.08);
+}
+/* RP в топбаре: нет активного исследования — «колба» приглушена, чип слегка в красном. */
+button.res-chip-rp-idle {
+  border-color: rgba(200, 70, 90, 0.55);
+  background: rgba(140, 30, 45, 0.22);
+}
+button.res-chip-rp-idle .res-icon-rp {
+  opacity: 0.55;
+  filter: grayscale(0.85);
 }
 .res-drain-marker {
   font-weight: 800;
@@ -1276,6 +1744,17 @@ a.status-chip.nav-chip-secondary:hover {
   --map-layout-cell-h: var(--cell-size);
   --map-layout-cell: min(var(--map-layout-cell-w), var(--map-layout-cell-h));
 }
+.map-grid.map-hex {
+  display: flex;
+  flex-direction: column;
+  /* Иначе ряды тянутся на всю ширину слоя — кластер гекса «прилипает» влево, справа пустота. */
+  align-items: flex-start;
+  width: max-content;
+  box-sizing: border-box;
+}
+.map-grid.map-hex::before {
+  opacity: 0;
+}
 .map-grid::before {
   content: "";
   position: absolute;
@@ -1322,12 +1801,32 @@ a.status-chip.nav-chip-secondary:hover {
   stroke-linejoin: round;
   fill: none;
 }
+/* Гекс: один path — butt, иначе round-cap на стыках даёт «вылеты» за вершины */
+.zone-line-self.zone-line-hex-smooth,
+.zone-line-other.zone-line-hex-smooth {
+  stroke-linecap: butt;
+  stroke-linejoin: round;
+}
+.zone-line-self.zone-line-hex-fallback,
+.zone-line-other.zone-line-hex-fallback {
+  stroke-linecap: butt;
+  stroke-linejoin: miter;
+  stroke-miterlimit: 2;
+  stroke-width: 2.9;
+}
 .zone-line-other {
   stroke: rgba(255, 111, 145, 0.5);
   stroke-width: 2.2;
   stroke-linecap: round;
   stroke-linejoin: round;
   fill: none;
+}
+/* Гекс: сглаженный path — чуть толще, чтобы дуги читались после squash по вертикали */
+.zone-line-self.zone-line-hex-smooth {
+  stroke-width: 3.1;
+}
+.zone-line-other.zone-line-hex-smooth {
+  stroke-width: 2.85;
 }
 .zone-line-vision {
   stroke: rgba(87, 199, 255, 0.40);
@@ -1340,6 +1839,21 @@ a.status-chip.nav-chip-secondary:hover {
   display: grid;
   grid-template-columns: repeat(var(--map-size), var(--map-layout-cell-w, var(--cell-size)));
   gap: 0;
+}
+/* Гекс-ряды: сдвиг и вертикальный шаг задаёт JS (pointy-top axial). */
+.map-grid.map-hex .map-row.map-hex-row .cell {
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  flex: 0 0 auto;
+}
+/* Лёгкий «неон» по контуру гекса (силуэт clip-path) */
+.map-grid.map-hex .map-row.map-hex-row > button.cell.cell-visible {
+  filter: drop-shadow(0 0 1px rgba(130, 240, 255, 0.55)) drop-shadow(0 0 7px rgba(50, 170, 255, 0.2));
+}
+.map-grid.map-hex .map-row.map-hex-row > button.cell.cell-visible.cell-selected {
+  filter: drop-shadow(0 0 1px rgba(140, 255, 200, 0.6)) drop-shadow(0 0 10px rgba(97, 234, 163, 0.28));
+}
+.map-grid.map-hex .map-row.map-hex-row > button.cell.cell-visible.cell-center {
+  filter: drop-shadow(0 0 1px rgba(180, 230, 255, 0.65)) drop-shadow(0 0 9px rgba(120, 210, 255, 0.22));
 }
 .cell {
   width: var(--map-layout-cell-w, var(--cell-size));
@@ -1356,8 +1870,11 @@ a.status-chip.nav-chip-secondary:hover {
   justify-content: center;
   padding: 2px;
 }
-.cell.cell-visible {
+.cell.cell-visible:not(.cell-empty-visible) {
   background: rgba(18, 34, 58, 0.92);
+}
+.cell.cell-visible.cell-empty-visible {
+  background: transparent;
 }
 .cell:hover {
   border-radius: 10px;
@@ -1429,7 +1946,7 @@ a.status-chip.nav-chip-secondary:hover {
   box-shadow: 0 0 8px rgba(255, 111, 145, 0.55);
 }
 .planet-icon {
-  font-size: clamp(20px, calc(var(--map-layout-cell, 96px) * 0.46), 42px);
+  font-size: clamp(40px, calc(var(--map-layout-cell, 96px) * 0.92), 84px);
   line-height: 1;
   display: inline-flex;
   align-items: center;
@@ -1442,6 +1959,55 @@ a.status-chip.nav-chip-secondary:hover {
 }
 .planet-icon.ally {
   filter: drop-shadow(0 0 10px rgba(97, 234, 163, 0.65));
+}
+/* Тактика: в клетке несколько маркеров — выше z-index у следующих в DOM (флот после планеты). */
+.map-marker-stack {
+  display: inline-grid;
+  grid-template: 1fr / 1fr;
+  place-items: center;
+  line-height: 0;
+  vertical-align: middle;
+}
+.map-marker-stack > * {
+  grid-area: 1 / 1;
+  position: relative;
+}
+.map-marker-stack > *:nth-child(1) {
+  z-index: 1;
+}
+.map-marker-stack > *:nth-child(2) {
+  z-index: 2;
+}
+.map-marker-stack > *:nth-child(3) {
+  z-index: 3;
+}
+.map-marker-stack > *:nth-child(4) {
+  z-index: 4;
+}
+.map-marker-stack > *:nth-child(5) {
+  z-index: 5;
+}
+.map-marker-stack > *:nth-child(6) {
+  z-index: 6;
+}
+/* Графика: планета + флот — флот смещён и поверх. */
+.map-graphic-stack--planet-fleet {
+  display: inline-grid;
+  grid-template: 1fr / 1fr;
+  place-items: center;
+  line-height: 0;
+}
+.map-graphic-stack--planet-fleet > .map-cell-icon-wrap {
+  grid-area: 1 / 1;
+  position: relative;
+}
+.map-graphic-stack--planet-fleet > .map-cell-icon-wrap:first-child {
+  z-index: 1;
+}
+.map-graphic-stack--planet-fleet > .map-cell-icon-wrap:last-child {
+  z-index: 2;
+  transform: scale(0.82) translate(20%, -24%);
+  filter: drop-shadow(0 0 6px rgba(0, 0, 0, 0.55));
 }
 .cell-enemy { box-shadow: inset 0 0 0 2px rgba(255, 111, 145, 0.6); }
 .cell-ally { box-shadow: inset 0 0 0 2px rgba(97, 234, 163, 0.55); }
@@ -1464,24 +2030,24 @@ a.status-chip.nav-chip-secondary:hover {
 }
 .building-ally,
 .outpost-ally {
-  filter: drop-shadow(0 0 5px rgba(97, 234, 163, 0.55));
+  filter: drop-shadow(0 0 8px rgba(97, 234, 163, 0.78)) drop-shadow(0 0 16px rgba(97, 234, 163, 0.42));
 }
 .building-hostile,
 .outpost-hostile {
   filter: drop-shadow(0 0 5px rgba(255, 111, 145, 0.45));
 }
-.zone-vision-self {
+.cell.cell-visible.zone-vision-self {
   background: rgba(87, 199, 255, 0.08);
 }
 .zone-build-self { box-shadow: none; }
 .zone-build-enemy { box-shadow: none; }
-.cell-inf-own {
+.cell.cell-visible.cell-inf-own {
   background: rgba(97, 234, 163, 0.07);
 }
-.cell-inf-other {
+.cell.cell-visible.cell-inf-other {
   background: rgba(255, 111, 145, 0.06);
 }
-.cell-inf-contested {
+.cell.cell-visible.cell-inf-contested {
   background: rgba(255, 200, 87, 0.1);
 }
 @keyframes move-pulse {
@@ -1518,10 +2084,45 @@ a.status-chip.nav-chip-secondary:hover {
 .map-grid.map-hide-coords .coord {
   display: none;
 }
+.map-cell-icon-wrap--planet-scale .map-cell-icon,
+.map-cell-icon-wrap--planet-scale .map-cell-icon--raster {
+  width: clamp(40px, 110%, 96px);
+  height: clamp(40px, 110%, 96px);
+}
+.map-grid.map-mode-graphic .map-cell-icon-wrap--planet-scale .map-cell-icon,
+.map-grid.map-mode-graphic .map-cell-icon-wrap--planet-scale .map-cell-icon--raster {
+  width: clamp(32px, 76%, 64px);
+  height: clamp(32px, 76%, 64px);
+}
+.map-cell-icon-wrap--field-building.map-cell-icon-tone-self .map-cell-icon--raster {
+  filter: drop-shadow(0 0 8px rgba(97, 234, 163, 0.82)) drop-shadow(0 0 18px rgba(97, 234, 163, 0.48));
+}
 .map-cell-icon {
   width: clamp(20px, 55%, 48px);
   height: clamp(20px, 55%, 48px);
   display: block;
+}
+.map-cell-icon--raster {
+  object-fit: contain;
+  pointer-events: none;
+}
+.map-cell-icon-tone-self .map-cell-icon--raster {
+  filter: drop-shadow(0 0 5px rgba(97, 234, 163, 0.55));
+}
+.map-cell-icon-tone-enemy .map-cell-icon--raster {
+  filter: drop-shadow(0 0 5px rgba(255, 111, 145, 0.55));
+}
+.map-cell-icon-tone-neutral .map-cell-icon--raster {
+  filter: drop-shadow(0 0 4px rgba(159, 176, 208, 0.35));
+}
+.map-cell-icon-tone-fog .map-cell-icon--raster {
+  filter: drop-shadow(0 0 3px rgba(159, 176, 208, 0.22));
+  opacity: 0.88;
+}
+.map-grid.map-mode-graphic .map-cell-icon,
+.map-grid.map-mode-graphic .map-cell-icon--raster {
+  width: clamp(16px, 38%, 32px);
+  height: clamp(16px, 38%, 32px);
 }
 .map-cell-icon-wrap {
   display: inline-flex;
@@ -1578,6 +2179,10 @@ a.status-chip.nav-chip-secondary:hover {
   color: rgba(157, 216, 255, 0.9);
   text-shadow: 0 0 10px rgba(87, 199, 255, 0.35);
   pointer-events: none;
+}
+/* Гекс: стрелка смещается к внешнему краю диска (JS задаёт --pan-tx / --pan-ty). */
+.map-grid.map-hex .cell-inner > .pan-arrow {
+  transform: translate(var(--pan-tx, 0px), var(--pan-ty, 0px));
 }
 .pan-arrow.corner { font-size: clamp(14px, calc(var(--map-layout-cell, 96px) * 0.28), 24px); }
 .cell-fog {
@@ -1637,6 +2242,11 @@ a.status-chip.nav-chip-secondary:hover {
   gap: 8px;
   margin-top: 8px;
   align-items: stretch;
+}
+.hud-actions > .hud-action-feedback {
+  flex: 1 1 100%;
+  width: 100%;
+  margin-top: 0;
 }
 /* Только прямые дочерние кнопки — иначе flex:1 на колонке растягивает кнопку внутри .hud-action-build-wrap по высоте */
 .hud-actions > button {
@@ -2266,6 +2876,7 @@ button.btn-secondary.hud-btn-blocked {
   min-width: 0;
 }
 .game-modal-col--entity {
+  min-width: 0;
 }
 .game-modal-col--state {
   max-height: min(72vh, 720px);
@@ -2319,7 +2930,9 @@ details.game-modal-details.game-modal-details--construction {
   );
 }
 details.game-modal-details.game-modal-details--construction > summary.game-modal-details-summary {
-  background: color-mix(in srgb, var(--ok, #61eaa3) 12%, transparent);
+  background: color-mix(in srgb, var(--ok, #61eaa3) 14%, rgba(7, 14, 22, 0.35));
+  border-bottom: 1px solid color-mix(in srgb, var(--ok, #61eaa3) 22%, transparent);
+  letter-spacing: 0.01em;
 }
 details.game-modal-details.game-modal-details--construction .game-modal-details-inner {
   border-top-color: color-mix(in srgb, var(--ok, #61eaa3) 28%, transparent);
@@ -2847,6 +3460,42 @@ details.tech-item-done > summary.tech-item-summary::-webkit-details-marker {
 .econ-resource-grid span {
   white-space: nowrap;
 }
+.econ-resource-grid .econ-wiki-res,
+.econ-cost-row .econ-wiki-res {
+  white-space: nowrap;
+  font: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  color: inherit;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  cursor: help;
+  text-decoration: underline dotted rgba(157, 216, 255, 0.42);
+  text-underline-offset: 3px;
+}
+.econ-resource-grid .econ-wiki-res:hover,
+.econ-cost-row .econ-wiki-res:hover {
+  text-decoration-color: rgba(157, 216, 255, 0.95);
+}
+.econ-wiki-res--bare {
+  display: inline;
+  width: auto;
+  min-width: 0;
+  vertical-align: baseline;
+  font-weight: inherit;
+  cursor: help;
+  text-decoration: underline dotted rgba(157, 216, 255, 0.45);
+  text-underline-offset: 3px;
+}
+.econ-wiki-res--bare:hover {
+  text-decoration-color: rgba(157, 216, 255, 0.95);
+}
 .econ-row-label {
   font-size: 0.82rem;
   color: var(--muted);
@@ -3090,4 +3739,101 @@ details.tech-item-done > summary.tech-item-summary::-webkit-details-marker {
   line-height: 1.45;
   color: rgba(230, 236, 255, 0.88);
   border-top: 1px solid rgba(36, 50, 78, 0.65);
+}
+
+.hud-action-feedback {
+  flex: 1 1 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  min-height: 1.35em;
+}
+.hud-action-feedback--in-modal {
+  margin: 10px 0 0;
+}
+.hud-action-feedback--ok {
+  background: rgba(97, 234, 163, 0.12);
+  color: #c8f5dc;
+  border: 1px solid rgba(97, 234, 163, 0.35);
+}
+.hud-action-feedback--err {
+  background: rgba(255, 111, 145, 0.1);
+  color: #ffd0d8;
+  border: 1px solid rgba(255, 111, 145, 0.35);
+}
+.hud-action-feedback--info {
+  background: rgba(87, 199, 255, 0.08);
+  color: #d6ecff;
+  border: 1px solid rgba(87, 199, 255, 0.28);
+}
+
+.system-toasts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+/* Поверх карты: не сдвигаем сетку при появлении тостов (раньше блок был между тулбаром и .map-wrap). */
+.system-toasts.system-toasts--map-overlay {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 8px;
+  z-index: 6;
+  margin: 0;
+  max-height: min(140px, 34vh);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.system-toast {
+  pointer-events: auto;
+  align-self: flex-end;
+  max-width: min(420px, 100%);
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  background: rgba(255, 200, 87, 0.12);
+  color: #ffe8c2;
+  border: 1px solid rgba(255, 200, 87, 0.4);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  animation: system-toast-in 0.2s ease-out;
+}
+@keyframes system-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.hud-onboarding-card .onboarding-goals-body {
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+.onboarding-goal-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 4px 0;
+}
+.onboarding-goal-line.done {
+  opacity: 0.62;
+}
+
+.planet-build-bulk-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  align-items: center;
+}
+.planet-build-bulk-row .btn-secondary {
+  font-size: 0.78rem;
+  padding: 4px 8px;
 }

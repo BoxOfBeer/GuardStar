@@ -289,25 +289,49 @@ def api_chat_moderation_account_ban():
 
 
 @api_bp.get("/chat/alliance")
-def api_chat_alliance_stub():
-    """Заглушка до модели альянсов и канала alliance:{id}."""
-    return (
-        jsonify(
-            {
-                "ok": False,
-                "error": "alliance_chat_not_implemented",
-                "detail": "Альянс-чат будет доступен после введения сущности альянса.",
-            }
-        ),
-        501,
-    )
+def api_chat_alliance_get():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    alliance_id = (request.args.get("alliance_id") or "").strip()
+    if not alliance_id:
+        return jsonify({"ok": False, "error": "alliance_id_required"}), 400
+    since = request.args.get("since_id", type=int)
+    with db_session() as s:
+        data = chat_svc.list_alliance_messages(
+            s, viewer_id=player_id, alliance_id=alliance_id, since_id=since
+        )
+    if not data.get("ok") and data.get("error") == "forbidden":
+        return jsonify(data), 403
+    return jsonify(data)
 
 
 @api_bp.post("/chat/alliance")
-def api_chat_alliance_post_stub():
-    return (
-        jsonify({"ok": False, "error": "alliance_chat_not_implemented"}),
-        501,
-    )
+def api_chat_alliance_post():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+    payload = request.get_json(silent=True) or {}
+    alliance_id = payload.get("alliance_id")
+    body = payload.get("body") or ""
+    if not isinstance(alliance_id, str):
+        return jsonify({"ok": False, "error": "invalid_payload"}), 400
+    with db_session() as s:
+        result = chat_svc.post_alliance_message(
+            s, sender_id=player_id, alliance_id=alliance_id, body=str(body)
+        )
+        if not result.get("ok"):
+            err = result.get("error")
+            if err == "rate_limited":
+                code = 429
+            elif err == "message_too_long":
+                code = 413
+            elif err == "forbidden":
+                code = 403
+            else:
+                code = 400
+            return jsonify(result), code
+        s.commit()
+    return jsonify(result)
 
 

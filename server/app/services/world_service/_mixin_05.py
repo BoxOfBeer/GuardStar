@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.hex_coords import hex_axial_neighbors, hex_disk, hex_distance
 from app.services.world_service._deps import *  # noqa: F403
 from app.services.world_service.constants import (
     BANDIT_PLAYER_ID,
@@ -22,6 +23,7 @@ from app.services.world_service.constants import (
     INFLUENCE_WEIGHT_COLONY,
     NPC_FLEET_PLAYER_IDS,
     PLANET_STORE_KEYS,
+    WORLD_NEUTRAL_PLAYER_ID,
 )
 
 
@@ -66,10 +68,28 @@ class WorldServiceMixin05:
         s.flush()
         return p
 
+    def _ensure_world_neutral_player(self, s: Session) -> Player:
+        p = s.get(Player, WORLD_NEUTRAL_PLAYER_ID)
+        if p:
+            if getattr(p, "race_id", None) not in ("human",):
+                p.race_id = "human"
+                s.flush()
+            return p
+        h = hashlib.sha256(f"npc_world_neutral::{self._world_seed}".encode()).hexdigest()
+        p = Player(
+            id=WORLD_NEUTRAL_PLAYER_ID,
+            display_name="Нейтральные миры (система)",
+            access_code_hash=h,
+            race_id="human",
+        )
+        s.add(p)
+        s.flush()
+        return p
+
     def _human_player_ids(self, s: Session) -> list[uuid.UUID]:
         out: list[uuid.UUID] = []
         for row in s.execute(select(Player.id)).scalars():
-            if row in NPC_FLEET_PLAYER_IDS:
+            if row in NPC_FLEET_PLAYER_IDS or row == WORLD_NEUTRAL_PLAYER_ID:
                 continue
             out.append(row)
         return out
@@ -149,8 +169,8 @@ class WorldServiceMixin05:
         start_after_tick: int,
     ) -> None:
         units_map = self._fleet_units_map(s, fleet)
-        dist = abs(int(target_x) - int(fleet.pos_x)) + abs(
-            int(target_y) - int(fleet.pos_y)
+        dist = hex_distance(
+            int(fleet.pos_x), int(fleet.pos_y), int(target_x), int(target_y)
         )
         travel_ticks = max(
             1, self._fleet_travel_ticks_for_distance(distance=dist, units=units_map)
@@ -194,8 +214,8 @@ class WorldServiceMixin05:
         max_active = int(blk.get("max_active_convoys", 5) or 5)
         if self._active_npc_transit_convoys_count(s) >= max_active:
             return
-        dmin = int(blk.get("min_route_manhattan", 10) or 10)
-        dmax = int(blk.get("max_route_manhattan", 36) or 36)
+        dmin = int(blk.get("min_route_hex", blk.get("min_route_manhattan", 10)) or 10)
+        dmax = int(blk.get("max_route_hex", blk.get("max_route_manhattan", 36)) or 36)
         if dmax < dmin:
             dmin, dmax = dmax, dmin
         attempts = int(blk.get("spawn_attempts", 48) or 48)
@@ -226,15 +246,17 @@ class WorldServiceMixin05:
             if self._cell_blocked_for_fleet(s, sx, sy, 0):
                 continue
             dist = rng.randint(dmin, dmax)
-            dx_sign = rng.choice([-1, 1])
-            dy_sign = rng.choice([-1, 1])
-            split = rng.randint(0, dist)
-            tx = sx + dx_sign * split
-            ty = sy + dy_sign * (dist - split)
-            if self._cell_blocked_for_fleet(s, tx, ty, 0):
-                continue
-            ax, ay, bx, by = sx, sy, tx, ty
-            break
+            for _try in range(160):
+                tx = rng.randint(gx0, gx1)
+                ty = rng.randint(gy0, gy1)
+                if self._cell_blocked_for_fleet(s, tx, ty, 0):
+                    continue
+                if hex_distance(int(sx), int(sy), int(tx), int(ty)) != int(dist):
+                    continue
+                ax, ay, bx, by = sx, sy, tx, ty
+                break
+            if ax is not None:
+                break
 
         if ax is None:
             return
@@ -408,11 +430,16 @@ class WorldServiceMixin05:
     ) -> bool:
         """Радиус 3 от любой планеты владельца (как зона стройки)."""
         for p in (
-            s.execute(select(Planet).where(Planet.owner_player_id == player_id))
+            s.execute(
+                select(Planet).where(
+                    Planet.owner_player_id == player_id,
+                    Planet.is_colonized == True,  # noqa: E712
+                )
+            )
             .scalars()
             .all()
         ):
-            if abs(int(p.pos_x) - int(x)) + abs(int(p.pos_y) - int(y)) <= 3:
+            if hex_distance(int(p.pos_x), int(p.pos_y), int(x), int(y)) <= 3:
                 return True
         return False
 
@@ -421,9 +448,12 @@ class WorldServiceMixin05:
         # Имперский бонус: суммарное население слегка усиливает все давления по империи.
         # 100k населения -> +0.05 ко всем давлениям (множитель 1.05).
         pops = s.execute(
-            select(
-                Planet.owner_player_id, func.sum(getattr(Planet, "population", 0))
-            ).group_by(Planet.owner_player_id)
+            select(Planet.owner_player_id, func.sum(Planet.population))
+            .where(
+                Planet.is_colonized == True,  # noqa: E712
+                Planet.owner_player_id != WORLD_NEUTRAL_PLAYER_ID,
+            )
+            .group_by(Planet.owner_player_id)
         ).all()
         pop_by_owner: dict[uuid.UUID, int] = {pid: int(sp or 0) for pid, sp in pops}
         mult_by_owner: dict[uuid.UUID, float] = {}
@@ -441,6 +471,10 @@ class WorldServiceMixin05:
             return race_inf[owner]
 
         for p in s.execute(select(Planet)).scalars().all():
+            if not bool(getattr(p, "is_colonized", True)):
+                continue
+            if p.owner_player_id == WORLD_NEUTRAL_PLAYER_ID:
+                continue
             mul = float(mult_by_owner.get(p.owner_player_id, 1.0)) * _race_inf_mul(
                 p.owner_player_id
             )
@@ -475,6 +509,26 @@ class WorldServiceMixin05:
             )
         return out
 
+    def _fleet_map_vision_radius_cells(self, units_map: dict[str, int]) -> int:
+        """Радиус обзора с клетки флота: max по типам из `map_vision_radius_cells` в балансе, иначе legacy (scout=2, прочее=1)."""
+        best = 0
+        for alias, qty in (units_map or {}).items():
+            if int(qty) <= 0:
+                continue
+            key = str(alias).strip().lower()
+            r: int | None = None
+            if self._balance:
+                try:
+                    u = self._balance.get_unit(key)
+                    if isinstance(u.get("map_vision_radius_cells"), int):
+                        r = int(u["map_vision_radius_cells"])
+                except Exception:
+                    r = None
+            if r is None:
+                r = 2 if key == "scout" else 1
+            best = max(best, r)
+        return int(best)
+
     def _collect_visibility_sources_for_player(
         self, s: Session, *, player_id: uuid.UUID, z: int
     ) -> list[tuple[int, int, int]]:
@@ -497,7 +551,9 @@ class WorldServiceMixin05:
         )
         for f in my_fleets:
             um = self._fleet_units_map(s, f)
-            r = 2 if int(um.get("scout", 0)) > 0 or f.unit_type == "scout" else 1
+            r = self._fleet_map_vision_radius_cells(um)
+            if r <= 0:
+                continue
             vis_sources.append((int(f.pos_x), int(f.pos_y), r))
         my_outposts = (
             s.execute(
@@ -516,13 +572,13 @@ class WorldServiceMixin05:
         return vis_sources
 
     @staticmethod
-    def _influence_decay_contrib(weight: float, manhattan_d: int, radius: int) -> float:
-        if radius <= 0 or manhattan_d > radius:
+    def _influence_decay_contrib(weight: float, grid_d: int, radius: int) -> float:
+        if radius <= 0 or grid_d > radius:
             return 0.0
         guaranteed = min(INFLUENCE_BASE_RADIUS, radius)
-        if manhattan_d <= guaranteed:
+        if grid_d <= guaranteed:
             return float(weight)
-        return float(weight) * (0.5 ** int(manhattan_d - guaranteed))
+        return float(weight) * (0.5 ** int(grid_d - guaranteed))
 
     def _influence_scores_at(
         self, sources: list[dict], x: int, y: int, z: int
@@ -531,7 +587,7 @@ class WorldServiceMixin05:
         for src in sources:
             if int(src["z"]) != int(z):
                 continue
-            d = abs(int(src["x"]) - x) + abs(int(src["y"]) - y)
+            d = hex_distance(int(src["x"]), int(src["y"]), int(x), int(y))
             c = self._influence_decay_contrib(float(src["w"]), d, int(src["r"]))
             if c > 0:
                 acc[src["owner"]] += c
@@ -624,10 +680,8 @@ class WorldServiceMixin05:
         for src in sources:
             sx, sy, sz, rr = int(src["x"]), int(src["y"]), int(src["z"]), int(src["r"])
             rr = max(0, min(rr, 96))
-            for dy in range(-rr, rr + 1):
-                max_dx = rr - abs(dy)
-                for dx in range(-max_dx, max_dx + 1):
-                    covered_cells.add((sx + dx, sy + dy, sz))
+            for qx, qy in hex_disk(sx, sy, rr):
+                covered_cells.add((qx, qy, sz))
 
         for x, y, z in covered_cells:
             scores = self._influence_scores_at(sources, x, y, z)
@@ -816,7 +870,7 @@ class WorldServiceMixin05:
             for prey_cand in prey_rows:
                 if int(self._fleet_total_units(s, prey_cand)) <= 0:
                     continue
-                d = abs(int(prey_cand.pos_x) - tx) + abs(int(prey_cand.pos_y) - ty)
+                d = hex_distance(int(prey_cand.pos_x), int(prey_cand.pos_y), int(tx), int(ty))
                 if d < best_d:
                     best_d = d
                     prey = prey_cand
@@ -1429,6 +1483,17 @@ class WorldServiceMixin05:
         )
         return {"ok": True, **prev}
 
+    def _cell_has_planet_at(self, s: Session, *, x: int, y: int) -> bool:
+        """Клетка (x,y) на z=0 с любой планетой — флот не может стоять в этой точке."""
+        return (
+            s.execute(
+                select(Planet.id).where(
+                    Planet.pos_x == int(x), Planet.pos_y == int(y)
+                )
+            ).first()
+            is not None
+        )
+
     def _enemy_fleet_at(
         self, s: Session, *, x: int, y: int, z: int, owner_player_id: uuid.UUID
     ) -> Fleet | None:
@@ -1456,14 +1521,14 @@ class WorldServiceMixin05:
         exclude_fleet_id: uuid.UUID,
         max_ring: int = 60,
     ) -> tuple[int, int] | None:
-        """Ближайшая клетка (BFS по сетке), где нет чужого флота; exclude_fleet_id не считается занятием."""
+        """Ближайшая клетка (BFS), где нет чужого флота и нет планеты; exclude_fleet_id не занятие."""
         start = (int(center_x), int(center_y))
         seen: set[tuple[int, int]] = {start}
         q: deque[tuple[int, int]] = deque([start])
         cz = int(center_z)
         while q:
             x, y = q.popleft()
-            if abs(x - int(center_x)) + abs(y - int(center_y)) > max_ring:
+            if hex_distance(x, y, int(center_x), int(center_y)) > max_ring:
                 continue
             self._purge_shell_fleets_at_cell(s, x=x, y=y, z=cz)
             other = s.execute(
@@ -1474,10 +1539,9 @@ class WorldServiceMixin05:
                     Fleet.id != exclude_fleet_id,
                 )
             ).first()
-            if other is None:
+            if other is None and not self._cell_has_planet_at(s, x=x, y=y):
                 return (x, y)
-            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                nx, ny = x + dx, y + dy
+            for nx, ny in hex_axial_neighbors(x, y):
                 if (nx, ny) in seen:
                     continue
                 seen.add((nx, ny))
@@ -1789,6 +1853,8 @@ class WorldServiceMixin05:
             )
             if blocked:
                 continue
+            if self._cell_has_planet_at(s, x=tx, y=ty):
+                continue
             occupied = (
                 s.execute(
                     select(Fleet.id).where(
@@ -1854,12 +1920,19 @@ class WorldServiceMixin05:
                 return {"ok": False, "error": "negative_qty"}
             if q > 0:
                 units[k] = int(q)
+        units = self._strip_fleet_composition_disallowed_units(pid, units)
         total = sum(units.values())
         if total < 1:
             return {"ok": False, "error": "fleet_empty"}
         cap = self._world_max_fleet_units(s)
         if total > cap:
             return {"ok": False, "error": "fleet_too_large", "max_units": cap}
+
+        tech_err = self._fleet_composition_tech_violation(
+            s, player_id=pid, cur={}, newd=units
+        )
+        if tech_err is not None:
+            return tech_err
 
         home = s.execute(
             select(Planet).where(Planet.owner_player_id == pid)
@@ -2029,8 +2102,12 @@ class WorldServiceMixin05:
         )
         if ally_at:
             return {"ok": False, "error": "cell_occupied_by_own_fleet"}
+        if self._cell_has_planet_at(s, x=int(target_x), y=int(target_y)):
+            return {"ok": False, "error": "target_cell_has_planet"}
 
-        distance = abs(target_x - fleet.pos_x) + abs(target_y - fleet.pos_y)
+        distance = hex_distance(
+            int(fleet.pos_x), int(fleet.pos_y), int(target_x), int(target_y)
+        )
         if distance == 0:
             return {"ok": False, "error": "target_same_cell"}
         travel_ticks = self._fleet_travel_ticks_for_distance(

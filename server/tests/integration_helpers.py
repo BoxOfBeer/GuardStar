@@ -53,10 +53,12 @@ def delete_players_display_prefix(engine: Engine, prefix: str = "gs_py_") -> Non
 
 @contextmanager
 def registered_player(
-    client: Any, engine: Engine, tag: str
+    client: Any, engine: Engine, tag: str, *, race_id: str = "human"
 ) -> Iterator[dict[str, Any]]:
     name = display_name_pytest(tag)
-    reg = client.post("/api/register", json={"display_name": name})
+    reg = client.post(
+        "/api/register", json={"display_name": name, "race_id": race_id}
+    )
     assert reg.status_code == 200, reg.get_data(as_text=True)
     info = reg.get_json()
     pid = info["player_id"]

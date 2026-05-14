@@ -16,7 +16,7 @@ class Event(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tick: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    message: Mapped[str] = mapped_column(String(255), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
     payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     player_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True, index=True

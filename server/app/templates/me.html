@@ -5,13 +5,27 @@
       <div class="muted topbar-operator">Оператор: <a href="{{ url_for('web.operator_public_profile', pid=data.player_id) }}" id="operator-name" class="topbar-operator-link"><b>{{ data.display_name }}</b></a></div>
     </div>
     <div class="status-chip resources-bar" id="resources-chip">
-      <span class="res-chip" data-res="metal"><span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">⛏</span><span class="res-drain-marker" hidden>!</span></span><span id="top-metal">—</span></span>
-      <span class="res-chip" data-res="crystal"><span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">💎</span><span class="res-drain-marker" hidden>!</span></span><span id="top-crystal">—</span></span>
-      <span class="res-chip" data-res="energy"><span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">⚡</span><span class="res-drain-marker" hidden>!</span></span><span id="top-energy">—</span></span>
-      <span class="res-chip" data-res="fuel"><span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">⛽</span><span class="res-drain-marker" hidden>!</span></span><span id="top-fuel">—</span></span>
-      <span class="res-chip" data-res="food"><span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">🍲</span><span class="res-drain-marker" hidden>!</span></span><span id="top-food">—</span></span>
-      <span class="res-chip" data-res="water"><span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">💧</span><span class="res-drain-marker" hidden>!</span></span><span id="top-water">—</span></span>
-      <span class="res-chip res-chip-static" data-res="rp"><span class="muted" aria-hidden="true">🔬</span><span id="top-rp">—</span></span>
+      <button type="button" class="res-chip" data-res="metal" data-res-title-base="Металл — склад империи" title="Металл — склад империи (справка)" aria-label="Металл, склад империи. Открыть справку в вики">
+        <span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">⛏</span><span class="res-drain-marker" hidden>!</span></span><span id="top-metal">—</span>
+      </button>
+      <button type="button" class="res-chip" data-res="crystal" data-res-title-base="Кристаллы — склад империи" title="Кристаллы — склад империи (справка)" aria-label="Кристаллы, склад империи. Открыть справку в вики">
+        <span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">💎</span><span class="res-drain-marker" hidden>!</span></span><span id="top-crystal">—</span>
+      </button>
+      <button type="button" class="res-chip" data-res="energy" data-res-title-base="Энергия — склад империи" title="Энергия — склад империи (справка)" aria-label="Энергия, склад империи. Открыть справку в вики">
+        <span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">⚡</span><span class="res-drain-marker" hidden>!</span></span><span id="top-energy">—</span>
+      </button>
+      <button type="button" class="res-chip" data-res="fuel" data-res-title-base="Топливо — склад империи" title="Топливо — склад империи (справка)" aria-label="Топливо, склад империи. Открыть справку в вики">
+        <span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">⛽</span><span class="res-drain-marker" hidden>!</span></span><span id="top-fuel">—</span>
+      </button>
+      <button type="button" class="res-chip" data-res="food" data-res-title-base="Еда — склад империи" title="Еда — склад империи (справка)" aria-label="Еда, склад империи. Открыть справку в вики">
+        <span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">🍲</span><span class="res-drain-marker" hidden>!</span></span><span id="top-food">—</span>
+      </button>
+      <button type="button" class="res-chip" data-res="water" data-res-title-base="Вода — склад империи" title="Вода — склад империи (справка)" aria-label="Вода, склад империи. Открыть справку в вики">
+        <span class="res-icon-wrap" aria-hidden="true"><span class="res-icon muted">💧</span><span class="res-drain-marker" hidden>!</span></span><span id="top-water">—</span>
+      </button>
+      <button type="button" id="top-rp-chip" class="res-chip res-chip-static res-chip-rp" data-res="rp" data-res-title-base="Очки исследований (RP)" title="Очки исследований (справка)" aria-label="Очки исследований. Открыть справку в вики">
+        <span class="res-icon-wrap res-icon-wrap--rp" aria-hidden="true"><span class="res-icon res-icon-rp muted">🔬</span></span><span id="top-rp">—</span>
+      </button>
     </div>
     <button type="button" id="tech-modal-open" class="status-chip nav-chip nav-chip-secondary">Исследования</button>
     <button type="button" id="economy-modal-open" class="status-chip nav-chip nav-chip-primary">Империя</button>
@@ -49,7 +63,7 @@
           </div>
           <div id="comms-pane-global" class="comms-pane hidden" role="tabpanel">
             <form id="global-chat-form" class="comms-chat-form row" autocomplete="off">
-              <input id="global-chat-input" type="text" maxlength="1000" placeholder="Сообщение в общий чат…" style="flex:1;min-width:0;" />
+              <input id="global-chat-input" name="global_chat_input" type="text" maxlength="1000" placeholder="Сообщение в общий чат…" style="flex:1;min-width:0;" autocomplete="off" />
               <button type="submit" class="btn-primary">Отпр.</button>
             </form>
             <div id="global-chat-feed" class="comms-chat-feed channel-global"></div>
@@ -59,20 +73,20 @@
           </div>
           <div id="comms-pane-private" class="comms-pane hidden" role="tabpanel">
             <div class="row" style="gap:8px;margin-bottom:8px;flex-wrap:wrap;">
-              <input id="private-peer-input" type="text" placeholder="Идентификатор из публичного профиля оператора" style="flex:1;min-width:0;" maxlength="64" />
+              <input id="private-peer-input" name="private_peer_input" type="text" placeholder="Идентификатор из публичного профиля оператора" style="flex:1;min-width:0;" maxlength="64" autocomplete="off" />
               <button type="button" id="private-peer-open" class="btn-secondary">Открыть</button>
             </div>
             <div id="private-threads" class="private-threads muted"></div>
             <div id="private-chat-wrap" class="hidden">
               <form id="private-chat-form" class="comms-chat-form row" autocomplete="off">
-                <input type="hidden" id="private-chat-peer" value="" />
-                <input id="private-chat-input" type="text" maxlength="1000" placeholder="Личное сообщение…" style="flex:1;min-width:0;" />
+                <input type="hidden" id="private-chat-peer" name="private_chat_peer" value="" />
+                <input id="private-chat-input" name="private_chat_input" type="text" maxlength="1000" placeholder="Личное сообщение…" style="flex:1;min-width:0;" autocomplete="off" />
                 <button type="submit" class="btn-primary">Отпр.</button>
               </form>
               <div id="private-chat-feed" class="comms-chat-feed channel-private"></div>
               <div class="row private-chat-actions-row" style="gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center;">
                 <label class="private-read-receipt-label muted" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
-                  <input type="checkbox" id="private-send-read-receipt" />
+                  <input type="checkbox" id="private-send-read-receipt" name="private_send_read_receipt" />
                   <span>Сообщать о прочтении</span>
                 </label>
                 <button type="button" id="private-delete-thread-btn" class="btn-secondary" title="Убрать из списка (история на сервере сохранится)">Удалить чат</button>
@@ -103,7 +117,6 @@
       </aside>
 
       <section class="card map-sector-card">
-        <h3 style="margin-top: 0;">Карта сектора</h3>
         <div class="map-sector-toolbar muted map-sector-toolbar-one-line">
           <span class="map-sector-toolbar-cluster">
             <span class="map-sector-toolbar-label">Z-слой</span>
@@ -120,6 +133,7 @@
           <span id="status" class="status-line map-sector-status-inline">Ожидание действия…</span>
         </div>
         <div class="map-wrap">
+          <div id="system-toasts" class="system-toasts system-toasts--map-overlay" aria-live="polite" aria-label="Системные уведомления"></div>
           <div class="map-layer">
             <div id="map-grid" class="map-grid"></div>
             <svg id="flight-overlay" class="flight-overlay" aria-hidden="true"></svg>
@@ -175,7 +189,13 @@
               </button>
             </div>
             <button type="button" id="clear-sel-btn" class="btn-secondary">Снять выбор</button>
+            <div id="hud-action-feedback" class="hud-action-feedback" aria-live="polite" role="status" hidden></div>
           </div>
+        </section>
+
+        <section class="hud-section hud-onboarding-card" id="onboarding-goals-section">
+          <h4 class="hud-section-title">Первые шаги</h4>
+          <div id="onboarding-goals-body" class="onboarding-goals-body muted">Загрузка…</div>
         </section>
 
         <section class="hud-section">
@@ -183,7 +203,8 @@
           <div class="hud-block muted" style="margin-bottom:6px;">Выбранная клетка</div>
           <div class="hud-kv">
             <div class="hud-kpi-line">Координаты: <b id="sel-coord">—</b></div>
-            <div class="hud-kpi-line">Ландшафт: <b id="sel-terrain">—</b><span id="sel-glyph-wrap" class="hidden"> • Маркер: <b id="sel-glyph">—</b></span></div>
+            <div class="hud-kpi-line">Содержит: <b id="sel-terrain">—</b></div>
+            <div id="sel-built-wrap" class="hud-kpi-line hidden">Построено: <span id="sel-built"></span></div>
             <div>Объекты: <b id="sel-objects">—</b></div>
             <div>Контроль (видимая клетка): <b id="sel-influence">—</b></div>
             <div>Снабжение: <b id="sel-supply">—</b></div>
@@ -223,6 +244,7 @@
           <button type="button" id="fleet-modal-close" class="planet-modal-close" aria-label="Закрыть">×</button>
         </div>
         <div id="fleet-modal-body" class="planet-modal-body muted">Загрузка…</div>
+        <div id="fleet-modal-feedback" class="hud-action-feedback hud-action-feedback--in-modal" aria-live="polite" role="status" hidden></div>
       </div>
     </div>
 
@@ -233,6 +255,7 @@
           <button type="button" id="fleet-create-close" class="planet-modal-close" aria-label="Закрыть">×</button>
         </div>
         <div id="fleet-create-body" class="planet-modal-body muted">Загрузка…</div>
+        <div id="fleet-create-feedback" class="hud-action-feedback hud-action-feedback--in-modal" aria-live="polite" role="status" hidden></div>
       </div>
     </div>
 
@@ -293,12 +316,33 @@
     >
       <div class="overlay-card card entry-tutorial-card">
         <header class="entry-tutorial-head">
-          <h2 id="entry-tutorial-title" class="entry-tutorial-main-title">GuardStar — краткий гид</h2>
+          <h2 id="entry-tutorial-title" class="entry-tutorial-main-title">GuardStar — вики</h2>
           <p id="entry-tutorial-intro" class="entry-tutorial-intro muted">
-            Основные идеи игры перед началом. Это окно можно снова открыть <strong>внизу страницы</strong> кнопкой
-            «Напомнить подсказку». «Ок» закрывает подсказку на эту сессию; галочка отключает автоматический показ при
-            следующих входах с этого браузера.
+            По умолчанию — <strong>краткий</strong> обзор по вкладкам. Включите «Полную вики», чтобы увидеть
+            развёрнутые пояснения и перекрёстные ссылки между темами. Поле поиска отфильтрует пункты по слову (в т.ч. по
+            тексту дополнений). Снова открыть окно — кнопка «Напомнить подсказку» внизу страницы. «Ок» закрывает
+            подсказку на эту сессию; галочка внизу отключает автопоказ при следующих входах с этого браузера.
+            <span class="entry-tutorial-intro-rp-hint">
+              Чип <strong>RP</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">🔬</span> в строке ресурсов: приглушённый красный фон — <strong>нет</strong> активного исследования в очереди; при очереди рядом с запасом RP появится <strong>(N%)</strong> — насколько готов <strong>текущий</strong> тех; запуск и дерево — кнопка «Исследования».
+            </span>
           </p>
+          <div class="entry-tutorial-wiki-toolbar" role="region" aria-label="Режим вики и поиск">
+            <label class="entry-tutorial-wiki-full-label">
+              <input type="checkbox" id="entry-tutorial-wiki-full" name="entry_tutorial_wiki_full" autocomplete="off" />
+              <span>Полная вики</span>
+            </label>
+            <input
+              type="search"
+              id="entry-tutorial-wiki-search"
+              name="entry_tutorial_wiki_search"
+              class="entry-tutorial-wiki-search"
+              placeholder="Поиск по ключевому слову…"
+              autocomplete="off"
+              enterkeyhint="search"
+              aria-label="Поиск по тексту вики"
+            />
+          </div>
+          <p id="entry-tutorial-wiki-search-status" class="entry-tutorial-wiki-search-status muted hidden" aria-live="polite"></p>
         </header>
         <div class="entry-tutorial-body muted">
           <div class="entry-tutorial-layout">
@@ -306,6 +350,10 @@
               <button type="button" class="entry-tutorial-tab is-active entry-tutorial-tab--economy" role="tab" id="tutorial-tab-economy" aria-selected="true" aria-controls="tutorial-panel-economy" data-tutorial-tab="economy">
                 <span class="entry-tutorial-tab-glyph" aria-hidden="true">⛏</span>
                 <span class="entry-tutorial-tab-label">Экономика</span>
+              </button>
+              <button type="button" class="entry-tutorial-tab entry-tutorial-tab--empire" role="tab" id="tutorial-tab-empire" aria-selected="false" aria-controls="tutorial-panel-empire" data-tutorial-tab="empire">
+                <span class="entry-tutorial-tab-glyph" aria-hidden="true">◇</span>
+                <span class="entry-tutorial-tab-label">Империя и планета</span>
               </button>
               <button type="button" class="entry-tutorial-tab entry-tutorial-tab--fleet" role="tab" id="tutorial-tab-fleet" aria-selected="false" aria-controls="tutorial-panel-fleet" data-tutorial-tab="fleet">
                 <span class="entry-tutorial-tab-glyph" aria-hidden="true">🚀</span>
@@ -323,6 +371,10 @@
                 <span class="entry-tutorial-tab-glyph" aria-hidden="true">✦</span>
                 <span class="entry-tutorial-tab-label">Обозначения</span>
               </button>
+              <button type="button" class="entry-tutorial-tab entry-tutorial-tab--comms" role="tab" id="tutorial-tab-comms" aria-selected="false" aria-controls="tutorial-panel-comms" data-tutorial-tab="comms">
+                <span class="entry-tutorial-tab-glyph" aria-hidden="true">💬</span>
+                <span class="entry-tutorial-tab-label">Связь и лог</span>
+              </button>
             </nav>
             <div class="entry-tutorial-panels">
           <section class="tutorial-panel is-active tutorial-block" id="tutorial-panel-economy" aria-label="Экономика" role="tabpanel" aria-labelledby="tutorial-tab-economy" data-tutorial-panel="economy" tabindex="0">
@@ -335,18 +387,201 @@
               <span class="tutorial-chip tutorial-chip-resource" title="Вода">💧</span>
               <span class="tutorial-chip tutorial-chip-resource" title="Исследования">🔬</span>
             </div>
-            <h3 class="tutorial-block-title tutorial-block-title--inline">Экономика (упрощённо)</h3>
+            <h3 id="wiki-eco-title" class="tutorial-block-title tutorial-block-title--inline">Экономика</h3>
             <ul class="tutorial-list">
-              <li>
-                Строка ресурсов вверху (<span class="tutorial-inline-glyph muted" aria-hidden="true">⛏ 💎 ⚡ ⛽ 🍲 💧 🔬</span>) — запасы империи; часть расходуется на
-                полёты, стройку и исследования.
+              <li id="wiki-eco-resources" class="tutorial-wiki-item" data-wiki-search="ресурсы металл кристалл энергия топливо еда вода исследования империя склад население провиант">
+                <div class="tutorial-wiki-brief">
+                  Строка ресурсов вверху (<span class="tutorial-inline-glyph muted" aria-hidden="true">⛏ 💎 ⚡ ⛽ 🍲 💧 🔬</span>) — запасы империи; часть уходит на
+                  полёты, стройку и исследования. По каждому ресурсу можно нажать в топбаре или в своде <strong>«Империя»</strong> — откроется эта вики с пояснением.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Каждый тип траты привязан к балансу зданий, флота и технологий: прежде чем заказывать массовую стройку или дальний перелёт, загляните в
+                  <strong>«Империя»</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">◇</span> — там видно производство и потребление по солам (
+                  <a href="#wiki-empire-modal" class="wiki-internal-link">модалка «Империя»</a>).
+                  См. также <a href="#wiki-fleet-fuel" class="wiki-internal-link">топливо и дальность</a> во вкладке про флот; про еду и воду отдельно —
+                  <a href="#wiki-eco-food-water" class="wiki-internal-link">еда и вода</a>.
+                </div>
               </li>
-              <li>
-                Игровое время считается в <strong>солах</strong> (глобальный тик виден у флота). Производство и затраты на планетах работают
-                от этого же ритма — подробнее в модалке <strong>«Империя»</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">◇</span>.
+              <li id="wiki-eco-sol" class="tutorial-wiki-item" data-wiki-search="сол тик время империя производство">
+                <div class="tutorial-wiki-brief">
+                  Игровое время — в <strong>солах</strong> (глобальный тик у флота). Планеты и постройки «тикают» в том же ритме; свод — в модалке
+                  <strong>«Империя»</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">◇</span>.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Сол — единая шкала для ETA полётов, добычи и событий на карте. Если что-то «не сдвинулось», проверьте, не ждёт ли игра следующего тика.
+                  Перекрёстная тема: <a href="#wiki-fleet-eta" class="wiki-internal-link">прибытие в солах</a>, <a href="#wiki-combat-timer" class="wiki-internal-link">таймер боя</a> и
+                  <a href="#wiki-empire-modal" class="wiki-internal-link">свод «Империя»</a>.
+                </div>
               </li>
-              <li>
-                Своя планета <span class="tutorial-inline-glyph" aria-hidden="true">🪐</span> — опорная точка дома; стройка и экономика доступны там и в связанных узлах цепочки снабжения.
+              <li id="wiki-eco-home" class="tutorial-wiki-item" data-wiki-search="планета дом колония снабжение цепочка хаб">
+                <div class="tutorial-wiki-brief">
+                  Своя планета <span class="tutorial-inline-glyph" aria-hidden="true">🪐</span> — опорная точка; стройка и экономика доступны на ней и в узлах
+                  <strong>цепочки снабжения</strong>.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  «Дом» задаёт склад и производственную базу; полевая стройка в секторе обычно требует инженеров во флоте и ресурсы со склада столицы.
+                  На карте влияние своих миров видно по <a href="#wiki-visual-zones" class="wiki-internal-link">веткам зон</a>. См.
+                  <a href="#wiki-symbols-build" class="wiki-internal-link">стройка и инженеры</a> в обозначениях; планетарная стройка и колонии —
+                  <a href="#wiki-empire-planet" class="wiki-internal-link">модалка планеты</a> и <a href="#wiki-empire-siege" class="wiki-internal-link">колонии / осада</a>.
+                  Потребление населением еды и воды — <a href="#wiki-eco-food-water" class="wiki-internal-link">еда и вода</a>.
+                </div>
+              </li>
+              <li id="wiki-eco-food-water" class="tutorial-wiki-item" data-wiki-search="еда вода население потребление склад провиант колония форпост снабжение флот корабль сол">
+                <div class="tutorial-wiki-brief">
+                  <strong>Еда</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">🍲</span> и <strong>вода</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">💧</span> — часть имперского склада: их едят колонии, «кормят» цепочки снабжения и сами
+                  <a href="#wiki-fleet-ships" class="wiki-internal-link">корабли во флотах</a> каждый сол.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Чем больше население на ваших мирах и чем тяжелее ходовой состав флотов, тем выше стабильный расход. Форпосты в сети логистики тоже тянут провиант — см.
+                  <a href="#wiki-empire-outpost" class="wiki-internal-link">форпосты</a>. Перед дальним походом сверяйтесь со сводом
+                  <a href="#wiki-empire-modal" class="wiki-internal-link">«Империя»</a> и с тостами/логом при нехватке.
+                </div>
+              </li>
+              <li id="wiki-res-metal" class="tutorial-wiki-item" data-wiki-search="металл руда склад стройка форпост империя">
+                <div class="tutorial-wiki-brief">
+                  <strong>Металл</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">⛏</span> — основной строительный и промышленный запас империи: постройки на планете и в поле, модули форпостов, часть найма.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Расход виден в карточках стройки и в своде <a href="#wiki-empire-modal" class="wiki-internal-link">«Империя»</a>. На пустынных и вулканических мирах базовая добыча часто выше —
+                  <a href="#wiki-empire-planet-types" class="wiki-internal-link">типы планет</a>.
+                </div>
+              </li>
+              <li id="wiki-res-crystal" class="tutorial-wiki-item" data-wiki-search="кристалл кристаллы редкий склад лаборатория техи">
+                <div class="tutorial-wiki-brief">
+                  <strong>Кристаллы</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">💎</span> — «редкий» ресурс: дорогие постройки, лаборатории, ускорение исследований, часть юнитов.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Следите за балансом перед массовым наймом и апгрейдами; крупные статьи расхода разобраны в <a href="#wiki-empire-modal" class="wiki-internal-link">«Империя»</a>.
+                </div>
+              </li>
+              <li id="wiki-res-energy" class="tutorial-wiki-item" data-wiki-search="энергия электричество флот постройка штраф">
+                <div class="tutorial-wiki-brief">
+                  <strong>Энергия</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">⚡</span> — сетевой ресурс: реакторы и инфраструктура планет, энергобюджет кораблей во флоте.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  При нехватке на флотах возможны штрафные события — смотрите лог и тосты. Бой и дальние перелёты увеличивают нагрузку; см.
+                  <a href="#wiki-fleet-ships" class="wiki-internal-link">типы кораблей</a>.
+                </div>
+              </li>
+              <li id="wiki-res-fuel" class="tutorial-wiki-item" data-wiki-search="топливо перелёт полёт расход склад">
+                <div class="tutorial-wiki-brief">
+                  <strong>Топливо</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">⛽</span> — расходуется на межклеточные перелёты; запас на имперском складе пополняется производством.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Точные цифры по приказу «Лететь» — в окне подтверждения; см. <a href="#wiki-fleet-fuel" class="wiki-internal-link">топливо и дальность</a>.
+                </div>
+              </li>
+              <li id="wiki-res-food" class="tutorial-wiki-item" data-wiki-search="еда провиант население флот сол">
+                <div class="tutorial-wiki-brief">
+                  <strong>Еда</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">🍲</span> — провиант для населения колоний и для имперского снабжения флотов (каждый сол).
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Подробнее о цепочках и форпостах — <a href="#wiki-eco-food-water" class="wiki-internal-link">еда и вода</a>.
+                </div>
+              </li>
+              <li id="wiki-res-water" class="tutorial-wiki-item" data-wiki-search="вода население флот сол провиант">
+                <div class="tutorial-wiki-brief">
+                  <strong>Вода</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">💧</span> — как еда: население, логистика и корабли тратят её с имперского склада по солам.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  На океанических мирах добыча воды обычно выгоднее — <a href="#wiki-empire-planet-types" class="wiki-internal-link">типы планет</a>; общая логика —
+                  <a href="#wiki-eco-food-water" class="wiki-internal-link">еда и вода</a>.
+                </div>
+              </li>
+              <li id="wiki-res-rp" class="tutorial-wiki-item" data-wiki-search="rp наука очки исследования техи очередь">
+                <div class="tutorial-wiki-brief">
+                  <strong>RP</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">🔬</span> — очки исследований: ими оплачивается прогресс технологий в модалке <strong>«Исследования»</strong>. В топбаре: красный фон чипа — нет теха в работе; при очереди — число RP и <strong>(N%)</strong> готовности <strong>текущего</strong> теха.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Очередь, требования и ошибки старта — там же и в системном логе. Связка с колонизацией и ветками —
+                  <a href="#wiki-empire-research" class="wiki-internal-link">исследования</a>.
+                </div>
+              </li>
+            </ul>
+          </section>
+          <section class="tutorial-panel tutorial-block hidden" id="tutorial-panel-empire" aria-label="Империя и планета" role="tabpanel" aria-labelledby="tutorial-tab-empire" data-tutorial-panel="empire" tabindex="0">
+            <div class="tutorial-glyphs-row tutorial-glyphs-row--economy" aria-hidden="true">
+              <span class="tutorial-chip tutorial-chip-resource" title="Империя">◇</span>
+              <span class="tutorial-chip tutorial-chip-resource" title="Исследования">🔬</span>
+              <span class="tutorial-chip tutorial-chip-plain">🪐 планета</span>
+            </div>
+            <h3 id="wiki-empire-title" class="tutorial-block-title tutorial-block-title--inline">Империя, планета, карта</h3>
+            <ul class="tutorial-list">
+              <li id="wiki-empire-modal" class="tutorial-wiki-item" data-wiki-search="империя экономика свод производство потребление склад модалка">
+                <div class="tutorial-wiki-brief">
+                  Кнопка <strong>«Империя»</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">◇</span> открывает свод: производство, потребление, снабжение — в разрезе солов и ваших миров.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Используйте свод перед крупными вложениями; цифры привязаны к тому же тику, что и
+                  <a href="#wiki-eco-sol" class="wiki-internal-link">солы в экономике</a>. Строка ресурсов вверху дублирует запасы —
+                  <a href="#wiki-eco-resources" class="wiki-internal-link">ресурсы империи</a>.
+                </div>
+              </li>
+              <li id="wiki-empire-research" class="tutorial-wiki-item" data-wiki-search="исследования техи очередь rp наука кнопка">
+                <div class="tutorial-wiki-brief">
+                  <strong>«Исследования»</strong> — очередь технологий и запас <strong>RP</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">🔬</span>; без нужных техов часть действий на карте будет недоступна.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Состояние техов и ошибки старта смотрите в модалке и в системном логе. Про RP отдельно —
+                  <a href="#wiki-res-rp" class="wiki-internal-link">очки исследований (RP)</a>. Пересекается с
+                  <a href="#wiki-eco-resources" class="wiki-internal-link">ресурсной строкой</a> и с
+                  <a href="#wiki-empire-planet" class="wiki-internal-link">колонизацией планет</a>, где важны требования по типу мира.
+                </div>
+              </li>
+              <li id="wiki-empire-planet" class="tutorial-wiki-item" data-wiki-search="планета модалка колония тайл стройка поверхность апгрейд">
+                <div class="tutorial-wiki-brief">
+                  По своей (или завоёванной) планете открывается <strong>модалка планеты</strong>: постройки на тайле колонии и на поверхности, апгрейды, найм — с расходом со склада столицы.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Полевая стройка в секторе остаётся в HUD «Строительство» и требует инженеров — см.
+                  <a href="#wiki-symbols-build" class="wiki-internal-link">обозначения: стройка</a>. Нейтральные миры можно колонизировать с <strong>клетки планеты или соседней по гексу</strong> (флот с модулем, техи, ресурсы на столице) — см.
+                  <a href="#wiki-empire-siege" class="wiki-internal-link">колонии и осада</a> и
+                  <a href="#wiki-empire-planet-types" class="wiki-internal-link">типы планет</a>.
+                </div>
+              </li>
+              <li id="wiki-empire-planet-types" class="tutorial-wiki-item" data-wiki-search="тип планеты мир землеподобная пустыня океан вулкан добыча население слот колонизация техи">
+                <div class="tutorial-wiki-brief">
+                  У каждой планеты есть <strong>тип мира</strong>: от него зависят базовая добыча ресурсов, потолок населения, число слотов под застройку и какие
+                  <a href="#wiki-empire-research" class="wiki-internal-link">технологии</a> нужны для колонизации нейтрала.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  <strong>Землеподобная</strong> — ровный старт: без крайностей по еде и воде. <strong>Пустынная</strong> — богаче рудами и кристаллами, беднее провиантом и водой.
+                  <strong>Океаническая</strong> — много воды, слабее сырьё и слоты. <strong>Вулканическая</strong> — много энергии и руд, мало жизни, для заселения нужен высокий технологический уровень.
+                  Тип суммируется с постройками и штрафами (например после захвата) — смотрите цифры в
+                  <a href="#wiki-empire-modal" class="wiki-internal-link">«Империя»</a> и карточке планеты. Потребление еды/воды населением —
+                  <a href="#wiki-eco-food-water" class="wiki-internal-link">отдельный пункт</a>.
+                </div>
+              </li>
+              <li id="wiki-empire-siege" class="tutorial-wiki-item" data-wiki-search="осада колония захват население столица нейтрал колонизация война планета">
+                <div class="tutorial-wiki-brief">
+                  <strong>Столица</strong> империи отличается от <strong>колоний</strong>: чужие колонии могут подвергаться осаде (урон населению, защита постройками); при пороге возможна смена владельца, если выполнены игровые условия.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Осада идёт от флота на соседней клетке; защитник может опираться на планетарные сооружения и орбитальные батареи. Для тактики сближения см.
+                  <a href="#wiki-fleet-order" class="wiki-internal-link">приказ «Лететь»</a> и <a href="#wiki-combat-chain" class="wiki-internal-link">цепочку боя</a>. После захвата на экономику может действовать временный штраф — смотрите свод
+                  <a href="#wiki-empire-modal" class="wiki-internal-link">«Империя»</a>.
+                  Нейтральные миры колонизируются отдельно: флот с <a href="#wiki-fleet-ships" class="wiki-internal-link">колонизационным модулем</a> на клетке мира <strong>или на соседней клетке</strong> (гекс), подходящий
+                  <a href="#wiki-empire-planet-types" class="wiki-internal-link">тип планеты</a> по техам.
+                </div>
+              </li>
+              <li id="wiki-empire-outpost" class="tutorial-wiki-item" data-wiki-search="форпост снабжение модуль радиус хаб аванпост">
+                <div class="tutorial-wiki-brief">
+                  <strong>Форпост</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">▣</span> — полевой узел: модули, радиус снабжения, иногда патрули и оборона. Влияет на логистику вокруг клетки.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Зоны влияния и спор на карте помогают читать «свою» сеть —
+                  <a href="#wiki-visual-zones" class="wiki-internal-link">ветки зон</a>. Чужие форпосты и корсары могут вступать в
+                  <a href="#wiki-combat-corsairs" class="wiki-internal-link">бой</a>.
+                </div>
+              </li>
+              <li id="wiki-empire-map-hud" class="tutorial-wiki-item" data-wiki-search="z слой окно карты размер настройки ui домой онбординг цели">
+                <div class="tutorial-wiki-brief">
+                  В тулбаре карты: <strong>Z ±</strong> (слои по высоте), <strong>размер окна</strong> и кнопка <strong>«Домой»</strong> к стартовому сектору; детали — в <strong>«Настройки UI»</strong>.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Слой влияет на видимое окно; радиус окна клампится сервером. Блок <strong>«Цели»</strong> в правой колонке подсказывает ранние шаги кампании. Режимы карты и автоподтверждение боя настраиваются там же — см.
+                  <a href="#wiki-symbols-modes" class="wiki-internal-link">режимы «Тактика» / «Графика»</a> и <a href="#wiki-combat-autoconfirm" class="wiki-internal-link">автоподтверждение</a>.
+                </div>
               </li>
             </ul>
           </section>
@@ -356,24 +591,96 @@
               <span class="tutorial-chip tutorial-chip-flight-sample">● — путь полёта</span>
               <span class="tutorial-chip tutorial-chip-action-sample">Лететь</span>
             </div>
-            <h3 class="tutorial-block-title tutorial-block-title--inline">Движение флота</h3>
+            <h3 id="wiki-fleet-title" class="tutorial-block-title tutorial-block-title--inline">Флот и карта</h3>
             <ul class="tutorial-list">
-              <li>В правой колонке выберите активный флот в списке (или действие «Где флот?», чтобы центрировать карту).</li>
-              <li>
-                На карте щёлкните по клетке — в блоке «Клетка» появится расчёт расстояния, длительности полёта и прибытия в солах.
+              <li id="wiki-fleet-ui" class="tutorial-wiki-item" data-wiki-search="флот список где флот карта выбор">
+                <div class="tutorial-wiki-brief">
+                  В правой колонке выберите активный флот (или «Где флот?», чтобы центрировать карту).
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  HUD флота и клетки связаны: без выбранного флота часть действий недоступна. Для обозначений символов на сетке см.
+                  <a href="#wiki-symbols-tactical" class="wiki-internal-link">тактический и графический режим</a>. Состав и роли корпусов —
+                  <a href="#wiki-fleet-ships" class="wiki-internal-link">типы кораблей</a>.
+                </div>
               </li>
-              <li>Кнопка <strong>«Лететь»</strong> активна только когда выбрана цель для выбранного флота; появится подтверждение с топливом и временем.</li>
-              <li>
-                <strong>Протяжка неочевидна:</strong> с клетки, где стоит <strong>ваш</strong> флот, можно <strong>перетащить</strong>
-                указатель на другую клетку <span class="tutorial-inline-glyph muted" aria-hidden="true">☰ ▸</span> — тот же сценарий, что выбор цели + «Лететь»: то же окно топлива и времени.
+              <li id="wiki-fleet-ships" class="tutorial-wiki-item" data-wiki-search="корабль состав юнит разведчик истребитель инженер снабженец корвет фрегат колонизация фрахт поддержка энергия топливо еда вода">
+                <div class="tutorial-wiki-brief">
+                  Во флоте собираются <strong>корпуса</strong> с разными ролями (кнопка <strong>«Состав»</strong>): разведка, бой, инженеры, логистика, колонизация. У каждого класса свои
+                  расход <span class="tutorial-inline-glyph muted" aria-hidden="true">⚡⛽</span> в пути и доля <span class="tutorial-inline-glyph muted" aria-hidden="true">🍲💧</span> с имперского склада каждый сол.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  <strong>Разведчик</strong> — быстро открывает карту, слаб в бою. <strong>Истребитель</strong> и крупнее (<strong>корвет</strong>, <strong>фрегат</strong> и др.) — основной урон и живучесть, выше нагрузка на энергию и топливо.
+                  <strong>Инженерный корабль</strong> нужен для <a href="#wiki-symbols-build" class="wiki-internal-link">полевой стройки</a> вне «дома».
+                  <strong>Снабженец</strong> — для расширения радиуса снабжения со <strong>столицы</strong> (найм на планете); в боевом составе слабый.
+                  <strong>Колониальный логист</strong> — полевая стройка и логистика в экспансии, <em>без</em> права основать новую колонию на планете.
+                  <strong>Корабль поддержки флота</strong> (раньше «фрахтовщик») — тяжёлый логист: больше запас энергии на борту всего флота и меньше суммарный расход топлива на перелёт, почти без оружия; после техов сетей снабжения.
+                  <strong>Колонизационный модуль</strong> — отдельно: только он даёт попытку <strong>основать колонию</strong> на нейтральном мире (с клетки планеты или соседнего гекса), при типе мира и
+                  <a href="#wiki-empire-research" class="wiki-internal-link">исследований</a> — см. <a href="#wiki-empire-planet-types" class="wiki-internal-link">типы планет</a>.
+                  Планируйте еду и воду под дальние походы: <a href="#wiki-eco-food-water" class="wiki-internal-link">еда и вода</a>.
+                </div>
               </li>
-              <li>
-                <strong>Стрелки на краю сетки</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">← ↑ → ↓</span>
-                означают не полёт юнита, а <strong>смещение всего окна карты</strong> («лист сектора» размером текущего окна). На пустом краю — один щелчок; если на границе есть объект или значимый ландшафт,
-                первый клик выделяет клетку, <strong>второй</strong> там же по направлению стрелки — смещает окно.
+              <li id="wiki-fleet-target" class="tutorial-wiki-item" data-wiki-search="клетка расстояние цель лететь hud">
+                <div class="tutorial-wiki-brief">
+                  Щёлкните по клетке — в блоке «Клетка» появятся расстояние, длительность полёта и прибытие в солах.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Расчёт зависит от топологии сектора (квадрат или гекс) и загруженности клеток; итог вы увидите до подтверждения приказа.
+                  Экономика расхода на стройку и апгрейды описана в <a href="#wiki-eco-resources" class="wiki-internal-link">ресурсах империи</a>.
+                </div>
               </li>
-              <li>
-                В движении флота на сетке рисуются <span class="tutorial-text-flight">жёлтая</span> линия и точка перемещения.
+              <li id="wiki-fleet-order" class="tutorial-wiki-item" data-wiki-search="лететь подтверждение приказ топливо">
+                <div class="tutorial-wiki-brief">
+                  Кнопка <strong>«Лететь»</strong> активна при выбранной цели; откроется подтверждение с топливом и временем.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Если на цели возможен бой, после полёта может открыться <a href="#wiki-combat-second" class="wiki-internal-link">второе окно боя</a> с таймером.
+                </div>
+              </li>
+              <li id="wiki-fleet-drag" class="tutorial-wiki-item" data-wiki-search="протяжка перетаскивание drag полёт жест">
+                <div class="tutorial-wiki-brief">
+                  <strong>Протяжка:</strong> с клетки, где стоит <strong>ваш</strong> флот, можно <strong>перетащить</strong> указатель на другую клетку
+                  <span class="tutorial-inline-glyph muted" aria-hidden="true">☰ ▸</span> — как выбор цели + «Лететь», с тем же окном топлива и ETA.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Жест экономит клики на плотной сетке; если перелёт отменён, флот остаётся на месте до нового приказа.
+                  См. <a href="#wiki-fleet-arrows" class="wiki-internal-link">стрелки панорамы</a>, чтобы не спутать с полётом.
+                </div>
+              </li>
+              <li id="wiki-fleet-arrows" class="tutorial-wiki-item" data-wiki-search="стрелки панорама сдвиг окно край сетки лист сектора">
+                <div class="tutorial-wiki-brief">
+                  <strong>Стрелки на краю</strong> <span class="tutorial-inline-glyph muted" aria-hidden="true">← ↑ → ↓</span> — не полёт, а <strong>сдвиг окна карты</strong>
+                  на размер текущего обзора. На пустом краю хватает одного клика; если там объект — первый клик выделяет клетку, <strong>второй</strong> по направлению стрелки листает окно.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Это важно на границе тумана и зон влияния: не спутайте панораму с <a href="#wiki-fleet-path" class="wiki-internal-link">вектором активного перелёта</a>.
+                </div>
+              </li>
+              <li id="wiki-fleet-path" class="tutorial-wiki-item" data-wiki-search="жёлтый путь линия движение перелёт вектор">
+                <div class="tutorial-wiki-brief">
+                  Активный перелёт своего флота на сетке — <span class="tutorial-text-flight">жёлтая</span> линия и точка хода.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Цвет совпадает с легендой под картой и вкладкой <a href="#wiki-visual-flight" class="wiki-internal-link">«Цвета карты»</a>. Топливо и ETA — в окне подтверждения;
+                  см. <a href="#wiki-fleet-fuel" class="wiki-internal-link">топливо</a>.
+                </div>
+              </li>
+              <li id="wiki-fleet-eta" class="tutorial-wiki-item" data-wiki-search="сол прибытие eta время тик">
+                <div class="tutorial-wiki-brief">
+                  Время в пути и прибытие считаются в <strong>солах</strong> — той же шкале, что и экономика (
+                  <a href="#wiki-eco-sol" class="wiki-internal-link">солы и империя</a>).
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  После отправки флот движется по тикам; обновление карты и логов может отставать на доли секунды от сервера — это нормально для веб-клиента.
+                </div>
+              </li>
+              <li id="wiki-fleet-fuel" class="tutorial-wiki-item" data-wiki-search="топливо расход дальность окно подтверждения">
+                <div class="tutorial-wiki-brief">
+                  Топливо <span class="tutorial-inline-glyph muted" aria-hidden="true">⛽</span> расходуется на перелёты; точные цифры — в окне подтверждения перед вылетом.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  При нехватке снабжения или ресурсов флот может получить логистические события (см. игровые тосты и «Империя»). Планируйте базу и склады заранее —
+                  <a href="#wiki-eco-home" class="wiki-internal-link">дом и цепочка</a>.
+                </div>
               </li>
             </ul>
           </section>
@@ -387,12 +694,50 @@
               <span class="tutorial-swatch tutorial-swatch-contest" title="Спор зон"></span>
               <span class="tutorial-swatch tutorial-swatch-target" title="Цель перелёта"></span>
             </div>
-            <h3 class="tutorial-block-title tutorial-block-title--inline">Карта: цвета и подсказки</h3>
+            <h3 id="wiki-visual-title" class="tutorial-block-title tutorial-block-title--inline">Карта: цвета и подсказки</h3>
             <ul class="tutorial-list">
-              <li>Под окном карты полная текстовая легенда; цветная полоска здесь задаёт те же оттенки и рамки кратко.</li>
-              <li>Туман войны затемняёт неисследованные участки; <span class="tutorial-text-zone-self">ветки влияния своих планет</span> совпадают с зеленовато-мятными акцентами интерфейса.</li>
-              <li><span class="tutorial-text-selected">Выделенная</span> клетка и <span class="tutorial-text-target">цель последнего приказа</span> — как в игре и в легенде снизу.</li>
-              <li>Вектор вашего активного союзного перелёта — <span class="tutorial-text-flight">жёлтые</span> линии по сетке в текущем окне обзора.</li>
+              <li id="wiki-visual-legend" class="tutorial-wiki-item" data-wiki-search="легенда цвета подсказка окно карты">
+                <div class="tutorial-wiki-brief">
+                  Под картой — полная текстовая легенда; цветная полоска здесь совпадает с оттенками и рамками в игре.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Легенда синхронизирована с подсказками клиента: если тема интерфейса изменится, смысл оттенков сохранится. См.
+                  <a href="#wiki-symbols-modes" class="wiki-internal-link">режимы «Тактика» / «Графика»</a>.
+                </div>
+              </li>
+              <li id="wiki-visual-fog" class="tutorial-wiki-item" data-wiki-search="туман война неизвестно исследование зона своя">
+                <div class="tutorial-wiki-brief">
+                  Туман затемняет неисследованное; <span class="tutorial-text-zone-self">ветки влияния своих планет</span> — в мятно-зелёных тонах, как акценты HUD.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  «Своя» зона — не защита от боя, а подсказка логистики и снабжения. Спор территорий подсвечивается отдельным оттенком (см. полоску
+                  <span class="tutorial-swatch tutorial-swatch-contest" title="Спор зон"></span>).
+                </div>
+              </li>
+              <li id="wiki-visual-zones" class="tutorial-wiki-item" data-wiki-search="зона влияние спор подсветка">
+                <div class="tutorial-wiki-brief">
+                  Ветки влияния и спор зон читаются по цвету клеток и рамкам — те же классы, что в легенде.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Связь с экономикой: производство и снабжение завязаны на хабы; см. <a href="#wiki-eco-home" class="wiki-internal-link">дом и цепочка</a>.
+                </div>
+              </li>
+              <li id="wiki-visual-selection" class="tutorial-wiki-item" data-wiki-search="выбор цель перелёт подсветка клетка">
+                <div class="tutorial-wiki-brief">
+                  <span class="tutorial-text-selected">Выделенная</span> клетка и <span class="tutorial-text-target">цель последнего приказа</span> — как в игре и в легенде.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Если цвета «сливаются», переключите тактический/графический режим или координаты на клетках в «Настройки UI».
+                </div>
+              </li>
+              <li id="wiki-visual-flight" class="tutorial-wiki-item" data-wiki-search="жёлтый перелёт линия вектор">
+                <div class="tutorial-wiki-brief">
+                  Вектор вашего активного союзного перелёта — <span class="tutorial-text-flight">жёлтые</span> линии в текущем окне.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Не путать со <a href="#wiki-fleet-arrows" class="wiki-internal-link">стрелками панорамы</a> на периметре сетки.
+                </div>
+              </li>
             </ul>
           </section>
           <section class="tutorial-panel tutorial-block hidden" id="tutorial-panel-combat" aria-label="Бой" role="tabpanel" aria-labelledby="tutorial-tab-combat" data-tutorial-panel="combat" tabindex="0">
@@ -400,12 +745,52 @@
               <span class="tutorial-chip tutorial-chip-danger-sample">⚔ Атаковать</span>
               <span class="tutorial-chip tutorial-chip-timeout-sample">Таймер 30&nbsp;с</span>
             </div>
-            <h3 class="tutorial-block-title tutorial-block-title--inline">Атака другого оператора или корсара</h3>
+            <h3 id="wiki-combat-title" class="tutorial-block-title tutorial-block-title--inline">Бой</h3>
             <ul class="tutorial-list">
-              <li>Прилёт на клетку с вражеским флотом или явной угрозой запускает цепочку: сначала приказ полёта, затем второе окно с таймером.</li>
-              <li>Во втором окне нужно явно подтвердить <strong class="tutorial-text-danger">«Атаковать»</strong> или отказаться — без выбора за отведённое время бой не начнётся.</li>
-              <li>В «Настройки UI» можно включить автоподтверждение боя при обнаружении врага на цели (использовать аккуратно).</li>
-              <li>В логах и на руинах/аномалиях возможны засады («корсары» около символов <span class="tutorial-inline-glyph" aria-hidden="true">⟁ ◎</span>) — свой флот на клетке и готовность к бою либо осторожное планирование.</li>
+              <li id="wiki-combat-chain" class="tutorial-wiki-item" data-wiki-search="бой атака враг второе окно приказ">
+                <div class="tutorial-wiki-brief">
+                  Прилёт на клетку с вражеским флотом или явной угрозой: сначала подтверждение полёта, затем второе окно с таймером.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Цепочка специально двухшаговая, чтобы снизить случайные потери от одного неверного клика. См.
+                  <a href="#wiki-fleet-order" class="wiki-internal-link">приказ «Лететь»</a>.
+                </div>
+              </li>
+              <li id="wiki-combat-second" class="tutorial-wiki-item" data-wiki-search="атаковать отказ таймер 30 подтверждение">
+                <div class="tutorial-wiki-brief">
+                  Во втором окне нужно явно <strong class="tutorial-text-danger">«Атаковать»</strong> или отказаться — без выбора за время таймера бой не начнётся.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  По таймауту флот остаётся у цели в ближайшей свободной клетке без боя — см. текст в самом окне. Это связано с
+                  <a href="#wiki-fleet-path" class="wiki-internal-link">отображением перелёта</a> и логами.
+                </div>
+              </li>
+              <li id="wiki-combat-timer" class="tutorial-wiki-item" data-wiki-search="таймер секунды сол">
+                <div class="tutorial-wiki-brief">
+                  Таймер в окне боя — реальные секунды на решение; <strong>солы</strong> остаются шкалой симуляции (
+                  <a href="#wiki-eco-sol" class="wiki-internal-link">экономика и тик</a>).
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Не путайте: ETA полёта в солах и обратный отсчёт боя измеряют разные вещи.
+                </div>
+              </li>
+              <li id="wiki-combat-autoconfirm" class="tutorial-wiki-item" data-wiki-search="автоподтверждение настройки ui бой">
+                <div class="tutorial-wiki-brief">
+                  В «Настройки UI» можно включить автоподтверждение боя при враге на цели — <strong>осторожно</strong>, без отката приказа.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Рекомендуется только если вы осознанно принимаете риск засад и PvP; для осторожной разведки оставьте ручное подтверждение.
+                </div>
+              </li>
+              <li id="wiki-combat-corsairs" class="tutorial-wiki-item" data-wiki-search="корсары засада руины аномалия pve">
+                <div class="tutorial-wiki-brief">
+                  На руинах и аномалиях возможны засады (корсары, символы <span class="tutorial-inline-glyph" aria-hidden="true">⟁ ◎</span>) — учитывайте состав флота и готовность к
+                  <a href="#wiki-combat-second" class="wiki-internal-link">второму окну</a>.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Исследование ⟁/◎ требует флота на клетке; подробнее в <a href="#wiki-symbols-ruins" class="wiki-internal-link">обозначениях</a>.
+                </div>
+              </li>
             </ul>
           </section>
           <section class="tutorial-panel tutorial-block hidden" id="tutorial-panel-symbols" aria-label="Обозначения" role="tabpanel" aria-labelledby="tutorial-tab-symbols" data-tutorial-panel="symbols" tabindex="0">
@@ -417,12 +802,97 @@
               <span class="tutorial-chip tutorial-chip-plain">▣ форпост</span>
               <span class="tutorial-chip tutorial-chip-plain">◇ постр.</span>
             </div>
-            <h3 class="tutorial-block-title tutorial-block-title--inline">Обозначения на карте</h3>
+            <h3 id="wiki-symbols-title" class="tutorial-block-title tutorial-block-title--inline">Обозначения на карте</h3>
             <ul class="tutorial-list">
-              <li><strong>Тактика:</strong> руины, аномалии, туман с «?», планеты, флот (иконки), форпост, постройки <span class="tutorial-inline-glyph muted" aria-hidden="true">⛏ ⚙</span>; координаты на клетках — «Настройки UI».</li>
-              <li><strong>Графика:</strong> те же классы объектов упрощаются до пиктограмм SVG; режим переключается там же.</li>
-              <li>Центр окна дополнительно подсвечен; периметр со <span class="tutorial-inline-glyph muted" aria-hidden="true">←↑→↓</span> см. вкладку <strong>«Флот и карта»</strong> про смещение обзора.</li>
-              <li>Стройка: инженеры в составе флота (или исключение стартового мира); исследование ⟁ ◎ — флот на клетке.</li>
+              <li id="wiki-symbols-tactical" class="tutorial-wiki-item" data-wiki-search="тактика графика svg иконки режим карта">
+                <div class="tutorial-wiki-brief">
+                  <strong>Тактика:</strong> руины, аномалии, туман с «?», планеты, флот, форпост, постройки
+                  <span class="tutorial-inline-glyph muted" aria-hidden="true">⛏ ⚙</span>; координаты на клетках — в «Настройки UI».
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  <strong>Графика:</strong> те же объекты как растровые/SVG-пиктограммы. Переключатель режима не меняет правил игры, только отображение.
+                  Цветовые аккорды — в <a href="#wiki-visual-legend" class="wiki-internal-link">легенде и цветах</a>.
+                </div>
+              </li>
+              <li id="wiki-symbols-modes" class="tutorial-wiki-item" data-wiki-search="режим переключатель тактический графический">
+                <div class="tutorial-wiki-brief">
+                  Режимы «Тактический» и «Графический» переключаются в «Настройки UI»; подписи внизу карты остаются общими.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  На слабых устройствах тактика может быть быстрее; графика нагляднее для стрима или скриншотов.
+                </div>
+              </li>
+              <li id="wiki-symbols-center" class="tutorial-wiki-item" data-wiki-search="центр окна периметр стрелки панорама">
+                <div class="tutorial-wiki-brief">
+                  Центр окна подсвечен; периметр со <span class="tutorial-inline-glyph muted" aria-hidden="true">←↑→↓</span> — см.
+                  <a href="#wiki-fleet-arrows" class="wiki-internal-link">флот и карта: стрелки</a>.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Подсветка центра помогает не потерять курсор при листании большого сектора.
+                </div>
+              </li>
+              <li id="wiki-symbols-build" class="tutorial-wiki-item" data-wiki-search="стройка инженеры сектор планета исследование">
+                <div class="tutorial-wiki-brief">
+                  Стройка в поле: нужны инженеры во флоте (или исключения стартового мира); исследование ⟁/◎ — флот на клетке.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Ресурсы для построек часто тянутся из <a href="#wiki-eco-home" class="wiki-internal-link">столицы и цепочки снабжения</a>; проверяйте стоимость в карточках стройки. Постройки на тайле планеты — в
+                  <a href="#wiki-empire-planet" class="wiki-internal-link">модалке планеты</a>.
+                </div>
+              </li>
+              <li id="wiki-symbols-ruins" class="tutorial-wiki-item" data-wiki-search="руины аномалия исследование клетка">
+                <div class="tutorial-wiki-brief">
+                  Символы ⟁ (руины) и ◎ (аномалия) означают точки интереса; взаимодействие чаще всего требует присутствия флота и может триггерить
+                  <a href="#wiki-combat-corsairs" class="wiki-internal-link">корсаров</a>.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Перед заходом планируйте <a href="#wiki-fleet-fuel" class="wiki-internal-link">топливо отступления</a> и состав отряда.
+                </div>
+              </li>
+            </ul>
+          </section>
+          <section class="tutorial-panel tutorial-block hidden" id="tutorial-panel-comms" aria-label="Связь и лог" role="tabpanel" aria-labelledby="tutorial-tab-comms" data-tutorial-panel="comms" tabindex="0">
+            <div class="tutorial-glyphs-row tutorial-glyphs-row--combat" aria-hidden="true">
+              <span class="tutorial-chip tutorial-chip-plain">События</span>
+              <span class="tutorial-chip tutorial-chip-plain">Чат</span>
+              <span class="tutorial-chip tutorial-chip-plain">Приват</span>
+            </div>
+            <h3 id="wiki-comms-title" class="tutorial-block-title tutorial-block-title--inline">Коммуникации</h3>
+            <ul class="tutorial-list">
+              <li id="wiki-comms-events" class="tutorial-wiki-item" data-wiki-search="события лог системный фильтр combat economy supply research diplomacy">
+                <div class="tutorial-wiki-brief">
+                  Левая панель: вкладка <strong>«События»</strong> — системный лог (бой, экономика, снабжение, техи и др.) с фильтром по категориям; отдельная кнопка <strong>«Исследования»</strong> в фильтре показывает записи про техи и RP.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Лог дополняет тосты на карте — см. <a href="#wiki-comms-toasts" class="wiki-internal-link">всплывающие уведомления</a>. Для разбора потерь и ETA удобно чередовать с
+                  <a href="#wiki-empire-modal" class="wiki-internal-link">сводом «Империя»</a>.
+                </div>
+              </li>
+              <li id="wiki-comms-global" class="tutorial-wiki-item" data-wiki-search="общий чат глобальный сообщение канал мир">
+                <div class="tutorial-wiki-brief">
+                  Вкладка <strong>«Общий»</strong> — чат всего мира: сообщения видны другим операторам в реальном времени в рамках сессии сервера.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Длина и частота могут ограничиваться правилами плейтеста. Цвета каналов настраиваются в
+                  <strong>«Настройка чата…»</strong> внизу панели.
+                </div>
+              </li>
+              <li id="wiki-comms-private" class="tutorial-wiki-item" data-wiki-search="приват личный идентификатор оператор профиль игнор блок список">
+                <div class="tutorial-wiki-brief">
+                  <strong>«Приват»</strong> — переписка по идентификатору из публичного профиля оператора; есть подтверждение первого контакта, кнопки «Игнор» и удаления из списка.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  История на сервере может сохраняться даже после удаления из списка — ориентируйтесь на подписи кнопок. Опционально доступны прочтения (read receipts) — чекбокс в форме привата.
+                </div>
+              </li>
+              <li id="wiki-comms-toasts" class="tutorial-wiki-item" data-wiki-search="тост уведомление всплывающее карта overlay системное">
+                <div class="tutorial-wiki-brief">
+                  Краткие <strong>тосты</strong> появляются поверх карты при важных событиях (логистика, бой, ошибки действий) — не пропускайте их, если HUD молчит.
+                </div>
+                <div class="tutorial-wiki-detail muted">
+                  Полная хронология остаётся в <a href="#wiki-comms-events" class="wiki-internal-link">системном логе</a>; для боевых деталей раскрывайте записи в логе, если клиент показывает свёртки.
+                </div>
+              </li>
             </ul>
           </section>
             </div>
@@ -430,7 +900,7 @@
         </div>
         <footer class="entry-tutorial-foot">
           <label class="entry-tutorial-dismiss-label">
-            <input type="checkbox" id="entry-tutorial-dismiss-next" autocomplete="off" />
+            <input type="checkbox" id="entry-tutorial-dismiss-next" name="entry_tutorial_dismiss_next" autocomplete="off" />
             Больше не показывать при входе
           </label>
           <button type="button" id="entry-tutorial-ok" class="btn-primary entry-tutorial-primary">Ок</button>
@@ -481,15 +951,15 @@
       <p class="muted" style="font-size:90%;">Цвета каналов и личные ограничения сохраняются в браузере (localStorage), пока нет синхронизации на сервер.</p>
       <div class="hud-kv" style="margin-top:10px;">
         <div><label for="chat-color-system">Система / лог</label></div>
-        <input id="chat-color-system" type="color" style="width:100%;height:36px;" />
+        <input id="chat-color-system" name="chat_color_system" type="color" style="width:100%;height:36px;" />
         <div style="margin-top:8px;"><label for="chat-color-global">Общий чат</label></div>
-        <input id="chat-color-global" type="color" style="width:100%;height:36px;" />
+        <input id="chat-color-global" name="chat_color_global" type="color" style="width:100%;height:36px;" />
         <div style="margin-top:8px;"><label for="chat-color-alliance">Альянс</label></div>
-        <input id="chat-color-alliance" type="color" style="width:100%;height:36px;" />
+        <input id="chat-color-alliance" name="chat_color_alliance" type="color" style="width:100%;height:36px;" />
         <div style="margin-top:8px;"><label for="chat-color-private">Приват</label></div>
-        <input id="chat-color-private" type="color" style="width:100%;height:36px;" />
+        <input id="chat-color-private" name="chat_color_private" type="color" style="width:100%;height:36px;" />
         <label style="display:flex;gap:8px;margin-top:12px;align-items:center;cursor:pointer;">
-          <input id="chat-disable-private" type="checkbox" style="width:auto;" />
+          <input id="chat-disable-private" name="chat_disable_private" type="checkbox" style="width:auto;" />
           <span>Запретить входящие личные сообщения</span>
         </label>
         <div class="muted" style="margin-top:10px;font-size:88%;">Игнор-лист для ЛС синхронизируется с сервером при сохранении блокировок (кнопки в потоке приватов — позже).</div>
@@ -506,11 +976,11 @@
       <h3 style="margin-top:0;">Настройки интерфейса</h3>
       <div class="hud-kv">
         <div>Размер шрифта: <b id="ui-font-size-label">—</b></div>
-        <input id="ui-font-size" type="range" min="12" max="18" step="1" />
+        <input id="ui-font-size" name="ui_font_size" type="range" min="12" max="18" step="1" />
         <div>Межстрочный интервал: <b id="ui-line-height-label">—</b></div>
-        <input id="ui-line-height" type="range" min="1.15" max="1.6" step="0.05" />
+        <input id="ui-line-height" name="ui_line_height" type="range" min="1.15" max="1.6" step="0.05" />
         <div style="margin-top:12px;">Радиус окна карты при фокусе на клетку боя: <b id="ui-battle-radius-label">—</b></div>
-        <input id="ui-battle-radius" type="range" min="3" max="10" step="1" />
+        <input id="ui-battle-radius" name="ui_battle_radius" type="range" min="3" max="10" step="1" />
         <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
           <div class="muted" style="margin-bottom:6px;">Окно тактической карты (клеток по стороне)</div>
           <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;">
@@ -523,7 +993,7 @@
           <div class="muted" style="margin-top:8px;font-size:88%;line-height:1.35;">Диапазон 13…25 (шаг ±2 к стороне); сохраняется в этом браузере (localStorage).</div>
         </div>
         <label style="display:flex;gap:8px;margin-top:10px;align-items:flex-start;cursor:pointer;">
-          <input id="ui-force-attack" type="checkbox" style="width:auto;margin-top:2px;" />
+          <input id="ui-force-attack" name="ui_force_attack" type="checkbox" style="width:auto;margin-top:2px;" />
           <span>Атаковать при прилёте без второго окна, если в цели вражеский флот (гарантированно).</span>
         </label>
         <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
@@ -537,29 +1007,29 @@
             Если набор иконок отключён в сборке, карта остаётся тактической.
           </div>
           <label style="display:flex;gap:8px;margin-top:12px;align-items:center;cursor:pointer;">
-            <input id="ui-map-show-coords" type="checkbox" style="width:auto;" checked />
+            <input id="ui-map-show-coords" name="ui_map_show_coords" type="checkbox" style="width:auto;" checked />
             <span>Показывать координаты на клетках карты</span>
           </label>
         </div>
         <div id="ui-admin-fog-wrap" class="hidden" style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
           <div class="muted" style="margin-bottom:6px;">Администратор</div>
           <label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;">
-            <input id="ui-reveal-fog-admin" type="checkbox" style="width:auto;margin-top:2px;" />
+            <input id="ui-reveal-fog-admin" name="ui_reveal_fog_admin" type="checkbox" style="width:auto;margin-top:2px;" />
             <span>Убрать туман войны на тактической карте (данные с сервера только для администратора)</span>
           </label>
           <p class="muted" style="margin:10px 0 6px;font-size:88%;line-height:1.35;">
-            Ландшафт клетки считается от сида мира (лениво, по координатам), без перегенерации «всей карты сервера». В окне подгружаются только объекты из БД в текущем прямоугольнике (флоты, планеты и т.д.).
+            Содержимое клетки (туманность, поле астероидов и т.д.) считается от сида мира (лениво, по координатам), без перегенерации «всей карты сервера». В окне подгружаются только объекты из БД в текущем прямоугольнике (флоты, планеты и т.д.).
           </p>
           <div class="muted" style="margin-bottom:6px;">Перейти на координаты (центр окна карты)</div>
           <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;">
             <label class="muted" style="display:flex;gap:6px;align-items:center;">X
-              <input id="ui-admin-goto-x" type="number" step="1" style="width:6.5rem;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:inherit;" />
+              <input id="ui-admin-goto-x" name="ui_admin_goto_x" type="number" step="1" style="width:6.5rem;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:inherit;" />
             </label>
             <label class="muted" style="display:flex;gap:6px;align-items:center;">Y
-              <input id="ui-admin-goto-y" type="number" step="1" style="width:6.5rem;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:inherit;" />
+              <input id="ui-admin-goto-y" name="ui_admin_goto_y" type="number" step="1" style="width:6.5rem;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:inherit;" />
             </label>
             <label class="muted" style="display:flex;gap:6px;align-items:center;">Z
-              <input id="ui-admin-goto-z" type="number" step="1" min="-10" max="10" style="width:4.5rem;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:inherit;" />
+              <input id="ui-admin-goto-z" name="ui_admin_goto_z" type="number" step="1" min="-10" max="10" style="width:4.5rem;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:inherit;" />
             </label>
             <button type="button" id="ui-admin-goto-btn" class="btn-secondary btn-toolbar-compact">Перейти</button>
           </div>

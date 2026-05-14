@@ -16,6 +16,7 @@ from app.db.models.building import Building
 from app.db.models.fleet import Fleet
 from app.db.models.planet import Planet
 from app.db.models.player_tech import PlayerTech
+from app.hex_coords import hex_distance, hex_line_cells_exclusive_start
 
 
 class SupplyService:
@@ -177,7 +178,7 @@ class SupplyService:
         y1: int,
         z: int,
     ) -> tuple[list[tuple[Planet, int, int, int]], set[tuple[int, int]]]:
-        """Для ``get_player_map_window``: хабы + множество чужих флотов в bbox путей L-снабжения."""
+        """Для ``get_player_map_window``: хабы + множество чужих флотов в bbox путей снабжения."""
         if int(z) != 0:
             return [], set()
         rows = self.planet_supply_rows_for_owner(s, owner_id=owner_id)
@@ -214,32 +215,16 @@ class SupplyService:
         for p, r, _eff_base, _eff_per in rows:
             if r <= 0:
                 continue
-            d = abs(int(p.pos_x) - int(x)) + abs(int(p.pos_y) - int(y))
+            d = hex_distance(int(p.pos_x), int(p.pos_y), int(x), int(y))
             if d > r:
                 continue
-            path = SupplyService.manhattan_l_path_cells(
+            path = hex_line_cells_exclusive_start(
                 int(p.pos_x), int(p.pos_y), int(x), int(y)
             )
             if any((int(cx), int(cy)) in enemy_xy for cx, cy in path):
                 continue
             return True
         return False
-
-    @staticmethod
-    def manhattan_l_path_cells(
-        px: int, py: int, tx: int, ty: int
-    ) -> list[tuple[int, int]]:
-        """Клетки пути от (px,py) до (tx,ty) без стартовой клетки: сначала X, затем Y."""
-        cells: list[tuple[int, int]] = []
-        cx, cy = int(px), int(py)
-        tx, ty = int(tx), int(ty)
-        while cx != tx:
-            cx += 1 if tx > cx else -1
-            cells.append((cx, cy))
-        while cy != ty:
-            cy += 1 if ty > cy else -1
-            cells.append((cx, cy))
-        return cells
 
     def supply_route_block_cell(
         self, s: Session, *, owner_id: uuid.UUID, path_cells: list[tuple[int, int]]
@@ -278,7 +263,7 @@ class SupplyService:
             r, eff_base, eff_per = self.planet_supply_radius(
                 s, planet=p, player_supply_mods=mods
             )
-            d = abs(int(p.pos_x) - int(x)) + abs(int(p.pos_y) - int(y))
+            d = hex_distance(int(p.pos_x), int(p.pos_y), int(x), int(y))
             rows.append((p, int(r), int(d), int(eff_base), int(eff_per)))
         return rows
 
@@ -291,7 +276,7 @@ class SupplyService:
         rows = self.planet_supply_candidates(s, owner_id=owner_id, x=int(x), y=int(y))
         in_range = [(p, r, d, _b, _ps) for p, r, d, _b, _ps in rows if r > 0 and d <= r]
         for p, _r, _d, _b, _ps in sorted(in_range, key=lambda t: t[2]):
-            path = self.manhattan_l_path_cells(
+            path = hex_line_cells_exclusive_start(
                 int(p.pos_x), int(p.pos_y), int(x), int(y)
             )
             if (
@@ -310,7 +295,7 @@ class SupplyService:
         for p, r, d, _b, _ps in rows:
             if r <= 0 or d > r:
                 continue
-            path = self.manhattan_l_path_cells(
+            path = hex_line_cells_exclusive_start(
                 int(p.pos_x), int(p.pos_y), int(x), int(y)
             )
             if (
@@ -334,7 +319,7 @@ class SupplyService:
                 "distance": None,
                 "route_clear": False,
                 "route_blocked_at": None,
-                "supply_path": "manhattan_L",
+                "supply_path": "hex_line",
                 "supply_base": int(self.SUPPLY_BASE_RADIUS),
                 "supply_per_supplier": int(self.SUPPLY_PER_SUPPLIER),
             }
@@ -349,7 +334,7 @@ class SupplyService:
                 "distance": None,
                 "route_clear": False,
                 "route_blocked_at": None,
-                "supply_path": "manhattan_L",
+                "supply_path": "hex_line",
                 "supply_base": int(self.SUPPLY_BASE_RADIUS),
                 "supply_per_supplier": int(self.SUPPLY_PER_SUPPLIER),
             }
@@ -360,7 +345,7 @@ class SupplyService:
 
         if in_range:
             for p, r, d, b, ps in sorted(in_range, key=lambda t: t[2]):
-                path = self.manhattan_l_path_cells(
+                path = hex_line_cells_exclusive_start(
                     int(p.pos_x), int(p.pos_y), int(x), int(y)
                 )
                 blk = self.supply_route_block_cell(s, owner_id=pid, path_cells=path)
@@ -380,7 +365,7 @@ class SupplyService:
                         "route_clear": True,
                         "route_blocked_at": None,
                         "supplier_count": int(getattr(p, "supplier_count", 0) or 0),
-                        "supply_path": "manhattan_L",
+                        "supply_path": "hex_line",
                         "supply_base": int(b),
                         "supply_per_supplier": int(ps),
                     }
@@ -410,7 +395,7 @@ class SupplyService:
                     else None
                 ),
                 "supplier_count": int(getattr(p, "supplier_count", 0) or 0),
-                "supply_path": "manhattan_L",
+                "supply_path": "hex_line",
                 "supply_base": int(b),
                 "supply_per_supplier": int(ps),
             }
@@ -431,7 +416,7 @@ class SupplyService:
             "route_clear": False,
             "route_blocked_at": None,
             "supplier_count": int(getattr(p, "supplier_count", 0) or 0),
-            "supply_path": "manhattan_L",
+            "supply_path": "hex_line",
             "supply_base": int(b),
             "supply_per_supplier": int(ps),
         }

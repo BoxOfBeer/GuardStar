@@ -17,7 +17,11 @@
     engineer: "Инженер",
     corvette: "Корвет",
     supplier: "Снабженец",
-    freighter: "Фрахтовщик",
+    freighter: "Корабль поддержки",
+    frigate: "Фрегат II",
+    colonizer: "Колонизационный модуль",
+    colony_support: "Колониальный логист",
+    scout_medium: "Разведчик ср.",
   };
   const TERRAIN_RU = {
     empty: "Пустой космос",
@@ -41,6 +45,13 @@
       .replace(/</g, "&lt;")
       .replace(/\n/g, "&#10;");
   const formatTerrainRu = (t) => (t && TERRAIN_RU[t]) || (t ? String(t) : "—");
+  /** Одна строка для HUD/модалок: без отдельного «маркера», только человекочитаемое содержимое клетки. */
+  const formatCellContainsRu = (terrain, glyph) => {
+    if (terrain === "fog" && glyph === "?") return "неизвестно";
+    const label = formatTerrainRu(terrain);
+    if (!label || label === "—") return "—";
+    return label.charAt(0).toLowerCase() + label.slice(1);
+  };
   const ruOrderType = (t) => {
     if (!t) return "приказ";
     if (t === "move") return "перелёт";
@@ -95,11 +106,6 @@
     }
     return `накопление контроля: ${leadLabel} • ваш вклад ${yourValue} • лидер ${topValue} • порог захвата ${thr}${tail}`;
   };
-  const formatGlyphRu = (terrain, g) => {
-    if (g === "" || g === undefined || g === null) return "—";
-    if (terrain === "empty" && (g === "." || g === "·")) return "нет (пусто)";
-    return `знак «${g}»`;
-  };
   const ruFleetStatus = (s) => (s && STATUS_RU[s]) || (s ? String(s) : "—");
   /** Склонение числа игровых солей (1 сол, 2–4 сола, иначе солов). */
   const solWord = (n) => {
@@ -111,7 +117,13 @@
     if (z >= 2 && z <= 4) return "сола";
     return "солов";
   };
-  /** Полуразмер окна карты в клетках от центра; сторона квадрата = 2*r+1 → 13…25 при r=6…12. */
+  /** Число + «сол / сола / солов» для длительностей стройки (игровой год = один сол в UI). */
+  const ruSolsCountLabel = (nRaw) => {
+    const n = Math.trunc(Number(nRaw) || 0);
+    if (!Number.isFinite(n)) return "0 солов";
+    return `${n} ${solWord(n)}`;
+  };
+  /** Полуразмер окна карты в шагах гекса от центра (радиус диска); clamp 6…12. */
   const MAP_WINDOW_RADIUS_MIN = 6;
   const MAP_WINDOW_RADIUS_MAX = 12;
   const clampMapWindowRadius = (r) => {
@@ -120,6 +132,47 @@
     return Math.min(MAP_WINDOW_RADIUS_MAX, Math.max(MAP_WINDOW_RADIUS_MIN, x));
   };
   const mapWindowSideCells = (rad) => clampMapWindowRadius(rad) * 2 + 1;
+
+  const SQRT3 = Math.sqrt(3);
+  /** Вертикальное сжатие раскладки pointy-top на экране (ниже «профиль», шире поле по ширине слота). */
+  const MAP_HEX_VERTICAL_COMPRESS = 0.75;
+
+  const jsHexDistance = (q1, r1, q2, r2) => {
+    const dq = q1 - q2;
+    const dr = r1 - r2;
+    return (Math.abs(dq) + Math.abs(dr) + Math.abs(dq + dr)) / 2;
+  };
+
+  /**
+   * Стрелка панорамы: угол от центра окна к клетке в той же линейной системе, что и раскладка гекса
+   * (иначе на одном ребре все клетки получали один и тот же осевой символ — см. «все ↗»).
+   * Делим плоскость на 8 секторов ≈45° с центром «вправо» → … → «вверх».
+   */
+  const PAN_ARROW_GLYPHS_8 = ["→", "↘", "↓", "↙", "←", "↖", "↑", "↗"];
+  const hexPanArrow = (q, r, cq, cr) => {
+    if (q === cq && r === cr) return "";
+    const vcy = MAP_HEX_VERTICAL_COMPRESS;
+    const vx = SQRT3 * ((q - cq) + (r - cr) / 2);
+    const vy = (3 / 2) * (r - cr) * vcy;
+    if (vx === 0 && vy === 0) return "";
+    const ang = Math.atan2(vy, vx);
+    const s = ((ang % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    const idx = Math.floor((s + Math.PI / 8) / (Math.PI / 4)) % 8;
+    return PAN_ARROW_GLYPHS_8[idx];
+  };
+
+  const mapWindowGridSpan = (win) => {
+    if (!win || !Array.isArray(win.cells) || !win.cells.length) {
+      const r = clampMapWindowRadius(win && win.radius);
+      return { w: r * 2 + 1, h: r * 2 + 1 };
+    }
+    let maxRow = 0;
+    for (const row of win.cells) {
+      const rw = Array.isArray(row.row) ? row.row.length : 0;
+      if (rw > maxRow) maxRow = rw;
+    }
+    return { w: Math.max(1, maxRow), h: Math.max(1, win.cells.length) };
+  };
 
   let viewCenter = (currentWindow && currentWindow.center) ? { ...currentWindow.center } : { ...home };
   const MAP_VIEW_RADIUS_KEY = "gs.map.viewRadius";
@@ -155,6 +208,12 @@
   let mapWindowRefreshQueue = Promise.resolve();
   /** Последняя клетка руин/аномалии в HUD — не сбрасываем кнопку при каждом poll, если координаты те же. */
   let discoveryHudCellKey = null;
+  const actionFeedbackTimers = new WeakMap();
+  /** События с ui_channel=toast уже показаны тостом (по id). */
+  const toastEventIdsSeen = new Set();
+  const TOAST_EVENT_IDS_MAX = 120;
+  /** Дедуп повторяющихся тостов по ключу из payload (например fleet_maintenance:fleet_id). */
+  const toastDedupeKeyLastMs = new Map();
 
   const mapEl = document.getElementById("map-grid");
   const mapWrapEl = document.querySelector(".map-wrap");
@@ -170,7 +229,8 @@
   const etaArriveEl = document.getElementById("hud-arrive-tick");
   const selCoordEl = document.getElementById("sel-coord");
   const selTerrainEl = document.getElementById("sel-terrain");
-  const selGlyphEl = document.getElementById("sel-glyph");
+  const selBuiltWrapEl = document.getElementById("sel-built-wrap");
+  const selBuiltEl = document.getElementById("sel-built");
   const selObjectsEl = document.getElementById("sel-objects");
   const selInfluenceEl = document.getElementById("sel-influence");
   const selSupplyEl = document.getElementById("sel-supply");
@@ -184,6 +244,12 @@
   const discoveryResolveLabel = document.getElementById("discovery-resolve-label");
   const discoveryResolveHelp = document.getElementById("discovery-resolve-help");
   const clearSelBtn = document.getElementById("clear-sel-btn");
+  const hudActionFeedbackEl = document.getElementById("hud-action-feedback");
+  const systemToastsEl = document.getElementById("system-toasts");
+  const fleetModalFeedbackEl = document.getElementById("fleet-modal-feedback");
+  const fleetCreateFeedbackEl = document.getElementById("fleet-create-feedback");
+  const onboardingGoalsBodyEl = document.getElementById("onboarding-goals-body");
+  const onboardingGoalsSectionEl = document.getElementById("onboarding-goals-section");
   const eventsEl = document.getElementById("events");
   /** `data-event-id` боя, у которого игрок раскрыл «Подробный расчёт» — восстанавливаем после каждого перерендера лога. */
   const openFleetCombatDetailIds = new Set();
@@ -244,7 +310,7 @@
   const entryTutorialRemindBtn = document.getElementById("entry-tutorial-remind");
 
   /** Вкладки подсказки (левое меню модалки). */
-  const ENTRY_TUTORIAL_TAB_IDS = ["economy", "fleet", "visual", "combat", "symbols"];
+  const ENTRY_TUTORIAL_TAB_IDS = ["economy", "empire", "fleet", "visual", "combat", "symbols", "comms"];
   const setEntryTutorialTab = (tabId) => {
     if (!entryTutorialOverlay) return;
     const tid = ENTRY_TUTORIAL_TAB_IDS.includes(tabId) ? tabId : "economy";
@@ -266,11 +332,132 @@
       panel.classList.toggle("is-active", on);
     });
   };
+
+  const ENTRY_TUTORIAL_WIKI_FULL_KEY = "gs.entryTutorial.wikiFull.v1";
+  const entryTutorialCard = entryTutorialOverlay ? entryTutorialOverlay.querySelector(".entry-tutorial-card") : null;
+  const entryTutorialWikiFull = document.getElementById("entry-tutorial-wiki-full");
+  const entryTutorialWikiSearch = document.getElementById("entry-tutorial-wiki-search");
+  const entryTutorialWikiSearchStatus = document.getElementById("entry-tutorial-wiki-search-status");
+
+  const normalizeWikiSearchQuery = (raw) =>
+    String(raw || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+
+  const readWikiFullPref = () => {
+    try {
+      return localStorage.getItem(ENTRY_TUTORIAL_WIKI_FULL_KEY) === "1";
+    } catch (_e) {
+      return false;
+    }
+  };
+
+  const applyWikiFullFromCheckbox = () => {
+    const on = !!(entryTutorialWikiFull && entryTutorialWikiFull.checked);
+    if (entryTutorialCard) entryTutorialCard.classList.toggle("wiki-mode-full", on);
+    try {
+      localStorage.setItem(ENTRY_TUTORIAL_WIKI_FULL_KEY, on ? "1" : "0");
+    } catch (_e) {
+      /* ignore */
+    }
+  };
+
+  const runEntryTutorialWikiSearch = () => {
+    if (!entryTutorialOverlay) return;
+    const q = normalizeWikiSearchQuery(entryTutorialWikiSearch && entryTutorialWikiSearch.value);
+    const items = entryTutorialOverlay.querySelectorAll(".tutorial-wiki-item");
+    let anyHit = false;
+    items.forEach((li) => {
+      const hay = `${li.getAttribute("data-wiki-search") || ""} ${li.textContent || ""}`
+        .toLowerCase()
+        .replace(/\s+/g, " ");
+      const hit = !q || hay.includes(q);
+      li.classList.toggle("wiki-search-hidden", !hit);
+      if (hit) anyHit = true;
+    });
+    entryTutorialOverlay.querySelectorAll("[data-tutorial-tab]").forEach((btn) => {
+      const tid = btn.getAttribute("data-tutorial-tab");
+      if (!tid) return;
+      const panel = entryTutorialOverlay.querySelector(`[data-tutorial-panel="${tid}"]`);
+      const has = panel && panel.querySelector(".tutorial-wiki-item:not(.wiki-search-hidden)");
+      btn.classList.toggle("wiki-tab-nohit", !!(q && !has));
+    });
+    if (entryTutorialWikiSearchStatus) {
+      entryTutorialWikiSearchStatus.textContent =
+        q && !anyHit ? "Ничего не найдено — попробуйте другое слово или снимите фильтр." : "";
+      entryTutorialWikiSearchStatus.classList.toggle("hidden", !(q && !anyHit));
+    }
+    if (q) {
+      const activePanel = entryTutorialOverlay.querySelector("[data-tutorial-panel].is-active");
+      const vis =
+        activePanel && activePanel.querySelectorAll(".tutorial-wiki-item:not(.wiki-search-hidden)").length;
+      if (activePanel && !vis) {
+        for (let i = 0; i < ENTRY_TUTORIAL_TAB_IDS.length; i += 1) {
+          const tid = ENTRY_TUTORIAL_TAB_IDS[i];
+          const cand = entryTutorialOverlay.querySelector(`[data-tutorial-panel="${tid}"]`);
+          if (cand && cand.querySelector(".tutorial-wiki-item:not(.wiki-search-hidden)")) {
+            setEntryTutorialTab(tid);
+            break;
+          }
+        }
+      }
+    }
+  };
+
+  const focusWikiAnchor = (anchorId) => {
+    if (!entryTutorialOverlay || !anchorId) return;
+    const raw = String(anchorId || "").trim();
+    if (!raw) return;
+    if (entryTutorialWikiSearch) entryTutorialWikiSearch.value = "";
+    runEntryTutorialWikiSearch();
+    const target = document.getElementById(raw);
+    if (!target) return;
+    const panel = target.closest("[data-tutorial-panel]");
+    const tabId = panel && panel.getAttribute("data-tutorial-panel");
+    if (tabId) setEntryTutorialTab(tabId);
+    entryTutorialOverlay.querySelectorAll(".tutorial-wiki-item.wiki-link-flash").forEach((el) => {
+      el.classList.remove("wiki-link-flash");
+    });
+    requestAnimationFrame(() => {
+      try {
+        target.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      } catch (_e) {
+        try {
+          target.scrollIntoView();
+        } catch (_e2) {
+          /* ignore */
+        }
+      }
+      target.classList.add("wiki-link-flash");
+      window.setTimeout(() => {
+        try {
+          target.classList.remove("wiki-link-flash");
+        } catch (_e3) {
+          /* ignore */
+        }
+      }, 1400);
+    });
+  };
+
   if (entryTutorialOverlay) {
     entryTutorialOverlay.querySelectorAll("[data-tutorial-tab]").forEach((btn) => {
       btn.addEventListener("click", () => setEntryTutorialTab(btn.getAttribute("data-tutorial-tab") || "economy"));
     });
     setEntryTutorialTab("economy");
+    if (entryTutorialWikiFull) {
+      entryTutorialWikiFull.checked = readWikiFullPref();
+      entryTutorialWikiFull.addEventListener("change", () => {
+        applyWikiFullFromCheckbox();
+        runEntryTutorialWikiSearch();
+      });
+    }
+    applyWikiFullFromCheckbox();
+    if (entryTutorialWikiSearch) {
+      entryTutorialWikiSearch.addEventListener("input", () => runEntryTutorialWikiSearch());
+      entryTutorialWikiSearch.addEventListener("search", () => runEntryTutorialWikiSearch());
+    }
+    runEntryTutorialWikiSearch();
   }
 
   const isEntryTutorialSuppressed = () => {
@@ -281,14 +468,28 @@
     }
   };
 
-  const openEntryTutorial = () => {
+  const openEntryTutorial = (wikiAnchorId = null) => {
     if (!entryTutorialOverlay) return;
     if (entryTutorialDismissNext) entryTutorialDismissNext.checked = false;
-    setEntryTutorialTab("economy");
+    if (wikiAnchorId) {
+      if (entryTutorialWikiSearch) entryTutorialWikiSearch.value = "";
+      const tEl = document.getElementById(String(wikiAnchorId).trim());
+      const pEl = tEl && tEl.closest("[data-tutorial-panel]");
+      setEntryTutorialTab((pEl && pEl.getAttribute("data-tutorial-panel")) || "economy");
+      runEntryTutorialWikiSearch();
+    } else {
+      if (entryTutorialWikiSearch) entryTutorialWikiSearch.value = "";
+      setEntryTutorialTab("economy");
+      runEntryTutorialWikiSearch();
+    }
     entryTutorialOverlay.classList.remove("hidden");
     entryTutorialOverlay.removeAttribute("aria-hidden");
     document.body.classList.add("entry-tutorial-open");
     requestAnimationFrame(() => {
+      if (wikiAnchorId) {
+        requestAnimationFrame(() => focusWikiAnchor(String(wikiAnchorId).trim()));
+        return;
+      }
       try {
         if (entryTutorialOk) entryTutorialOk.focus({ preventScroll: true });
       } catch (_e) {
@@ -321,6 +522,12 @@
   if (entryTutorialOverlay) {
     entryTutorialOverlay.addEventListener("click", (ev) => {
       if (ev.target === entryTutorialOverlay) ev.stopPropagation();
+      const a = ev.target && ev.target.closest && ev.target.closest("a.wiki-internal-link");
+      if (!a || !entryTutorialOverlay.contains(a)) return;
+      const href = a.getAttribute("href") || "";
+      if (!href.startsWith("#")) return;
+      ev.preventDefault();
+      focusWikiAnchor(href.slice(1));
     });
   }
   if (entryTutorialRemindBtn) entryTutorialRemindBtn.addEventListener("click", () => openEntryTutorial());
@@ -409,21 +616,29 @@
     bandit_patrol_spawned: "combat",
     bandit_mine_placed: "combat",
     bandit_outpost_placed: "combat",
+    intel_scan_success: "diplomacy",
+    intel_blocked: "diplomacy",
+    intel_scanned: "diplomacy",
   };
   const getEventCategory = (type) => {
     const t = type ? String(type) : "";
     return EVENT_TYPE_TO_CATEGORY[t] || "misc";
   };
 
+  const eventIsToastChannel = (e) => {
+    const pl = e && e.payload && typeof e.payload === "object" ? e.payload : null;
+    return Boolean(pl && String(pl.ui_channel || "") === "toast");
+  };
+
   const filterEventsForSystemLog = (events) => {
-    const list = Array.isArray(events) ? events : [];
+    const list = (Array.isArray(events) ? events : []).filter((ev) => !eventIsToastChannel(ev));
     if (systemLogFilterCategory === "all") return list;
     if (systemLogFilterCategory === "diplomacy")
       return list.filter((e) => getEventCategory(e.type) === "diplomacy");
     return list.filter((e) => getEventCategory(e.type) === systemLogFilterCategory);
   };
 
-  /** Трёхколоночный MMO: высота коммов и HUD = высота карточки «Карта сектора» (центр задаёт ряд). */
+  /** Трёхколоночный MMO: высота коммов и HUD = высота центральной колонки с картой (`.map-sector-card`). */
   const syncMmoSidePanelHeights = () => {
     if (!pageGridMmo) return;
     if (document.querySelector(".me-play-layout") && commsWideMq.matches) {
@@ -1024,6 +1239,8 @@
   };
   const planetModalOverlay = document.getElementById("planet-modal-overlay");
   const planetModalBody = document.getElementById("planet-modal-body");
+  /** Кэш последнего ответа `placement_checks` для пересчёта строки стоимости при смене количества (планета). */
+  let lastBuildPlacementResults = null;
   const planetModalTitle = document.getElementById("planet-modal-title");
   const planetModalClose = document.getElementById("planet-modal-close");
   const fleetModalOverlay = document.getElementById("fleet-modal-overlay");
@@ -1091,6 +1308,7 @@
   const topFoodEl = document.getElementById("top-food");
   const topWaterEl = document.getElementById("top-water");
   const topRpEl = document.getElementById("top-rp");
+  const topRpChipEl = document.getElementById("top-rp-chip");
   const overlayEl = document.getElementById("confirm-overlay");
   const cfFromEl = document.getElementById("cf-from");
   const cfToEl = document.getElementById("cf-to");
@@ -1255,16 +1473,45 @@
     const ua = bb.aliases && bb.aliases.unit_aliases;
     if (!ua || typeof ua !== "object") return DEFAULT_FLEET_QTY_KEYS.slice();
     const keys = Object.keys(ua).filter((k) => typeof k === "string" && k.trim());
-    return keys.length ? keys.sort((a, b) => a.localeCompare(b)) : DEFAULT_FLEET_QTY_KEYS.slice();
+    if (!keys.length) return DEFAULT_FLEET_QTY_KEYS.slice();
+    const byId = new Map();
+    if (Array.isArray(bb.units)) {
+      for (const u of bb.units) {
+        if (u && typeof u.id === "string") byId.set(String(u.id), u);
+      }
+    }
+    return keys
+      .filter((k) => {
+        const uid = ua[k];
+        if (typeof uid !== "string") return true;
+        const u = byId.get(String(uid));
+        if (u && u.fleet_composition_allowed === false) return false;
+        return true;
+      })
+      .sort((a, b) => a.localeCompare(b));
   };
 
   /** Строки в модалке флота: все алиасы из баланса + типы с ненулевым количеством в текущем составе. */
   const fleetQtyKeysForUi = (comp) => {
     const merged = new Set(fleetLogicalKeysBalanceOnly());
-    if (comp && typeof comp === "object") {
+    const bb = window.__guardstarBalanceCache && window.__guardstarBalanceCache.body;
+    if (comp && typeof comp === "object" && bb && bb.ok) {
+      const ua = bb.aliases && bb.aliases.unit_aliases;
+      const byId = new Map();
+      if (Array.isArray(bb.units)) {
+        for (const u of bb.units) {
+          if (u && typeof u.id === "string") byId.set(String(u.id), u);
+        }
+      }
       for (const [k, raw] of Object.entries(comp)) {
-        if (!k) continue;
-        if (Number(raw) > 0) merged.add(String(k));
+        if (!k || Number(raw) <= 0) continue;
+        const ks = String(k).trim();
+        if (!ks) continue;
+        const uid =
+          ua && typeof ua === "object" && typeof ua[ks] === "string" ? ua[ks] : null;
+        const u = uid ? byId.get(String(uid)) : null;
+        if (u && u.fleet_composition_allowed === false) continue;
+        merged.add(ks);
       }
     }
     return Array.from(merged).sort((a, b) => a.localeCompare(b));
@@ -1322,6 +1569,51 @@
     return raw ? buildingLabelRu(raw) : fallback;
   };
 
+  /** Свои / чужие / без владельца — для строки «Построено» в HUD клетки. */
+  const builtHudAffiliation = (ownerId) => {
+    const oid = ownerId != null && ownerId !== "" ? String(ownerId).trim() : "";
+    if (!oid) return "neutral";
+    if (playerId && String(playerId) === oid) return "own";
+    return "enemy";
+  };
+
+  /** HTML фрагмент: постройки и форпосты, сгруппированы по принадлежности и цвету. */
+  const formatBuiltHudHtml = (objs) => {
+    const built = objs.filter((o) => o && (o.type === "building" || o.type === "outpost"));
+    if (!built.length) return "";
+    const byAff = {
+      own: new Map(),
+      enemy: new Map(),
+      neutral: new Map(),
+    };
+    for (const o of built) {
+      const aff = builtHudAffiliation(o.owner);
+      let label;
+      if (o.type === "outpost") {
+        label = o.name && String(o.name).trim() ? String(o.name).trim() : "Форпост";
+      } else {
+        label = buildingLabelRu(o.building_type ? String(o.building_type) : "постройка");
+        const lv = Number(o.level);
+        if (Number.isFinite(lv) && lv > 1) label = `${label} ур.${lv}`;
+      }
+      const m = byAff[aff];
+      m.set(label, (m.get(label) || 0) + 1);
+    }
+    const cls = { own: "hud-built--own", enemy: "hud-built--enemy", neutral: "hud-built--neutral" };
+    const order = ["own", "neutral", "enemy"];
+    const chunks = [];
+    for (const aff of order) {
+      const m = byAff[aff];
+      if (!m.size) continue;
+      const bits = [];
+      for (const [lbl, n] of Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0], "ru"))) {
+        bits.push(n > 1 ? `${escHtml(lbl)}×${escHtml(String(n))}` : escHtml(lbl));
+      }
+      chunks.push(`<span class="${cls[aff]}">${bits.join(", ")}</span>`);
+    }
+    return chunks.join(" · ");
+  };
+
   /** Подписи техов из `/api/balance` для ошибок `tech_required`. */
   const techIdsToRuCsv = (ids) => {
     const arr = Array.isArray(ids) ? ids.filter((x) => x != null && String(x).trim()) : [];
@@ -1353,6 +1645,47 @@
     if (!bb || !bb.ok || !bid) return null;
     const buildings = Array.isArray(bb.buildings) ? bb.buildings : [];
     return buildings.find((b) => b && String(b.id) === String(bid)) || null;
+  };
+
+  const ONBOARDING_MILESTONES_KEY = "guardstar.onboarding.milestones.v1";
+  const readOnboardingMilestones = () => {
+    try {
+      const raw = localStorage.getItem(ONBOARDING_MILESTONES_KEY);
+      const o = raw ? JSON.parse(raw) : {};
+      return o && typeof o === "object" ? o : {};
+    } catch {
+      return {};
+    }
+  };
+  const mergeOnboardingMilestones = (patch) => {
+    if (!patch || typeof patch !== "object") return;
+    try {
+      const cur = readOnboardingMilestones();
+      const next = { ...cur, ...patch };
+      localStorage.setItem(ONBOARDING_MILESTONES_KEY, JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+    renderOnboardingGoals();
+  };
+
+  const onboardingAtHomeColony = (x, y, z) => {
+    const hp = worldState.home_planet;
+    if (!hp || !hp.pos) return false;
+    return Number(x) === Number(hp.pos.x) && Number(y) === Number(hp.pos.y) && Number(z) === Number(hp.pos.z ?? 0);
+  };
+
+  const recordColonyBuildMilestone = (buildingTypeRaw, x, y, z) => {
+    if (!onboardingAtHomeColony(x, y, z)) return;
+    const k = String(buildingTypeRaw || "").trim().toLowerCase();
+    if (!k) return;
+    const canon = String(resolveBuildingCanonId(k) || k).toLowerCase();
+    const food = new Set(["basic_farm", "hydro_farm"]);
+    const energy = new Set(["reactor", "solar_array"]);
+    const patch = {};
+    if (food.has(canon) || food.has(k)) patch.colonyFood = true;
+    if (energy.has(canon) || energy.has(k)) patch.colonyEnergy = true;
+    if (Object.keys(patch).length) mergeOnboardingMilestones(patch);
   };
 
   /** Римский суффикс тира постройки (I, II…) для строки модалки. */
@@ -1400,33 +1733,179 @@
     return buildings.some((bd) => bd && String(bd.id).toLowerCase() === String(targetCanon).toLowerCase());
   };
 
-  const upgradeBuildingButtonHtml = (bid, logicalType, { disabledReason } = {}) => {
-    if (!bid) return "";
-    const ok = buildingHasBalanceUpgrade(logicalType);
-    if (!ok || disabledReason) {
-      const t = disabledReason || "В балансе нет следующего уровня для этой постройки.";
-      return `<button type="button" class="btn-icon-action btn-upgrade-build" disabled title="${escAttr(t)}" aria-label="Улучшить (недоступно)">🔧</button>`;
-    }
-    return `<button type="button" class="btn-icon-action btn-upgrade-build" data-bupgrade="${escHtml(bid)}" title="Улучшить постройку" aria-label="Улучшить постройку">🔧</button>`;
+  /** Объект `upgrade.cost` из баланса (или null, если апгрейда нет; пустой объект, если `cost` в JSON не задан). */
+  const buildingUpgradeCostObj = (logicalType) => {
+    const def = resolveBuildingDef(logicalType);
+    if (!def || typeof def !== "object") return null;
+    const up = def.upgrade;
+    if (!up || typeof up !== "object") return null;
+    const c = up.cost;
+    if (!c || typeof c !== "object") return {};
+    return c;
   };
 
-  /** Одна строка действий по группе одинаковых построек на планете: ♻ одна · 🔧 одна · 🔧 все (∞ если ≥2). */
-  const planetSurfaceGroupActionsHtml = (logicalType, ids) => {
-    const list = Array.isArray(ids) ? ids.filter(Boolean) : [];
-    const n = list.length;
-    if (!n) return "";
-    const hasUp = buildingHasBalanceUpgrade(logicalType);
-    const csvEsc = escAttr(list.join(","));
-    const dismantleBtn = `<button type="button" class="btn-icon-action btn-demolish-build" data-demolish-surface-one title="Снести одну постройку из этой строки (${n}&nbsp;шт. по счёту, ~50% возврат на дом)" aria-label="Снести одну постройку из группы"><span class="ico-recycle" aria-hidden="true">♻</span></button>`;
-    const nmGroup = escAttr(buildingStatusCaptionRu(logicalType, "постройка"));
-    const upOneBtn = hasUp
-      ? `<button type="button" class="btn-icon-action btn-upgrade-build" data-bupgrade-surface-one title="Улучшить одну (${nmGroup}); при нескольких — по одной по очереди" aria-label="Улучшить одну в группе">🔧</button>`
-      : `<button type="button" class="btn-icon-action btn-upgrade-build" disabled title="Для этого объекта не задан переход «следующий уровень» в балансе" aria-label="Улучшение недоступно">🔧</button>`;
-    const upAllBtn =
-      hasUp && n >= 2
-        ? `<button type="button" class="btn-icon-action planet-surf-upgrade-all btn-upgrade-build" data-bupgrade-surface-all title="Заплатить апгрейд за все постройки в строке (${n}&nbsp;шт.) подряд" aria-label="Улучшить все постройки в строке подряд"><span aria-hidden="true">🔧</span><span class="planet-surf-inf" aria-hidden="true">∞</span></button>`
-        : "";
-    return `<div class="planet-build-group-actions" data-surface-group-ids="${csvEsc}">${dismantleBtn}${upOneBtn}${upAllBtn}</div>`;
+  /** Объект `build.cost` из баланса (или null). */
+  const buildingBuildCostObj = (logicalType) => {
+    const def = resolveBuildingDef(logicalType);
+    if (!def || typeof def !== "object") return null;
+    const b = def.build;
+    if (!b || typeof b !== "object") return null;
+    const c = b.cost;
+    if (!c || typeof c !== "object") return null;
+    return c;
+  };
+
+  /** Снимок склада дома для сравнения со стоимостью постройки (поле / модалка). */
+  const economySnapshotForBuildCosts = () => {
+    const e = worldState && worldState.economy;
+    if (!e || typeof e !== "object") return {};
+    return {
+      metal: Number(e.metal) || 0,
+      crystal: Number(e.crystal) || 0,
+      energy: Number(e.energy) || 0,
+      fuel: Number(e.fuel) || 0,
+      food: Number(e.food) || 0,
+      water: Number(e.water) || 0,
+    };
+  };
+
+  /** HTML строки «Со склада дома…» с подсветкой нехватки (span.build-cost-miss). `labelPrefix` без двоеточия. */
+  const formatBuildCardCostLineInnerHtml = (need, have, labelPrefix = "Со склада дома") => {
+    if (!need || typeof need !== "object") return "";
+    const keys = [
+      ["metal", "⛏"],
+      ["crystal", "💎"],
+      ["energy", "⚡"],
+      ["fuel", "⛽"],
+      ["food", "🍲"],
+      ["water", "💧"],
+    ];
+    const parts = [];
+    for (const [k, g] of keys) {
+      const n = Number(need[k]);
+      if (!Number.isFinite(n) || n <= 0) continue;
+      const h = Number(have && have[k]);
+      const miss = Number.isFinite(h) && h < n;
+      parts.push(`<span class="${miss ? "build-cost-miss" : "build-cost-ok"}">${g}${Math.trunc(n)}</span>`);
+    }
+    if (!parts.length) return "";
+    const lab = labelPrefix && String(labelPrefix).trim() ? String(labelPrefix).trim() : "Со склада дома";
+    return `${lab}: ${parts.join(" ")}`;
+  };
+
+  /** Перерисовать строки стоимости карточек строительства по кэшу placement_checks и текущему полю количества. */
+  const repaintBuildCardCostLines = () => {
+    if (!planetModalBody || !lastBuildPlacementResults || typeof lastBuildPlacementResults !== "object") return;
+    const results = lastBuildPlacementResults;
+    planetModalBody.querySelectorAll(".build-card[data-b]").forEach((card) => {
+      const costLine = card.querySelector(".build-card-cost-line");
+      if (!costLine) return;
+      const bt = card.getAttribute("data-b");
+      if (!bt) return;
+      const res = results[bt];
+      const valEl = card.querySelector(".build-qty-val");
+      const sectorField = card.classList.contains("build-card--sector-field");
+      const qty = sectorField
+        ? 1
+        : Math.max(
+            1,
+            Math.min(
+              100,
+              valEl && valEl.tagName === "INPUT" ? parseInt(String(valEl.value || "").trim(), 10) || 1 : 1,
+            ),
+          );
+      const baseNeed = buildingBuildCostObj(bt) || {};
+      const need = scaleResourceCostObj(baseNeed, qty) || {};
+      let haveSnap = economySnapshotForBuildCosts();
+      if (res && res.error === "not_enough_resources" && res.have && typeof res.have === "object") {
+        haveSnap = res.have;
+      }
+      const label = qty > 1 && !sectorField ? `Со склада дома (×${qty})` : "Со склада дома";
+      const inner = formatBuildCardCostLineInnerHtml(need, haveSnap, label);
+      const tickHtml = (() => {
+        if (!res || !res.ok || !res.build || typeof res.build !== "object") return "";
+        const tt = Number(res.build.time_ticks);
+        if (!Number.isFinite(tt) || tt <= 0) return "";
+        const rt = res.build.ready_at_tick_preview;
+        const ct = res.build.current_tick;
+        let sub = `Стройка: <b>${ruSolsCountLabel(tt)}</b> до ввода в строй.`;
+        if (rt != null && ct != null) {
+          sub += ` Готовность: <b>сол ${escHtml(String(rt))}</b> (сейчас <b>сол ${escHtml(String(ct))}</b>).`;
+        }
+        return `<div class="muted build-card-build-time" style="font-size:80%;margin-top:4px;line-height:1.3;">${sub}</div>`;
+      })();
+      costLine.innerHTML = (inner || '<span class="muted">—</span>') + tickHtml;
+    });
+  };
+
+  /** Компактная строка ресурсов для UI (эмодзи + целое число, только ненулевые). */
+  const formatResourceDictCompactRu = (cost) => {
+    if (!cost || typeof cost !== "object") return "";
+    const keys = [
+      ["metal", "⛏"],
+      ["crystal", "💎"],
+      ["energy", "⚡"],
+      ["fuel", "⛽"],
+      ["food", "🍲"],
+      ["water", "💧"],
+    ];
+    const parts = [];
+    for (const [k, g] of keys) {
+      const n = Number(cost[k]);
+      if (!Number.isFinite(n) || n <= 0) continue;
+      parts.push(`${g}${Math.trunc(n)}`);
+    }
+    return parts.join(" ");
+  };
+
+  /** Суммарная стоимость = базовый `upgrade.cost` × целое число шагов. */
+  const scaleResourceCostObj = (cost, mul) => {
+    if (!cost || typeof cost !== "object") return null;
+    const m = Math.max(0, Math.trunc(Number(mul)) || 0);
+    if (m <= 0) return {};
+    const out = {};
+    for (const k of Object.keys(cost)) {
+      const v = Number(cost[k]);
+      if (Number.isFinite(v) && v > 0) out[k] = v * m;
+    }
+    return out;
+  };
+
+  const readPlanetBuiltQtyFromCard = (card) => {
+    if (!card) return 1;
+    const valEl = card.querySelector(".planet-built-qty-val");
+    const max = Math.max(1, parseInt(card.getAttribute("data-built-max"), 10) || 1);
+    const raw = valEl && (valEl.tagName === "INPUT" ? valEl.value : valEl.textContent);
+    return Math.max(1, Math.min(max, parseInt(String(raw != null ? raw : "").trim(), 10) || 1));
+  };
+
+  const syncPlanetBuiltUpgradeCostLine = (card) => {
+    const wrap = card && card.querySelector(".planet-built-cost-wrap");
+    if (!wrap) return;
+    const enc = wrap.getAttribute("data-per-upgrade-cost");
+    if (!enc) return;
+    let base;
+    try {
+      base = JSON.parse(decodeURIComponent(enc));
+    } catch {
+      return;
+    }
+    const qty = readPlanetBuiltQtyFromCard(card);
+    const scaled = scaleResourceCostObj(base, qty) || {};
+    const icons = formatResourceDictCompactRu(scaled);
+    const mulEl = wrap.querySelector(".planet-built-cost-mul");
+    const iconsEl = wrap.querySelector(".planet-built-cost-icons");
+    if (mulEl) mulEl.textContent = String(qty);
+    if (iconsEl) iconsEl.textContent = icons || "—";
+    const stepStr = formatResourceDictCompactRu(base);
+    const sumStr = formatResourceDictCompactRu(scaled);
+    const upBtn = card.querySelector(".planet-built-upgrade");
+    if (upBtn && !upBtn.disabled) {
+      upBtn.title =
+        qty <= 1
+          ? `Улучшить по очереди (склад дома). За один шаг: ${stepStr || "—"}`
+          : `Улучшить подряд ${qty} построек (склад дома). Суммарно: ${sumStr || "—"} (по ${stepStr || "—"} за шаг)`;
+    }
   };
 
   const fleetOptionLabel = (f) => {
@@ -1444,6 +1923,16 @@
     supplier: "📦",
     freighter: "🚚",
     corvette: "🚀",
+    frigate: "🛸",
+    colonizer: "🌍",
+    colony_support: "🔗",
+    scout_medium: "🛰",
+  };
+
+  /** Доминантный тип флота на карте (поле `unit_type`): бойные — спрайт истребителя, остальные — разведка. */
+  const fleetMapGraphicIsCombatDominant = (unitType) => {
+    const u = String(unitType || "").trim().toLowerCase();
+    return u === "fighter" || u === "corvette" || u === "frigate";
   };
 
   const resolveBalanceUnit = (logicalKey) => {
@@ -1474,10 +1963,23 @@
 
   /** Краткая «цель / роль» корпуса для раскрывающегося блока в модалке флота. */
   const fleetUnitRolePurposeRu = (logicalKey) => {
+    const k = String(logicalKey || "");
+    if (k === "colonizer") {
+      return "Колония: основание новой колонии на подходящей планете (не полевая база).";
+    }
+    if (k === "colony_support") {
+      return "Экспансия: полевая стройка и логистика; колонию на планете не открывает.";
+    }
+    if (k === "supplier") {
+      return "Империя: влияет на радиус снабжения со столицы; в бою почти не защищает.";
+    }
+    if (k === "freighter") {
+      return "Флот: запас энергии на борту и экономия топлива на перелёт; без оружия.";
+    }
     const g = fleetUiRoleGroup(logicalKey);
     if (g === "recon") return "Разведка: скорость и сбор сведений, слабый бой.";
     if (g === "combat") return "Бой: урон и стойкость в столкновениях.";
-    return "Техника и логистика: строительство, снабжение вспомогательные задачи.";
+    return "Техника и логистика: строительство и вспомогательные задачи.";
   };
 
   const unitBuildCostParts = (logicalKey) => {
@@ -1559,6 +2061,85 @@
     statusEl.textContent = text;
     statusEl.classList.remove("ok", "err");
     if (kind) statusEl.classList.add(kind);
+  };
+
+  const showActionFeedback = (target, message, kind = "info") => {
+    if (!target || !message) return;
+    const prev = actionFeedbackTimers.get(target);
+    if (prev) clearTimeout(prev);
+    target.textContent = message;
+    target.classList.remove("hud-action-feedback--ok", "hud-action-feedback--err", "hud-action-feedback--info");
+    if (kind === "ok") target.classList.add("hud-action-feedback--ok");
+    else if (kind === "err") target.classList.add("hud-action-feedback--err");
+    else target.classList.add("hud-action-feedback--info");
+    target.hidden = false;
+    const ms = 8000 + Math.floor(Math.random() * 4001);
+    const id = setTimeout(() => {
+      actionFeedbackTimers.delete(target);
+      target.textContent = "";
+      target.hidden = true;
+      target.classList.remove("hud-action-feedback--ok", "hud-action-feedback--err", "hud-action-feedback--info");
+    }, ms);
+    actionFeedbackTimers.set(target, id);
+  };
+
+  const showFleetActionMessage = (message, kind = "info") => {
+    setStatus(message, kind);
+    const inCreate = fleetCreateOverlay && !fleetCreateOverlay.classList.contains("hidden");
+    const inFleet = fleetModalOverlay && !fleetModalOverlay.classList.contains("hidden");
+    if (inCreate && fleetCreateFeedbackEl) showActionFeedback(fleetCreateFeedbackEl, message, kind);
+    else if (inFleet && fleetModalFeedbackEl) showActionFeedback(fleetModalFeedbackEl, message, kind);
+    else if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, message, kind);
+  };
+
+  const planetModalFeedbackEl = () =>
+    planetModalBody && planetModalBody.querySelector("#planet-modal-action-feedback");
+
+  const pushSystemToast = (message) => {
+    if (!systemToastsEl || !message) return;
+    while (systemToastsEl.querySelectorAll(".system-toast").length >= 5) {
+      const first = systemToastsEl.querySelector(".system-toast");
+      if (first) first.remove();
+      else break;
+    }
+    const row = document.createElement("div");
+    row.className = "system-toast";
+    row.textContent = message;
+    systemToastsEl.appendChild(row);
+    setTimeout(() => {
+      try {
+        row.remove();
+      } catch (_e) {
+        /* ignore */
+      }
+    }, 14000);
+  };
+
+  const syncSystemToastsFromEvents = (events) => {
+    if (!systemToastsEl || !Array.isArray(events)) return;
+    const now = Date.now();
+    for (const e of events) {
+      if (!e || eventIsToastChannel(e) !== true) continue;
+      const eid = e.id != null ? Number(e.id) : null;
+      if (eid != null && Number.isFinite(eid)) {
+        if (toastEventIdsSeen.has(eid)) continue;
+        toastEventIdsSeen.add(eid);
+        while (toastEventIdsSeen.size > TOAST_EVENT_IDS_MAX) {
+          const it = toastEventIdsSeen.values().next();
+          if (it.done) break;
+          toastEventIdsSeen.delete(it.value);
+        }
+      }
+      const pl = e.payload && typeof e.payload === "object" ? e.payload : {};
+      const dk = pl.ui_dedupe_key != null ? String(pl.ui_dedupe_key) : "";
+      if (dk) {
+        const prev = toastDedupeKeyLastMs.get(dk) || 0;
+        if (now - prev < 45000) continue;
+        toastDedupeKeyLastMs.set(dk, now);
+      }
+      const msg = typeof e.message === "string" && e.message.trim() ? e.message.trim() : "Системное уведомление";
+      pushSystemToast(msg);
+    }
   };
 
   const detectScoutPos = () => {
@@ -1736,7 +2317,9 @@
       const tk = String(ps.battle_type_label || "").trim();
       if (tk) parts.push(`<div class="event-combat-kind muted">${escHtml(tk)}</div>`);
       if (ps.effective_before_roll)
-        parts.push(`<div class="event-combat-eff muted">До случайности (ваши vs врага): ${escHtml(String(ps.effective_before_roll))}</div>`);
+        parts.push(
+          `<div class="event-combat-eff muted">Сопоставление сил перед исходом: ${escHtml(String(ps.effective_before_roll))}</div>`,
+        );
       for (const ln of lossLines) parts.push(`<div class="event-combat-losses">${escHtml(ln)}</div>`);
       for (const ln of lossDetailLines)
         parts.push(`<div class="event-combat-loss-detail muted">${escHtml(ln)}</div>`);
@@ -1915,12 +2498,94 @@
       if (sel && sel.value) return String(sel.value);
       return fleetId;
     };
-    for (const btn of root.querySelectorAll("button[data-b]")) {
-      btn.addEventListener("click", async () => {
-        const bt = btn.getAttribute("data-b");
-        await placeBuilding(x, y, z, bt, resolveBuildFleetId());
+    const descElBuild = root.querySelector("#planet-build-type-desc");
+    const descElSurface = root.querySelector("#planet-surface-build-desc");
+    const descElField = root.querySelector("#planet-field-build-desc");
+    const showBuildDesc = (text, fromEl) => {
+      let el = descElBuild;
+      if (fromEl && fromEl.closest && fromEl.closest("#planet-field-built-wrap")) el = descElField || el;
+      else if (fromEl && fromEl.closest && fromEl.closest(".planet-built-groups")) el = descElSurface || el;
+      if (!el) return;
+      const t = text && String(text).trim() ? String(text).trim() : "";
+      if (!t) {
+        el.textContent = "";
+        el.classList.add("hidden");
+        return;
+      }
+      el.textContent = t;
+      el.classList.remove("hidden");
+    };
+    root.querySelectorAll(".build-card-name-btn").forEach((nameBtn) => {
+      nameBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const fromAttr = nameBtn.getAttribute("data-build-desc");
+        const desc =
+          (fromAttr && String(fromAttr).trim()) ||
+          (nameBtn.title && String(nameBtn.title).trim()) ||
+          (nameBtn.textContent && String(nameBtn.textContent).trim()) ||
+          "";
+        showBuildDesc(desc, nameBtn);
       });
-    }
+    });
+    root.querySelectorAll(".build-qty-step").forEach((stepBtn) => {
+      stepBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (stepBtn.disabled) return;
+        const card = stepBtn.closest(".build-card[data-b]");
+        if (!card) return;
+        const valEl = card.querySelector(".build-qty-val");
+        const d = Number(stepBtn.getAttribute("data-d"));
+        const cur = Math.max(1, Math.min(100, parseInt(valEl && (valEl.value != null ? valEl.value : valEl.textContent), 10) || 1));
+        const next = Math.max(1, Math.min(100, cur + (Number.isFinite(d) ? d : 0)));
+        if (valEl) {
+          if (valEl.tagName === "INPUT") valEl.value = String(next);
+          else valEl.textContent = String(next);
+        }
+        repaintBuildCardCostLines();
+      });
+    });
+    const clampBuildQtyInput = (inp) => {
+      if (!inp || inp.tagName !== "INPUT") return;
+      const raw = String(inp.value || "").trim();
+      let v = parseInt(raw, 10);
+      if (!Number.isFinite(v) || v < 1) v = 1;
+      if (v > 100) v = 100;
+      inp.value = String(v);
+      repaintBuildCardCostLines();
+    };
+    root.querySelectorAll(".build-qty-val").forEach((el) => {
+      if (el.tagName !== "INPUT") return;
+      el.addEventListener("input", () => repaintBuildCardCostLines());
+      el.addEventListener("blur", () => clampBuildQtyInput(el));
+      el.addEventListener("change", () => clampBuildQtyInput(el));
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          el.blur();
+        }
+      });
+    });
+    root.querySelectorAll(".build-card-build").forEach((goBtn) => {
+      goBtn.addEventListener("click", async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (goBtn.disabled) return;
+        const card = goBtn.closest(".build-card[data-b]");
+        if (!card) return;
+        const bt = card.getAttribute("data-b");
+        if (!bt) return;
+        const valEl = card.querySelector(".build-qty-val");
+        let n = 1;
+        if (valEl) {
+          if (valEl.tagName === "INPUT") clampBuildQtyInput(valEl);
+          const raw = valEl.tagName === "INPUT" ? valEl.value : valEl.textContent;
+          n = Math.max(1, Math.min(100, parseInt(raw, 10) || 1));
+        }
+        await placeBuildingBatch(x, y, z, bt, n, resolveBuildFleetId());
+      });
+    });
     for (const btn of root.querySelectorAll("button[data-demolish]")) {
       btn.addEventListener("click", async () => {
         const id = btn.getAttribute("data-demolish");
@@ -1941,47 +2606,133 @@
       const raw = wrap.getAttribute("data-surface-group-ids") || "";
       return raw.split(",").map((s) => String(s).trim()).filter(Boolean);
     };
-    for (const btn of root.querySelectorAll("button[data-demolish-surface-one]")) {
-      btn.addEventListener("click", async () => {
-        const ids = surfaceGroupIdsFromBtn(btn);
-        const first = ids[0];
-        if (!first || !confirm("Снести одну постройку этого типа на клетке? Вернётся ~50% стоимости на дом.")) return;
-        await dismantleBuilding(first);
+    const clampPlanetBuiltQtyInput = (inp) => {
+      if (!inp || inp.tagName !== "INPUT") return;
+      const card = inp.closest(".planet-built-card");
+      const max = Math.max(1, parseInt(card && card.getAttribute("data-built-max"), 10) || 1);
+      let v = parseInt(String(inp.value || "").trim(), 10);
+      if (!Number.isFinite(v) || v < 1) v = 1;
+      if (v > max) v = max;
+      inp.value = String(v);
+      if (card) syncPlanetBuiltUpgradeCostLine(card);
+    };
+    const builtQtyClamp = (card, delta) => {
+      const valEl = card.querySelector(".planet-built-qty-val");
+      const max = Math.max(1, parseInt(card.getAttribute("data-built-max"), 10) || 1);
+      const cur = readPlanetBuiltQtyFromCard(card);
+      const next = Math.max(1, Math.min(max, cur + (Number.isFinite(delta) ? delta : 0)));
+      if (valEl) {
+        if (valEl.tagName === "INPUT") valEl.value = String(next);
+        else valEl.textContent = String(next);
+      }
+      syncPlanetBuiltUpgradeCostLine(card);
+    };
+    root.querySelectorAll(".planet-built-name-btn").forEach((nameBtn) => {
+      nameBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const fromAttr = nameBtn.getAttribute("data-built-desc");
+        const desc =
+          (fromAttr && String(fromAttr).trim()) ||
+          (nameBtn.title && String(nameBtn.title).trim()) ||
+          (nameBtn.textContent && String(nameBtn.textContent).trim()) ||
+          "";
+        showBuildDesc(desc, nameBtn);
       });
-    }
-    for (const btn of root.querySelectorAll("button[data-bupgrade-surface-one]")) {
-      btn.addEventListener("click", async () => {
-        const ids = surfaceGroupIdsFromBtn(btn);
-        const first = ids[0];
-        if (!first) return;
-        await upgradeBuilding(first);
+    });
+    root.querySelectorAll(".planet-built-step").forEach((stepBtn) => {
+      stepBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (stepBtn.disabled) return;
+        const card = stepBtn.closest(".planet-built-card");
+        if (!card) return;
+        const d = Number(stepBtn.getAttribute("data-built-step"));
+        builtQtyClamp(card, Number.isFinite(d) ? d : 0);
       });
-    }
-    for (const btn of root.querySelectorAll("button[data-bupgrade-surface-all]")) {
-      btn.addEventListener("click", async () => {
-        const ids = surfaceGroupIdsFromBtn(btn);
-        if (ids.length < 2) return;
+    });
+    root.querySelectorAll(".planet-built-qty-val").forEach((el) => {
+      if (el.tagName !== "INPUT") return;
+      el.addEventListener("input", () => {
+        const card = el.closest(".planet-built-card");
+        if (card) syncPlanetBuiltUpgradeCostLine(card);
+      });
+      el.addEventListener("blur", () => clampPlanetBuiltQtyInput(el));
+      el.addEventListener("change", () => clampPlanetBuiltQtyInput(el));
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          el.blur();
+        }
+      });
+    });
+    root.querySelectorAll(".planet-built-upgrade").forEach((upBtn) => {
+      upBtn.addEventListener("click", async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (upBtn.disabled) return;
+        const row = upBtn.closest(".planet-built-actions");
+        const card = upBtn.closest(".planet-built-card");
+        if (!row || !card) return;
+        const ids = surfaceGroupIdsFromBtn(row);
+        const valEl = card.querySelector(".planet-built-qty-val");
+        if (valEl && valEl.tagName === "INPUT") clampPlanetBuiltQtyInput(valEl);
+        const n = Math.max(1, Math.min(ids.length, readPlanetBuiltQtyFromCard(card)));
+        if (!ids.length) return;
         if (
+          n > 1 &&
           !confirm(
-            `Улучшить по очереди все ${ids.length} построек этой группы? У каждого шага списание ресурсов с домашней планеты при остановке или ошибке.`
+            `Улучшить по очереди ${n} построек? У каждого шага списание ресурсов с домашней планеты; при ошибке цикл остановится.`,
           )
         )
           return;
-        let okN = 0;
-        for (let i = 0; i < ids.length; i++) {
+        for (let i = 0; i < n; i++) {
           const id = ids[i];
-          setStatus(`Улучшение группы: ${i + 1} / ${ids.length}…`);
-          const ok = await upgradeBuilding(id, { skipUiRefresh: true });
+          if (!id) break;
+          setStatus(`Улучшение: ${i + 1} / ${n}…`);
+          const ok = await upgradeBuilding(id, { skipUiRefresh: i + 1 < n });
           if (!ok) {
             await refreshPlanetAfterBuildingAction();
             return;
           }
-          okN += 1;
         }
-        setStatus(`Готово: улучшено ${okN}`, "ok");
+        setStatus(`Готово: улучшено ${n}`, "ok");
         await refreshPlanetAfterBuildingAction();
       });
-    }
+    });
+    root.querySelectorAll(".planet-built-dismantle").forEach((dmBtn) => {
+      dmBtn.addEventListener("click", async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const row = dmBtn.closest(".planet-built-actions");
+        const card = dmBtn.closest(".planet-built-card");
+        if (!row || !card) return;
+        const ids = surfaceGroupIdsFromBtn(row);
+        const valEl = card.querySelector(".planet-built-qty-val");
+        if (valEl && valEl.tagName === "INPUT") clampPlanetBuiltQtyInput(valEl);
+        const n = Math.max(1, Math.min(ids.length, readPlanetBuiltQtyFromCard(card)));
+        if (!ids.length) return;
+        if (
+          !confirm(
+            `Утилизировать ${n} построек по очереди? Вернётся ~50% стоимости каждой на домашнюю планету.`,
+          )
+        )
+          return;
+        for (let i = 0; i < n; i++) {
+          const id = ids[i];
+          if (!id) break;
+          setStatus(`Снос: ${i + 1} / ${n}…`);
+          const ok = await dismantleBuilding(id, { skipUiRefresh: i + 1 < n });
+          if (!ok) {
+            await refreshPlanetAfterBuildingAction();
+            return;
+          }
+        }
+        setStatus(`Готово: утилизировано ${n}`, "ok");
+        await refreshPlanetAfterBuildingAction();
+      });
+    });
+    root.querySelectorAll(".planet-built-card").forEach((c) => syncPlanetBuiltUpgradeCostLine(c));
   };
 
   const bindOutpostButtons = (root, ctx) => {
@@ -2025,41 +2776,219 @@
     }
   };
 
-  const buildButtonsHtml = () => `
-    <div class="build-grid" style="margin-top:10px;">
-      <button type="button" class="build-card" data-b="mine"><span class="ic">⛏</span><span>Шахта</span></button>
-      <button type="button" class="build-card" data-b="reactor"><span class="ic">⚡</span><span>Реактор</span></button>
-      <button type="button" class="build-card" data-b="fuel_depot"><span class="ic">⛽</span><span>Топливник</span></button>
-      <button type="button" class="build-card" data-b="crystal_farm"><span class="ic">💎</span><span>Кристаллы</span></button>
-      <button type="button" class="build-card" data-b="habitat"><span class="ic">🏠</span><span>Жильё</span></button>
-      <button type="button" class="build-card" data-b="basic_farm"><span class="ic">🌾</span><span>Ферма</span></button>
-      <button type="button" class="build-card" data-b="basic_water"><span class="ic">💦</span><span>Опреснитель</span></button>
-      <button type="button" class="build-card" data-b="research_lab"><span class="ic">🔬</span><span>Лаборатория</span></button>
-      <button type="button" class="build-card" data-b="drydock_mini"><span class="ic">🛠</span><span>Мини-верфь</span></button>
-      <button type="button" class="build-card" data-b="solar_array"><span class="ic">☀</span><span>Солнечная матрица</span></button>
-      <button type="button" class="build-card" data-b="cargo_yard"><span class="ic">📦</span><span>Грузовая</span></button>
-      <button type="button" class="build-card" data-b="sensor_mast"><span class="ic">📡</span><span>Сенсоры</span></button>
-      <button type="button" class="build-card" data-b="hydro_farm"><span class="ic">🍲</span><span>Гидропоника</span></button>
-      <button type="button" class="build-card" data-b="atmospheric_reclaim"><span class="ic">💧</span><span>Конденсатор</span></button>
-    </div>
-  `;
-
-  const BUILD_MENU_BUTTON_TYPES = [
-    "mine",
-    "reactor",
-    "fuel_depot",
-    "crystal_farm",
-    "habitat",
-    "basic_farm",
-    "basic_water",
-    "research_lab",
-    "drydock_mini",
-    "solar_array",
-    "cargo_yard",
-    "sensor_mast",
-    "hydro_farm",
-    "atmospheric_reclaim",
+  /** Строки карточек строительства: тип, эмодзи, подпись до ответа `placement_checks`. */
+  const BUILD_CARD_UI_ROWS = [
+    ["mine", "⛏", "Шахта"],
+    ["reactor", "⚡", "Реактор"],
+    ["fuel_depot", "⛽", "Топливник"],
+    ["crystal_farm", "💎", "Кристаллы"],
+    ["habitat", "🏠", "Жильё"],
+    ["basic_farm", "🌾", "Ферма"],
+    ["basic_water", "💦", "Опреснитель"],
+    ["research_lab", "🔬", "Лаборатория"],
+    ["drydock_mini", "🛠", "Мини-верфь"],
+    ["solar_array", "☀", "Солнечная матрица"],
+    ["cargo_yard", "📦", "Грузовая"],
+    ["sensor_mast", "📡", "Сенсоры"],
+    ["hydro_farm", "🍲", "Гидропоника"],
+    ["atmospheric_reclaim", "💧", "Конденсатор"],
   ];
+
+  const BUILD_MENU_BUTTON_TYPES = BUILD_CARD_UI_ROWS.map((r) => r[0]);
+
+  const buildingTypeGlyph = (logicalType) => {
+    const k = String(resolveBuildingCanonId(logicalType) || logicalType || "").toLowerCase();
+    const row = BUILD_CARD_UI_ROWS.find((r) => String(r[0]).toLowerCase() === k);
+    return row ? row[1] : "▣";
+  };
+
+  const buildingEffectsSummaryRuFromDef = (def) => {
+    if (!def || typeof def !== "object") return "—";
+    const eff = def.effects && typeof def.effects === "object" ? def.effects : null;
+    const prod =
+      eff && eff.production_per_sol_add && typeof eff.production_per_sol_add === "object"
+        ? eff.production_per_sol_add
+        : eff && eff.production_per_tick_add && typeof eff.production_per_tick_add === "object"
+          ? eff.production_per_tick_add
+          : {};
+    const parts = [];
+    const add = (key, ru) => {
+      const v = Number(prod[key]) || 0;
+      if (v === 0) return;
+      const sign = v > 0 ? "+" : "";
+      parts.push(`${sign}${Math.trunc(v)} ${ru}/сол`);
+    };
+    add("metal", "металл");
+    add("crystal", "кристаллы");
+    add("energy", "энергия");
+    add("fuel", "топливо");
+    add("food", "еда");
+    add("water", "вода");
+    const maxPop = eff && Number(eff.max_population_add);
+    if (Number.isFinite(maxPop) && maxPop !== 0) {
+      const sign = maxPop > 0 ? "+" : "";
+      parts.push(`${sign}${Math.trunc(maxPop)} насел.`);
+    }
+    return parts.length ? parts.join(", ") : "—";
+  };
+
+  /** Карточка группы одинаковых зданий на планете: имя, эффект, ± количество, «Улучшить» / «Утилизировать». */
+  const planetSurfaceGroupRowHtml = (g) => {
+    const def = resolveBuildingDef(g.bt) || {};
+    const nm = g.grpTitle || buildingSurfaceGroupTitle(def);
+    const desc =
+      typeof def.description === "string" && def.description.trim() ? def.description.trim() : "";
+    const effectsLine = buildingEffectsSummaryRuFromDef(def);
+    const glyph = buildingTypeGlyph(g.bt);
+    const cnt = g.ids.length;
+    if (!cnt) return "";
+    const csvEsc = escAttr(g.ids.join(","));
+    const hasUp = buildingHasBalanceUpgrade(g.bt);
+    const tipFull = [nm, desc && desc !== nm ? desc : "", effectsLine && effectsLine !== "—" ? `Эффект: ${effectsLine}` : ""]
+      .filter(Boolean)
+      .join("\n");
+    const descClick = desc && desc.length ? desc : tipFull;
+    const upDis = !hasUp;
+    const oneOnly = cnt <= 1;
+    const stepDis = oneOnly ? " disabled" : "";
+    const upCost = buildingUpgradeCostObj(g.bt);
+    const costIcons = formatResourceDictCompactRu(upCost);
+    const costEnc =
+      !upDis && upCost && typeof upCost === "object"
+        ? encodeURIComponent(JSON.stringify(upCost))
+        : "";
+    const costWrap =
+      costEnc !== ""
+        ? `<span class="planet-built-cost-wrap" data-per-upgrade-cost="${costEnc}"> · апгрейд ×<span class="planet-built-cost-mul">1</span>: <span class="planet-built-cost-icons">${costIcons || "—"}</span></span>`
+        : "";
+    const upTitle = upDis
+      ? "В балансе нет следующего уровня для этой постройки"
+      : costIcons
+        ? `Улучшить по очереди (склад дома). За один шаг: ${costIcons}`
+        : "Улучшить выбранное число построек по очереди (склад дома)";
+    return `<div class="planet-built-card" data-built-max="${cnt}">
+      <span class="ic" aria-hidden="true">${glyph}</span>
+      <div class="planet-built-main">
+        <div class="planet-built-top">
+          <button type="button" class="planet-built-name-btn" title="${escAttr(tipFull)}" data-built-desc="${escAttr(descClick)}">${escHtml(nm)}</button>
+          <span class="planet-built-meta muted">${escHtml(effectsLine)}</span>
+          <div class="planet-built-submeta muted" aria-live="polite">В группе (эта клетка): <b>${cnt}</b>${costWrap}</div>
+        </div>
+        <div class="planet-built-actions" data-surface-group-ids="${csvEsc}">
+          <button type="button" class="planet-built-step" data-built-step="-1"${stepDis} aria-label="Меньше">−</button>
+          <input type="number" class="planet-built-qty-val" name="planet_built_qty" min="1" max="${cnt}" step="1" value="1" inputmode="numeric" pattern="[0-9]*" title="Сколько построек затронуть подряд (1–${cnt})" aria-label="Число построек для действия" />
+          <button type="button" class="planet-built-step" data-built-step="1"${stepDis} aria-label="Больше">+</button>
+          <button type="button" class="btn-primary planet-built-upgrade"${upDis ? " disabled" : ""} title="${escAttr(upTitle)}">Улучшить</button>
+          <button type="button" class="btn-secondary planet-built-dismantle" title="Снести выбранное число построек (~50% стоимости на дом за каждую)">Утилизировать</button>
+        </div>
+      </div>
+    </div>`;
+  };
+
+  /** Одна постройка вне тайла планеты — та же карточка, количество фиксировано. */
+  const planetBuiltSingleOffColonyHtml = (b) => {
+    const bid = b && b.id ? String(b.id) : "";
+    const bt = b && b.building_type ? String(b.building_type) : "";
+    if (!bid) return "";
+    const bl = Number(b?.level) || 1;
+    const blPart = bl > 1 ? ` <span class="muted">(ур. ${bl})</span>` : "";
+    const def = resolveBuildingDef(bt) || {};
+    const nm = buildingLabelRu(bt);
+    const desc =
+      typeof def.description === "string" && def.description.trim() ? def.description.trim() : "";
+    const effectsLine = buildingEffectsSummaryRuFromDef(def);
+    const glyph = buildingTypeGlyph(bt);
+    const blTxt = bl > 1 ? ` (ур. ${bl})` : "";
+    const tipFull = [`${nm}${blTxt}`, desc, effectsLine && effectsLine !== "—" ? `Эффект: ${effectsLine}` : ""]
+      .filter(Boolean)
+      .join("\n");
+    const descClick = desc || tipFull;
+    const hasUp = buildingHasBalanceUpgrade(bt);
+    const upDis = !hasUp;
+    const csvEsc = escAttr(bid);
+    const upCost = buildingUpgradeCostObj(bt);
+    const costIcons = formatResourceDictCompactRu(upCost);
+    const costEnc =
+      !upDis && upCost && typeof upCost === "object"
+        ? encodeURIComponent(JSON.stringify(upCost))
+        : "";
+    const costWrap =
+      costEnc !== ""
+        ? `<span class="planet-built-cost-wrap" data-per-upgrade-cost="${costEnc}"> · апгрейд ×<span class="planet-built-cost-mul">1</span>: <span class="planet-built-cost-icons">${costIcons || "—"}</span></span>`
+        : "";
+    const upTitle = upDis
+      ? "В балансе нет следующего уровня для этой постройки"
+      : costIcons
+        ? `Улучшить постройку (склад дома). Стоимость: ${costIcons}`
+        : "Улучшить постройку (склад дома)";
+    return `<div class="planet-built-card planet-built-card--single" data-built-max="1">
+      <span class="ic" aria-hidden="true">${glyph}</span>
+      <div class="planet-built-main">
+        <div class="planet-built-top">
+          <button type="button" class="planet-built-name-btn" title="${escAttr(tipFull)}" data-built-desc="${escAttr(descClick)}">${escHtml(nm)}${blPart}</button>
+          <span class="planet-built-meta muted">${escHtml(effectsLine)}</span>
+          <div class="planet-built-submeta muted" aria-live="polite">На клетке: <b>1</b>${costWrap}</div>
+        </div>
+        <div class="planet-built-actions" data-surface-group-ids="${csvEsc}">
+          <button type="button" class="planet-built-step" data-built-step="-1" disabled aria-label="Меньше">−</button>
+          <input type="number" class="planet-built-qty-val" name="planet_built_qty" min="1" max="1" step="1" value="1" inputmode="numeric" pattern="[0-9]*" title="Одна постройка на клетке" aria-label="Число построек для действия" />
+          <button type="button" class="planet-built-step" data-built-step="1" disabled aria-label="Больше">+</button>
+          <button type="button" class="btn-primary planet-built-upgrade"${upDis ? " disabled" : ""} title="${escAttr(upTitle)}">Улучшить</button>
+          <button type="button" class="btn-secondary planet-built-dismantle" title="Снести постройку (~50% стоимости на дом)">Утилизировать</button>
+        </div>
+      </div>
+    </div>`;
+  };
+
+  const buildCardRowHtml = (bt, glyph, shortLabel, opts = {}) => {
+    const sectorField = Boolean(opts.sectorField);
+    if (sectorField) {
+      return `
+    <div class="build-card build-card--sector-field" data-b="${escAttr(String(bt))}">
+      <span class="ic" aria-hidden="true">${glyph}</span>
+      <div class="build-card-main">
+        <div class="build-card-top">
+          <button type="button" class="build-card-name-btn" title="">${escHtml(shortLabel)}</button>
+          <span class="build-card-meta muted"></span>
+        </div>
+        <div class="build-card-cost-line muted" aria-live="polite"></div>
+        <div class="build-card-actions">
+          <button type="button" class="btn-primary build-card-build">Построить</button>
+        </div>
+      </div>
+    </div>`;
+    }
+    return `
+    <div class="build-card" data-b="${escAttr(String(bt))}">
+      <span class="ic" aria-hidden="true">${glyph}</span>
+      <div class="build-card-main">
+        <div class="build-card-top">
+          <button type="button" class="build-card-name-btn" title="">${escHtml(shortLabel)}</button>
+          <span class="build-card-meta muted"></span>
+        </div>
+        <div class="build-card-cost-line muted" aria-live="polite"></div>
+        <div class="build-card-actions">
+          <button type="button" class="build-qty-step" data-d="-1" aria-label="Меньше">−</button>
+          <input type="number" class="build-qty-val" name="build_qty" min="1" max="100" step="1" value="1" inputmode="numeric" pattern="[0-9]*" title="Число построек за один запрос (1–100)" aria-label="Число построек" />
+          <button type="button" class="build-qty-step" data-d="1" aria-label="Больше">+</button>
+          <button type="button" class="btn-primary build-card-build">Построить</button>
+        </div>
+      </div>
+    </div>`;
+  };
+
+  const buildButtonsHtml = (opts = {}) => {
+    const sectorField = Boolean(opts.sectorField);
+    const cards = BUILD_CARD_UI_ROWS.map(([bt, gl, lab]) => buildCardRowHtml(bt, gl, lab, { sectorField })).join("");
+    const footer = sectorField
+      ? `<div class="planet-build-bulk-row muted" style="margin-top:12px;font-size:90%;">На клетке вне тайла колонии — одна постройка за раз; ресурсы со склада дома (нехватка подсвечена красным).</div>`
+      : `<div class="planet-build-bulk-row muted" style="margin-top:12px;font-size:90%;">Число построек за один запрос: «−» / «+», затем «Построить» (до 100, склад дома).</div>`;
+    return `
+    <div class="build-grid" style="margin-top:10px;">${cards}</div>
+    <div id="planet-build-type-desc" class="planet-build-type-desc muted hidden" role="status" aria-live="polite"></div>
+    ${footer}
+  `;
+  };
 
   /** Типы форпостов в меню полевой стройки — синхронизировать с кнопками `data-outpost`. */
   const OUTPOST_BUILD_MENU_TYPES = ["outpost_t1"];
@@ -2082,8 +3011,15 @@
 
   /** Потребность vs склад дома — тултипы, статус и баннер в модалке. */
   const formatCostVsHaveRuTip = (need, have) => {
-    const keys = ["metal", "crystal", "energy", "fuel"];
-    const ru = { metal: "металл", crystal: "кристаллы", energy: "энергия", fuel: "топливо" };
+    const keys = ["metal", "crystal", "energy", "fuel", "food", "water"];
+    const ru = {
+      metal: "металл",
+      crystal: "кристаллы",
+      energy: "энергия",
+      fuel: "топливо",
+      food: "еда",
+      water: "вода",
+    };
     const parts = [];
     for (const k of keys) {
       const n = Number(need && need[k]);
@@ -2093,6 +3029,107 @@
       parts.push(`${ru[k] || k}: нужно ${n}, на складе ${hv}`);
     }
     return parts.length ? parts.join("; ") : "Недостаточно ресурсов на складе домашней планеты.";
+  };
+
+  /** Человекочитаемое описание ошибки API (без сырых ключей в основном тексте). */
+  const formatApiFailure = (body, opts = {}) => {
+    if (!body || typeof body !== "object") return "Нет ответа сервера или неверный формат данных.";
+    const err = body.error != null ? String(body.error) : "";
+    const detail = typeof body.detail === "string" && body.detail.trim() ? body.detail.trim() : "";
+
+    const fmtNum = (v) => {
+      const x = Number(v);
+      if (!Number.isFinite(x)) return "?";
+      if (Math.abs(x - Math.round(x)) < 1e-6) return String(Math.round(x));
+      return String(Math.round(x * 100) / 100);
+    };
+
+    const needHaveRp = () => {
+      const need = body.need;
+      const have = body.have;
+      return `Недостаточно очков исследований. Нужно: ${fmtNum(need)}, есть: ${fmtNum(have)}`;
+    };
+
+    const needHavePair = (needKey, haveKey, ruNeed, ruHave) => {
+      const n = body[needKey];
+      const h = body[haveKey];
+      return `Нужно ${ruNeed}: ${fmtNum(n)}, есть ${ruHave}: ${fmtNum(h)}`;
+    };
+
+    const resourcesLine = () => {
+      const tip = formatCostVsHaveRuTip(body.need || {}, body.have || {});
+      return tip ? `Не хватает ресурсов: ${tip.replace(/; /g, ", ")}` : "Не хватает ресурсов на складе домашней планеты.";
+    };
+
+    if (err === "not_enough_research_points") return needHaveRp();
+    if (err === "not_enough_resources") return resourcesLine();
+    if (err === "not_enough_fuel") return needHavePair("need", "have", "топливо для прыжка", "топливо");
+    if (err === "not_enough_fleet_energy") return needHavePair("need", "have", "энергии флота", "энергии");
+    if (err === "tech_prereq_missing") {
+      const csv = techIdsToRuCsv(body.missing || []);
+      return csv ? `Сначала изучите: ${csv}` : "Не выполнены зависимости технологий.";
+    }
+    if (err === "tech_field_data_missing") {
+      const m = Array.isArray(body.missing) ? body.missing.filter(Boolean).map(String) : [];
+      return m.length
+        ? `Нужны полевые данные: ${m.join(", ")}. Исследуйте руины и аномалии флотом на клетке.`
+        : "Нужны полевые данные для этой технологии.";
+    }
+    if (err === "tech_queue_full")
+      return "Уже есть исследование в работе — дождитесь завершения (панель задач в окне исследований).";
+    if (err === "tech_already_started") return "Эта технология уже изучена или изучается.";
+    if (err === "tech_disabled") return "Технология отключена в конфигурации сервера.";
+    if (err === "unknown_tech") return "Неизвестная технология.";
+    if (err === "engineer_required" || err === "not_enough_engineers") {
+      const ne = body.need_engineers;
+      return ne != null && Number.isFinite(Number(ne))
+        ? `Для действия на этой клетке нужен ваш флот с инженерами (требуется инженеров: ${fmtNum(ne)}).`
+        : "Для действия на этой клетке нужен ваш флот с инженерами (или стройка с клетки своей планеты).";
+    }
+    if (err === "outpost_too_close") {
+      const no = body.nearest_outpost || null;
+      const at =
+        no && Number.isFinite(Number(no.x)) && Number.isFinite(Number(no.y))
+          ? ` (ближайший форпост ${no.x},${no.y},${no.z ?? 0})`
+          : "";
+      return `Слишком близко к вашему форпосту${at}. Нужно расстояние ≥ ${body.need_distance ?? "?"}, сейчас ${body.nearest ?? "?"}.`;
+    }
+    if (err === "planet_slots_full") {
+      const u = body.built_surface ?? body.built;
+      return `На тайле колонии заняты все слоты поверхности (${u ?? "?"}/${body.total ?? "?"}).`;
+    }
+    if (err === "planet_required") return "Эту постройку можно возводить только в клетке планеты.";
+    if (err === "tech_required") {
+      const csv = techIdsToRuCsv(body.missing_techs || body.required_techs || []);
+      return csv ? `Нужны исследования: ${csv}` : "Не выполнены требования по технологиям.";
+    }
+    if (err === "wrong_foundation_terrain") {
+      const exp = Array.isArray(body.expected) ? body.expected.join(", ") : "—";
+      return `Неверное основание: требуется ${exp}, на клетке ${body.terrain || "—"}.`;
+    }
+    if (err === "inside_enemy_control_zone") return "В клетке с подтверждённым вражеским контролем действие недоступно.";
+    if (err === "building_upgrade_unavailable") return "Для этой постройки нет следующего уровня в балансе.";
+    if (err === "planet_type_cap") return "Достигнут лимит таких построек на планете.";
+    if (err === "module_work_queue_full")
+      return "Уже идёт монтаж или улучшение модуля в империи — дождитесь завершения.";
+    if (err === "module_busy") return "Этот слот модуля занят или недоступен.";
+    if (err === "cell_occupied_by_own_fleet")
+      return "В клетке уже стоит другой ваш флот — два флота не могут занимать одну клетку.";
+    if (err === "active_order_exists") {
+      const h = opts.activeOrderHint && String(opts.activeOrderHint).trim();
+      return h
+        ? `Флот уже выполняет приказ. ${h} Отмените приказ или дождитесь прибытия.`
+        : "Флот уже выполняет приказ — отмените его или дождитесь завершения.";
+    }
+    if (err === "sector_not_visible") return "Клетка не в зоне обзора ваших флотов и колоний.";
+    if (err === "nothing_to_discover") return "Здесь нечего исследовать.";
+    if (err === "fleet_required") return "Приведите свой флот на эту клетку, чтобы исследовать руины или аномалию.";
+    if (err === "invalid_payload") return "Некорректные данные запроса.";
+    if (err === "not_authenticated") return "Сессия истекла — войдите снова.";
+
+    if (detail) return `Операция не выполнена. ${detail}`;
+    if (err) return "Операция не выполнена. Попробуйте позже или откройте «Империя» для баланса.";
+    return "Операция не выполнена.";
   };
 
   const refreshPlanetBuildPlacementBanner = (results) => {
@@ -2121,7 +3158,7 @@
     }
     if (shortfall) {
       bits.push(
-        `<span class="hud-warn">Не хватает ресурсов на складе дома</span> для части вариантов ниже. Наведите на затемнённую кнопку — там «нужно / есть». Включите «Показать все варианты», если список скрыт.`,
+        `<span class="hud-warn">Не хватает ресурсов на складе дома</span> для части вариантов ниже. Наведите на карточку или имя типа — там «нужно / есть». Включите «Показать все варианты», если список скрыт.`,
       );
     }
     el.innerHTML = bits.join("<br />");
@@ -2140,22 +3177,25 @@
       const body = await r.json();
       if (!body || !body.ok) return;
       const results = body.results || {};
-      const btns = planetModalBody.querySelectorAll("button[data-b]");
-      for (const btn of btns) {
-        const bt = btn.getAttribute("data-b");
+      const cards = planetModalBody.querySelectorAll(".build-card[data-b]");
+      for (const card of cards) {
+        const bt = card.getAttribute("data-b");
         const res = results[bt];
         const showAll = Boolean(showAllBuildOptions);
+        const nameBtn = card.querySelector(".build-card-name-btn");
+        const metaEl = card.querySelector(".build-card-meta");
+        const valEl = card.querySelector(".build-qty-val");
+        const buildBtn = card.querySelector(".build-card-build");
+        const stepBtns = card.querySelectorAll(".build-qty-step");
+        const costLine = card.querySelector(".build-card-cost-line");
 
-        // Подпись кнопки: показываем основание + профит (из balance через сервер).
-        if (!btn.getAttribute("data-label")) btn.setAttribute("data-label", btn.textContent || bt);
-        const baseLabel = btn.getAttribute("data-label") || bt;
         const meta = res && res.meta ? res.meta : null;
         const terrainsRu = meta ? formatAllowedTerrainsShortRu(meta.allowed_terrains) : "";
         const effectsRu = meta && meta.effects_ru ? String(meta.effects_ru) : "";
         const extra = [terrainsRu ? `[${terrainsRu}]` : "", effectsRu && effectsRu !== "—" ? effectsRu : ""]
           .filter(Boolean)
           .join(" ");
-        btn.textContent = extra ? `${baseLabel} ${extra}` : baseLabel;
+        if (metaEl) metaEl.textContent = extra;
 
         const nm = meta && meta.name ? String(meta.name) : bt;
         const desc = meta && meta.description ? String(meta.description) : "";
@@ -2165,59 +3205,80 @@
         if (terrainsRu) baseTipParts.push(`Террейн: ${terrainsRu}`);
         const baseTip = baseTipParts.filter(Boolean).join("\n");
 
-        // По умолчанию — показываем только реально доступные варианты.
-        // По галочке "Показать все варианты" — показываем весь список (с подсказками).
         if (!showAll && !(res && res.ok)) {
-          btn.style.display = "none";
+          card.style.display = "none";
         } else {
-          btn.style.display = "";
+          card.style.display = "";
         }
 
-        if (res && res.ok) {
-          btn.disabled = false;
-          btn.title = baseTip;
-        } else {
-          btn.disabled = true;
+        let fullTitle = baseTip;
+        if (!(res && res.ok)) {
           const err = res ? res.error : "not_allowed";
           if (err === "wrong_foundation_terrain") {
             const exp = Array.isArray(res.expected) ? res.expected.join(", ") : "—";
             const got = res.terrain ? String(res.terrain) : "—";
-            btn.title = [baseTip, `Нужно основание: ${exp}. Сейчас: ${got}.`].filter(Boolean).join("\n");
+            fullTitle = [baseTip, `Нужно основание: ${exp}. Сейчас: ${got}.`].filter(Boolean).join("\n");
           } else if (err === "planet_required") {
-            btn.title = [baseTip, "Можно построить только в клетке планеты."].filter(Boolean).join("\n");
+            fullTitle = [baseTip, "Можно построить только в клетке планеты."].filter(Boolean).join("\n");
           } else if (err === "tech_required") {
             const missing = Array.isArray(res.missing_techs) ? res.missing_techs.join(", ") : "—";
-            btn.title = [baseTip, `Нужно исследование: ${missing}`].filter(Boolean).join("\n");
+            fullTitle = [baseTip, `Нужно исследование: ${missing}`].filter(Boolean).join("\n");
           } else if (err === "engineer_required") {
-            btn.title = [baseTip, "Нужен ваш флот с инженерами в этой клетке."].filter(Boolean).join("\n");
+            fullTitle = [baseTip, "Нужен ваш флот с инженерами в этой клетке."].filter(Boolean).join("\n");
           } else if (err === "not_enough_engineers") {
-            btn.title = [baseTip, "Не хватает инженеров в этом флоте."].filter(Boolean).join("\n");
+            fullTitle = [baseTip, "Не хватает инженеров в этом флоте."].filter(Boolean).join("\n");
           } else if (err === "inside_enemy_control_zone") {
-            btn.title = [baseTip, "Нельзя: клетка под подтверждённым вражеским контролем."].filter(Boolean).join("\n");
+            fullTitle = [baseTip, "Нельзя: клетка под подтверждённым вражеским контролем."].filter(Boolean).join("\n");
           } else if (err === "not_enough_resources") {
             const tip = formatCostVsHaveRuTip(res.need, res.have);
-            btn.title = [baseTip, tip].filter(Boolean).join("\n");
+            fullTitle = [baseTip, tip].filter(Boolean).join("\n");
           } else if (err === "planet_slots_full") {
-            btn.title = [
+            fullTitle = [
               baseTip,
               `Слоты поверхности колонии заняты (${res.built_surface ?? res.built ?? "?"}/${res.total ?? "?"}).`,
             ]
               .filter(Boolean)
               .join("\n");
           } else if (err === "cell_already_built") {
-            btn.title = [
+            fullTitle = [
               baseTip,
               "На этой клетке уже есть постройка (вне тайла колонии допускается одна постройка на клетку).",
             ]
               .filter(Boolean)
               .join("\n");
           } else if (err === "no_home_planet" || err === "no_resources") {
-            btn.title = [baseTip, "Нет домашней планеты или склада ресурсов для списания."].filter(Boolean).join("\n");
+            fullTitle = [baseTip, "Нет домашней планеты или склада ресурсов для списания."].filter(Boolean).join("\n");
           } else {
-            btn.title = [baseTip, `Нельзя: ${err}`].filter(Boolean).join("\n");
+            fullTitle = [baseTip, `Нельзя: ${err}`].filter(Boolean).join("\n");
+          }
+        } else if (res && res.ok && res.build && typeof res.build === "object") {
+          const tt = Number(res.build.time_ticks);
+          if (Number.isFinite(tt) && tt > 0) {
+            const rtp = res.build.ready_at_tick_preview;
+            const ct0 = res.build.current_tick;
+            const seg = [`Стройка: ${ruSolsCountLabel(tt)} до ввода в строй.`];
+            if (rtp != null && ct0 != null) {
+              seg.push(`Готовность: сол ${rtp} (сейчас сол ${ct0}).`);
+            }
+            fullTitle = [fullTitle, seg.join(" ")].filter(Boolean).join("\n");
           }
         }
+
+        card.title = fullTitle;
+        if (nameBtn) {
+          nameBtn.textContent = nm;
+          nameBtn.title = fullTitle;
+          const descClick = desc && String(desc).trim() ? String(desc).trim() : fullTitle;
+          nameBtn.setAttribute("data-build-desc", descClick);
+        }
+        const can = res && res.ok;
+        if (buildBtn) buildBtn.disabled = !can;
+        for (const sb of stepBtns) sb.disabled = !can;
+        if (valEl && valEl.tagName === "INPUT") valEl.disabled = !can;
+        card.classList.toggle("build-card--cannot", !can);
       }
+      lastBuildPlacementResults = results;
+      repaintBuildCardCostLines();
       refreshPlanetBuildPlacementBanner(results);
     } catch (_e) {
       // ignore UI-only failures
@@ -2513,9 +3574,8 @@
       closePlanetModal();
       if (selCoordEl) selCoordEl.textContent = "—";
       if (selTerrainEl) selTerrainEl.textContent = "—";
-      if (selGlyphEl) selGlyphEl.textContent = "—";
-      const gWrapClear = document.getElementById("sel-glyph-wrap");
-      if (gWrapClear) gWrapClear.classList.add("hidden");
+      if (selBuiltWrapEl) selBuiltWrapEl.classList.add("hidden");
+      if (selBuiltEl) selBuiltEl.innerHTML = "";
       if (selObjectsEl) selObjectsEl.textContent = "—";
       if (selDistanceEl) selDistanceEl.textContent = "—";
       if (selTravelEl) selTravelEl.textContent = "—";
@@ -2546,19 +3606,21 @@
     }
 
     if (selCoordEl) selCoordEl.textContent = `${selectedCell.x}, ${selectedCell.y}, ${selectedCell.z}`;
-    if (selTerrainEl) selTerrainEl.textContent = formatTerrainRu(selectedCell.terrain);
-    let glyphText = "—";
-    if (selectedCell.terrain !== "planet") {
-      glyphText = formatGlyphRu(selectedCell.terrain, selectedCell.glyph);
-    }
-    if (selGlyphEl) selGlyphEl.textContent = glyphText;
-    const gWrap = document.getElementById("sel-glyph-wrap");
-    if (gWrap) {
-      const hideGlyph = glyphText === "—" || glyphText === "нет (пусто)";
-      gWrap.classList.toggle("hidden", hideGlyph);
+    if (selTerrainEl) {
+      selTerrainEl.textContent = formatCellContainsRu(selectedCell.terrain, selectedCell.glyph);
     }
 
     const objs = selectedCell.objects || [];
+    const builtHud = formatBuiltHudHtml(objs);
+    if (selBuiltWrapEl && selBuiltEl) {
+      if (!builtHud) {
+        selBuiltWrapEl.classList.add("hidden");
+        selBuiltEl.innerHTML = "";
+      } else {
+        selBuiltWrapEl.classList.remove("hidden");
+        selBuiltEl.innerHTML = builtHud;
+      }
+    }
     if (selObjectsEl) {
       if (objs.length === 0) selObjectsEl.textContent = "нет";
       else {
@@ -2719,6 +3781,13 @@
     syncHudFleetDetailVisibility();
   };
 
+  const feedbackPlanetAndHud = (message, kind) => {
+    setStatus(message, kind);
+    if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, message, kind);
+    const pEl = planetModalFeedbackEl();
+    if (pEl) showActionFeedback(pEl, message, kind);
+  };
+
   const placeBuilding = async (x, y, z, building_type, fleetId = null) => {
     setStatus("Строительство...");
     try {
@@ -2729,38 +3798,21 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
+        const msg = formatApiFailure(body);
+        feedbackPlanetAndHud(msg, "err");
         if (body.error === "not_enough_resources") {
           const resHuman = formatCostVsHaveRuTip(body.need || {}, body.have || {});
-          setStatus(`Не хватает ресурсов: ${resHuman}`, "err");
           const ban = planetModalBody && planetModalBody.querySelector("#planet-build-placement-summary");
           if (ban) {
             ban.innerHTML = `<span class="hud-warn">Не хватает ресурсов.</span> ${resHuman}`;
             ban.classList.add("planet-build-placement-summary--warn");
           }
-        } else if (body.error === "engineer_required") {
-          setStatus("Для стройки вне колонии нужен ваш флот с инженерами на этой клетке", "err");
-        } else if (body.error === "outpost_too_close") {
-          setStatus(`Форпост слишком близко к вашему: нужно расстояние ≥ ${body.need_distance ?? "?"} (сейчас ${body.nearest ?? "?"})`, "err");
-        } else if (body.error === "planet_slots_full") {
-          const u = body.built_surface ?? body.built;
-          setStatus(`На тайле колонии заняты все слоты поверхности (${u ?? "?"}/${body.total ?? "?"}); полевая экспансия на других клетках этого лимита не использует`, "err");
-        } else if (body.error === "planet_required") {
-          setStatus("Эту постройку можно возводить только в клетке планеты", "err");
-        } else if (body.error === "not_enough_fleet_energy") {
-          setStatus(`Не хватает энергии флота для действия (нужно ${body.need ?? "?"}, есть ${body.have ?? "?"})`, "err");
-        } else if (body.error === "tech_required") {
-          setStatus(`Нужны исследования: ${techIdsToRuCsv(body.missing_techs || body.required_techs || [])}`, "err");
-          } else if (body.error === "wrong_foundation_terrain") {
-            const exp = Array.isArray(body.expected) ? body.expected.join(", ") : "—";
-            setStatus(`Неверное основание: требуется ${exp}, на клетке ${body.terrain || "—"}`, "err");
-        } else if (body.error === "inside_enemy_control_zone") {
-          setStatus("Нельзя строить в клетке с подтверждённым вражеским контролем", "err");
-        } else {
-          setStatus(`Ошибка: ${body.error || "build_failed"}`, "err");
         }
         return;
       }
-      setStatus(`Построено: «${buildingStatusCaptionRu(body.building?.building_type)}»`, "ok");
+      const okMsg = `Построено: «${buildingStatusCaptionRu(body.building?.building_type)}»`;
+      feedbackPlanetAndHud(okMsg, "ok");
+      recordColonyBuildMilestone(body.building?.building_type || building_type, x, y, z);
       const sx = selectedCell ? selectedCell.x : null;
       const sy = selectedCell ? selectedCell.y : null;
       const sz = selectedCell ? selectedCell.z : null;
@@ -2781,7 +3833,61 @@
       }
       updateSelectedPanel();
     } catch (_e) {
-      setStatus("Ошибка: network_error", "err");
+      feedbackPlanetAndHud("Нет связи с сервером. Проверьте сеть и попробуйте снова.", "err");
+    }
+  };
+
+  const placeBuildingBatch = async (x, y, z, building_type, count, fleetId = null) => {
+    setStatus(`Строительство ×${count}…`);
+    try {
+      const r = await fetch("/api/buildings/place_batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ x, y, z, building_type, fleet_id: fleetId, count }),
+      });
+      const body = await r.json();
+      if (!r.ok || !body.ok) {
+        const msg = formatApiFailure(body);
+        feedbackPlanetAndHud(msg, "err");
+        if (body.error === "not_enough_resources") {
+          const resHuman = formatCostVsHaveRuTip(body.need || {}, body.have || {});
+          const ban = planetModalBody && planetModalBody.querySelector("#planet-build-placement-summary");
+          if (ban) {
+            ban.innerHTML = `<span class="hud-warn">Не хватает ресурсов.</span> ${resHuman}`;
+            ban.classList.add("planet-build-placement-summary--warn");
+          }
+        }
+        return;
+      }
+      const placed = Number(body.placed) || 0;
+      const req = Number(body.requested) || count;
+      const okMsg =
+        placed >= req
+          ? `Построено: ${placed}× «${buildingStatusCaptionRu(building_type)}»`
+          : `Построено ${placed} из ${req} «${buildingStatusCaptionRu(building_type)}»${body.stopped_early ? " (дальше нельзя или не хватает ресурсов)" : ""}`;
+      feedbackPlanetAndHud(okMsg, placed > 0 ? "ok" : "err");
+      if (placed > 0) recordColonyBuildMilestone(body.building?.building_type || building_type, x, y, z);
+      const sx = selectedCell ? selectedCell.x : null;
+      const sy = selectedCell ? selectedCell.y : null;
+      const sz = selectedCell ? selectedCell.z : null;
+      await refreshWindow();
+      if (sx != null && sy != null && sz != null && currentWindow && currentWindow.cells) {
+        for (const row of currentWindow.cells) {
+          for (const c of row.row) {
+            if (c.x === sx && c.y === sy && c.z === sz) {
+              selectedCell = { ...c };
+              break;
+            }
+          }
+        }
+      }
+      await loadWorldState();
+      if (selectedCell && planetModalOverlay && !planetModalOverlay.classList.contains("hidden")) {
+        await fillPlanetModalFromApi(selectedCell);
+      }
+      updateSelectedPanel();
+    } catch (_e) {
+      feedbackPlanetAndHud("Нет связи с сервером. Проверьте сеть и попробуйте снова.", "err");
     }
   };
 
@@ -2802,7 +3908,7 @@
 
   const handleOutpostResult = async (body, okText) => {
     if (!body || !body.ok) return;
-    setStatus(okText, "ok");
+    feedbackPlanetAndHud(okText, "ok");
     await refreshWindow();
     refreshSelectedCellFromWindow();
     await loadWorldState();
@@ -2822,35 +3928,29 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        if (body.error === "tech_required")
-          setStatus(`Нужны исследования: ${techIdsToRuCsv(body.missing_techs || [])}`, "err");
-        else if (body.error === "not_enough_engineers" || body.error === "engineer_required")
-          setStatus(`Нужен инженер в клетке (need=${body.need_engineers ?? 1})`, "err");
-        else if (body.error === "outpost_too_close") {
+        const msg = formatApiFailure(body);
+        feedbackPlanetAndHud(msg, "err");
+        if (body.error === "outpost_too_close") {
           const no = body.nearest_outpost || null;
-          const at = no && Number.isFinite(Number(no.x)) && Number.isFinite(Number(no.y)) ? ` (${no.x},${no.y},${no.z ?? 0})` : "";
-          setStatus(`Слишком близко к вашему форпосту${at}. Нужно расстояние ≥ ${body.need_distance}, сейчас ${body.nearest}.`, "err");
           if (no && Number.isFinite(Number(no.x)) && Number.isFinite(Number(no.y))) {
-            // центрируем карту на ближайшем форпосте
             viewCenter = { x: Number(no.x), y: Number(no.y) };
             if (Number.isFinite(Number(no.z))) currentZ = Number(no.z);
             await refreshWindow();
           }
-        }
-        else if (body.error === "not_enough_resources") {
+        } else if (body.error === "not_enough_resources") {
           const resHuman = formatCostVsHaveRuTip(body.need || {}, body.have || {});
-          setStatus(`Не хватает ресурсов: ${resHuman}`, "err");
           const ban = planetModalBody && planetModalBody.querySelector("#outpost-build-placement-summary");
           if (ban) {
             ban.innerHTML = `<span class="hud-warn">Не хватает ресурсов для форпоста.</span> ${resHuman}`;
             ban.classList.add("planet-build-placement-summary--warn");
           }
-        } else setStatus(`Ошибка: ${(body.error || "outpost_build_failed")} ${body.detail ? `(${body.detail})` : ""}`, "err");
+        }
         return;
       }
+      mergeOnboardingMilestones({ exploreOrOutpost: true });
       await handleOutpostResult(body, `Форпост построен: ${body.outpost?.name || outpostType}`);
     } catch (_e) {
-      setStatus("Ошибка: network_error", "err");
+      feedbackPlanetAndHud("Нет связи с сервером. Проверьте сеть и попробуйте снова.", "err");
     }
   };
 
@@ -2864,14 +3964,12 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        if (body.error === "tech_required")
-          setStatus(`Нужны исследования: ${techIdsToRuCsv(body.missing_techs || [])}`, "err");
-        else setStatus(`Ошибка: ${body.error || "outpost_upgrade_failed"}`, "err");
+        feedbackPlanetAndHud(formatApiFailure(body), "err");
         return;
       }
       await handleOutpostResult(body, `Форпост улучшен: ${body.outpost?.name || "ok"}`);
     } catch (_e) {
-      setStatus("Ошибка: network_error", "err");
+      feedbackPlanetAndHud("Нет связи с сервером. Проверьте сеть и попробуйте снова.", "err");
     }
   };
 
@@ -2885,16 +3983,12 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        if (body.error === "tech_required")
-          setStatus(`Нужны исследования: ${techIdsToRuCsv(body.missing_techs || [])}`, "err");
-        else if (body.error === "not_enough_engineers") setStatus("Не хватает инженеров для модуля", "err");
-        else if (body.error === "module_work_queue_full") setStatus("Уже идёт монтаж/апгрейд модуля в империи — дождитесь завершения", "err");
-        else setStatus(`Ошибка: ${body.error || "module_install_failed"}`, "err");
+        feedbackPlanetAndHud(formatApiFailure(body), "err");
         return;
       }
       await handleOutpostResult(body, "Монтаж модуля запущен. Инженеры списаны — дождитесь готовности.");
     } catch (_e) {
-      setStatus("Ошибка: network_error", "err");
+      feedbackPlanetAndHud("Нет связи с сервером. Проверьте сеть и попробуйте снова.", "err");
     }
   };
 
@@ -2908,16 +4002,12 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        if (body.error === "tech_required")
-          setStatus(`Нужны исследования: ${techIdsToRuCsv(body.missing_techs || [])}`, "err");
-        else if (body.error === "module_work_queue_full") setStatus("Дождитесь завершения другого монтажа модуля", "err");
-        else if (body.error === "module_busy") setStatus("Этот слот уже в работе или недоступен", "err");
-        else setStatus(`Ошибка: ${body.error || "module_upgrade_failed"}`, "err");
+        feedbackPlanetAndHud(formatApiFailure(body), "err");
         return;
       }
       await handleOutpostResult(body, "Улучшение модуля запущено");
     } catch (_e) {
-      setStatus("Ошибка: network_error", "err");
+      feedbackPlanetAndHud("Нет связи с сервером. Проверьте сеть и попробуйте снова.", "err");
     }
   };
 
@@ -2937,26 +4027,38 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        if (body.error === "engineer_required") {
-          setStatus("Нужен ваш инженерный флот на клетке, чтобы забрать инженеров", "err");
-        } else {
-          setStatus(`Ошибка: ${body.error || "module_dismantle_failed"}`, "err");
-        }
+        feedbackPlanetAndHud(formatApiFailure(body), "err");
         return;
       }
       await handleOutpostResult(body, "Модуль разобран");
     } catch (_e) {
-      setStatus("Ошибка: network_error", "err");
+      feedbackPlanetAndHud("Нет связи с сервером. Проверьте сеть и попробуйте снова.", "err");
     }
   };
 
   const refreshPlanetAfterBuildingAction = async () => {
     await refreshWindow();
+    syncSelectedCellFromCurrentWindow();
     await loadWorldState();
     if (selectedCell && planetModalOverlay && !planetModalOverlay.classList.contains("hidden")) {
       await fillPlanetModalFromApi(selectedCell);
     }
     updateSelectedPanel();
+  };
+
+  const syncSelectedCellFromCurrentWindow = () => {
+    if (!selectedCell || !currentWindow || !currentWindow.cells) return;
+    const sx = Number(selectedCell.x);
+    const sy = Number(selectedCell.y);
+    const sz = selectedCell.z ?? 0;
+    for (const row of currentWindow.cells) {
+      for (const c of row.row || []) {
+        if (Number(c.x) === sx && Number(c.y) === sy && (c.z ?? 0) === sz) {
+          selectedCell = { ...c };
+          return;
+        }
+      }
+    }
   };
 
   /** @returns {Promise<boolean>} */
@@ -2971,24 +4073,14 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        if (body.error === "building_upgrade_unavailable") {
-          setStatus("Для этой постройки нет улучшения в балансе", "err");
-        } else if (body.error === "tech_required") {
-          setStatus(`Нужны исследования: ${techIdsToRuCsv(body.missing_techs || [])}`, "err");
-        } else if (body.error === "not_enough_resources") {
-          setStatus(`Не хватает ресурсов: ${formatCostVsHaveRuTip(body.need || {}, body.have || {})}`, "err");
-        } else if (body.error === "planet_type_cap") {
-          setStatus("Достигнут лимит таких построек на планете", "err");
-        } else if (body.error === "inside_enemy_control_zone") {
-          setStatus("В зоне вражеского контроля улучшение недоступно", "err");
-        } else setStatus(`Ошибка: ${body.error || "upgrade_failed"}`, "err");
+        feedbackPlanetAndHud(formatApiFailure(body), "err");
         return false;
       }
-      setStatus(`Улучшено до «${buildingStatusCaptionRu(body.building?.building_type)}»`, "ok");
+      feedbackPlanetAndHud(`Улучшено до «${buildingStatusCaptionRu(body.building?.building_type)}»`, "ok");
       if (!skipUiRefresh) await refreshPlanetAfterBuildingAction();
       return true;
     } catch (_e) {
-      setStatus("Ошибка: network_error", "err");
+      feedbackPlanetAndHud("Нет связи с сервером. Проверьте сеть и попробуйте снова.", "err");
       return false;
     }
   };
@@ -3005,14 +4097,14 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        setStatus(`Ошибка: ${body.error || "dismantle_failed"}`, "err");
+        feedbackPlanetAndHud(formatApiFailure(body), "err");
         return false;
       }
-      setStatus("Постройка снесена (50% стоимости возвращено)", "ok");
+      feedbackPlanetAndHud("Постройка снесена (50% стоимости возвращено)", "ok");
       if (!skipUiRefresh) await refreshPlanetAfterBuildingAction();
       return true;
     } catch (_e) {
-      setStatus("Ошибка: network_error", "err");
+      feedbackPlanetAndHud("Нет связи с сервером. Проверьте сеть и попробуйте снова.", "err");
       return false;
     }
   };
@@ -3041,12 +4133,27 @@
 
   const fillPlanetModalFromApi = async (cell) => {
     if (!planetModalBody) return;
+    if (
+      selectedCell &&
+      Number(selectedCell.x) === Number(cell.x) &&
+      Number(selectedCell.y) === Number(cell.y) &&
+      (selectedCell.z ?? 0) === (cell.z ?? 0)
+    ) {
+      syncSelectedCellFromCurrentWindow();
+    }
+    const cellLive =
+      selectedCell &&
+      Number(selectedCell.x) === Number(cell.x) &&
+      Number(selectedCell.y) === Number(cell.y) &&
+      (selectedCell.z ?? 0) === (cell.z ?? 0)
+        ? selectedCell
+        : cell;
     const preservedDetailsOpen = preservePlanetModalDetailsState();
-    const x = cell.x;
-    const y = cell.y;
-    const z = cell.z ?? 0;
-    const mapPlanet = (cell.objects || []).find((o) => o && o.type === "planet");
-    const mapOutpost = (cell.objects || []).find((o) => o && o.type === "outpost");
+    const x = cellLive.x;
+    const y = cellLive.y;
+    const z = cellLive.z ?? 0;
+    const mapPlanet = (cellLive.objects || []).find((o) => o && o.type === "planet");
+    const mapOutpost = (cellLive.objects || []).find((o) => o && o.type === "outpost");
 
     planetModalBody.innerHTML = "<div class='muted'>Загрузка…</div>";
     if (planetModalTitle) {
@@ -3102,13 +4209,13 @@
       const supPer = Number(d.supply_per_supplier) || 3;
       const supR = Number(d.supply_radius) || supBase + supPer * supN;
 
-      const flags = cell.flags || {};
-      const objs = cell.objects || [];
+      const flags = cellLive.flags || {};
+      const objs = cellLive.objects || [];
       const canBuild = Boolean(flags.zone_build_self) && !Boolean(flags.zone_build_enemy) && Boolean(flags.is_visible);
       const cellBuildings = objs.filter((o) => o && o.type === "building");
       const cellBuilding = cellBuildings[0] || null;
       let planetSurfaceBuildingsActions = "";
-      if (cell.terrain === "planet" && cellBuildings.length > 0) {
+      if (cellLive.terrain === "planet" && cellBuildings.length > 0) {
         const catOrder = { food: 0, water: 1, other: 2 };
         const catTitles = { food: "Еда", water: "Вода", other: "Прочее" };
         const grpMap = new Map();
@@ -3140,36 +4247,77 @@
             parts.push(`<div class="planet-build-category-title">${escHtml(catTitles[g.cat] || g.cat)}</div>`);
             prevCat = g.cat;
           }
-          const cnt = g.ids.length;
-          parts.push(
-            `<div class="planet-build-group"><div class="planet-build-group-head"><strong>${escHtml(g.grpTitle)}</strong> <span class="muted">×${escHtml(String(cnt))}</span></div>${planetSurfaceGroupActionsHtml(g.bt, g.ids)}</div>`
-          );
+          parts.push(planetSurfaceGroupRowHtml(g));
         }
-        planetSurfaceBuildingsActions = parts.join("");
+        planetSurfaceBuildingsActions = `<div class="planet-built-groups">${parts.join("")}</div>`;
       }
 
       let buildDetailsInner = "";
       if (!canBuild) {
         buildDetailsInner = "<div class='muted'>Стройка недоступна (вне зоны, туман или зона врага).</div>";
-      } else if (cellBuildings.length && cell.terrain !== "planet") {
+      } else if (cellBuildings.length && cellLive.terrain !== "planet") {
         const b = cellBuilding;
-        const bid = b && b.id ? String(b.id) : "";
-        const bl = Number((b && b.level) || 1) || 1;
-        const blPart = bl > 1 ? ` <span class="muted">(ур. ${bl})</span>` : "";
-        buildDetailsInner = `<div>На клетке: <b>${escHtml(buildingLabelRu(b && b.building_type ? String(b.building_type) : "постройка"))}</b>${blPart}.</div>${
-          bid
-            ? `<div class="row build-action-icons" style="gap:6px;margin-top:10px;"><span>${upgradeBuildingButtonHtml(bid, b && b.building_type ? String(b.building_type) : "")}</span><button type="button" class="btn-icon-action btn-demolish-build" data-demolish="${escHtml(bid)}" title="Снести постройку (~50% стоимости)" aria-label="Снести постройку"><span class="ico-recycle" aria-hidden="true">♻</span></button></div>`
-            : ""
-        }`;
+        buildDetailsInner = `<div id="planet-field-built-wrap"><div id="planet-field-build-desc" class="planet-build-type-desc muted hidden" role="status" aria-live="polite"></div>${planetBuiltSingleOffColonyHtml(b)}</div>`;
       } else {
         buildDetailsInner = `
           <div id="planet-build-placement-summary" class="planet-build-placement-summary" aria-live="polite" role="status"></div>
           <label class="row" style="gap:8px;align-items:center;margin:6px 0 0 0;">
-            <input type="checkbox" id="show-all-build" />
+            <input type="checkbox" id="show-all-build" name="show_all_build" />
             <span class="muted">Показать все варианты</span>
           </label>
           ${buildButtonsHtml()}
           <div class="muted" style="margin-top:8px;">Ресурс списывается с домашней планеты (имперский склад).</div>`;
+      }
+
+      const rg = worldState && worldState.race_growth;
+      const canRecruitPop =
+        Boolean(rg && rg.no_passive_population_growth) &&
+        pOwnId &&
+        String(playerId || "").trim() &&
+        String(pOwnId) === String(playerId || "").trim();
+      const recruitPopHtml = canRecruitPop
+        ? `<div class="muted" style="margin-top:10px;font-size:86%;max-width:300px;">Население: только явный набор (еда/вода/металл/кристалл со склада планеты).</div>
+            <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center;">
+              <label class="muted" style="margin:0;">Δ жителей</label>
+              <input type="number" id="recruit-pop-amount" name="recruit_pop_amount" min="1" max="500" value="50" style="width:80px;padding:4px 6px;" />
+              <button type="button" id="recruit-pop-btn" class="btn-secondary" data-planet-id="${escHtml(String(planetOwn.id || mapPlanet?.id || ""))}">Набор населения</button>
+            </div>`
+        : "";
+
+      const buildInfo = d.build && typeof d.build === "object" ? d.build : null;
+      const buildQ = buildInfo && Array.isArray(buildInfo.queue) ? buildInfo.queue : [];
+      const buildActive = buildInfo && buildInfo.active ? String(buildInfo.active) : "";
+      const buildCurrentSol =
+        buildInfo != null &&
+        buildInfo.current_tick != null &&
+        Number.isFinite(Number(buildInfo.current_tick))
+          ? Number(buildInfo.current_tick)
+          : null;
+      let buildQueueBlockHtml = "";
+      if (!buildQ.length && !buildActive) {
+        buildQueueBlockHtml = `<div class="muted" style="margin-top:6px;font-size:82%;">Очередь пуста${
+          buildCurrentSol != null ? ` • текущий сол <b>${escHtml(String(buildCurrentSol))}</b>` : ""
+        }.</div>`;
+      } else {
+        const solBit =
+          buildCurrentSol != null ? ` • текущий сол <b>${escHtml(String(buildCurrentSol))}</b>` : "";
+        const head = `<div style="margin-top:6px;font-size:86%;">В очереди: <b>${escHtml(
+          String(buildQ.length),
+        )}</b>${buildActive ? ` • первым: <b>${escHtml(buildActive)}</b>` : ""}${solBit}</div>`;
+        const items =
+          buildQ.length > 0
+            ? `<ul style="margin:6px 0 0 18px;padding:0;font-size:84%;line-height:1.4;">${buildQ
+                .map((it) => {
+                  const btt = escHtml(String((it && it.building_type) || "?"));
+                  const rem =
+                    it && it.remaining_ticks != null
+                      ? Math.max(0, Math.trunc(Number(it.remaining_ticks)))
+                      : 0;
+                  return `<li>${btt} — ещё ${ruSolsCountLabel(rem)}</li>`;
+                })
+                .join("")}</ul>`
+            : "";
+        buildQueueBlockHtml = head + items;
       }
 
       planetModalBody.innerHTML = `
@@ -3177,7 +4325,7 @@
           <div class="game-modal-col game-modal-col--entity">
             <div class="section-title">Колония</div>
             <div><b>${escHtml(planetOwn.name || "Планета")}</b> (${escHtml(String(sector.x))}, ${escHtml(String(sector.y))}, ${escHtml(String(sector.z))})${ownName}</div>
-            <div class="muted" style="margin-top:6px;">Ландшафт: ${formatTerrainRu(cell.terrain)}</div>
+            <div class="muted" style="margin-top:6px;">Содержит: ${formatCellContainsRu(cellLive.terrain, cellLive.glyph)}</div>
             <div style="margin-top:8px;">
               Население: <b>${d.population != null ? escHtml(String(d.population)) : "—"}</b> / <b>${d.max_population != null ? escHtml(String(d.max_population)) : "—"}</b>
             </div>
@@ -3207,28 +4355,30 @@
             <div class="muted" style="margin-top:4px;font-size:82%;">База <b>${supBase}</b> • за снабженца <b>+${supPer}</b>. Чужой флот на L-пути режет линию.</div>
             <div class="section-title">Склад</div>
             <div>⛏${d.resources.metal} 💎${d.resources.crystal} ⚡${d.resources.energy} ⛽${d.resources.fuel ?? 0} 🍲${d.resources.food ?? 0} 💧${d.resources.water ?? 0}</div>
-            <div class="muted" style="margin-top:10px;font-size:82%;">
-              Стройка: активно <b>${d.build && d.build.active ? escHtml(String(d.build.active)) : "нет"}</b> • в очереди <b>${d.build && Array.isArray(d.build.queue) ? d.build.queue.length : 0}</b>
-            </div>
+            <div class="section-title">Стройка</div>
+            ${buildQueueBlockHtml}
           </div>
           <div class="game-modal-col game-modal-col--actions">
             <div class="game-modal-actions-stack">
+              <div id="planet-modal-action-feedback" class="hud-action-feedback hud-action-feedback--in-modal" aria-live="polite" role="status" hidden></div>
               <button type="button" id="hire-supplier-btn" data-planet-id="${escHtml(String(planetOwn.id || mapPlanet?.id || ""))}" class="btn-secondary">Нанять снабженца</button>
               <button type="button" class="btn-primary btn-create-fleet" data-planet-id="${escHtml(String(planetOwn.id || mapPlanet?.id || ""))}">Создать флот…</button>
+              ${recruitPopHtml}
             </div>
             ${
               planetSurfaceBuildingsActions
                 ? `<details class="game-modal-details game-modal-details--construction">
-              <summary class="game-modal-details-summary">Постройки на поверхности · действия</summary>
+              <summary class="game-modal-details-summary game-modal-details-summary--construction">Постройки на поверхности · действия</summary>
               <div class="game-modal-details-inner">
-                <div class="muted" style="font-size:82%;line-height:1.4;margin:0 0 12px;">Одна строка — один тип здания (×сколько есть). ♻ убирает одну постройку, 🔧 улучшает одну до следующего шага из баланса, 🔧∞ — оплатить улучшение для всех в строке по очереди (ресурсы с домашней планеты каждый шаг).</div>
+                <div class="muted" style="font-size:82%;line-height:1.4;margin:0 0 10px;">Карточка типа: клик по имени — описание; поле числа или «−»/«+» — сколько построек затронуть подряд; строка апгрейда пересчитывается по числу; «Улучшить» / «Утилизировать» — по очереди с домашнего склада.</div>
+                <div id="planet-surface-build-desc" class="planet-build-type-desc muted hidden" role="status" aria-live="polite"></div>
                 ${planetSurfaceBuildingsActions}
               </div>
             </details>`
                 : ""
             }
             <details class="game-modal-details game-modal-details--construction">
-              <summary class="game-modal-details-summary">Строительство</summary>
+              <summary class="game-modal-details-summary game-modal-details-summary--construction">Строительство</summary>
               <div class="game-modal-details-inner">${buildDetailsInner}</div>
             </details>
             <div class="muted" style="font-size:82%;margin-top:4px;">Снабженец — логистика планеты (не юнит на карте).</div>
@@ -3253,7 +4403,7 @@
         hireSupBtn.addEventListener("click", async () => {
           const plid = hireSupBtn.getAttribute("data-planet-id");
           if (!plid) return;
-          setStatus("Найм снабженца…");
+          feedbackPlanetAndHud("Найм снабженца…", "info");
           try {
             const r = await fetch("/api/supply/hire_supplier", {
               method: "POST",
@@ -3262,19 +4412,52 @@
             });
             const body = await r.json();
             if (!r.ok || !body.ok) {
-              if (body.error === "not_enough_resources") {
-                setStatus(`Не хватает ресурсов для найма`, "err");
-              } else {
-                setStatus(`Ошибка: ${body.error || "hire_failed"}`, "err");
-              }
+              const msg =
+                body.error === "not_enough_resources"
+                  ? "Не хватает ресурсов для найма снабженца."
+                  : formatApiFailure(body);
+              feedbackPlanetAndHud(msg, "err");
               return;
             }
-            setStatus(`Снабжение: радиус ${body.supply_radius} клеток`, "ok");
+            const okMsg = `Снабжение: радиус ${body.supply_radius} клеток`;
+            feedbackPlanetAndHud(okMsg, "ok");
             await loadWorldState();
             void refreshSupplyHud(selectedCell);
-            await fillPlanetModalFromApi(cell);
+            syncSelectedCellFromCurrentWindow();
+            await fillPlanetModalFromApi(selectedCell || cellLive);
           } catch (_e) {
-            setStatus("Ошибка: network_error", "err");
+            feedbackPlanetAndHud("Нет связи с сервером. Проверьте сеть и попробуйте снова.", "err");
+          }
+        });
+      }
+      const recruitPopBtn = planetModalBody.querySelector("#recruit-pop-btn");
+      if (recruitPopBtn) {
+        recruitPopBtn.addEventListener("click", async () => {
+          const plid = recruitPopBtn.getAttribute("data-planet-id");
+          if (!plid) return;
+          const inp = planetModalBody.querySelector("#recruit-pop-amount");
+          const amt = inp ? Math.max(1, Math.floor(Number(inp.value) || 0)) : 50;
+          feedbackPlanetAndHud("Набор населения…", "info");
+          try {
+            const r = await fetch("/api/world/recruit_population", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ planet_id: plid, amount: amt }),
+            });
+            const body = await r.json();
+            if (!r.ok || !body.ok) {
+              feedbackPlanetAndHud(formatApiFailure(body), "err");
+              return;
+            }
+            feedbackPlanetAndHud(
+              `Набрано +${body.added} (всего ${body.population}). Списано со склада.`,
+              "ok",
+            );
+            await loadWorldState();
+            syncSelectedCellFromCurrentWindow();
+            await fillPlanetModalFromApi(selectedCell || cellLive);
+          } catch (_e) {
+            feedbackPlanetAndHud("Нет связи с сервером. Проверьте сеть и попробуйте снова.", "err");
           }
         });
       }
@@ -3477,7 +4660,7 @@
               ? `<div style="margin-top:10px;color:#e88;font-size:90%;"><b>Внимание:</b> при длительных сбоях форпост отключается, как при неоплатимом содержании.</div>`
               : ""
           }`;
-      } else if ((cell.z ?? 0) === 0) {
+      } else if ((cellLive.z ?? 0) === 0) {
         supplyCenterHtml = `<div class="section-title">Снабжение</div><div class="muted" style="font-size:88%;">Для этой клетки отдельная линия с хабом не считается (например, зона домашней планеты).</div>`;
       }
 
@@ -3505,6 +4688,7 @@
             ${supplyCenterHtml}
           </div>
           <div class="game-modal-col game-modal-col--actions">
+            <div id="planet-modal-action-feedback" class="hud-action-feedback hud-action-feedback--in-modal" aria-live="polite" role="status" hidden></div>
             ${structureHtml}
             ${
               moduleRows
@@ -3548,10 +4732,10 @@
       return;
     }
 
-    const engFleets = engineerFleetsForCell(cell);
+    const engFleets = engineerFleetsForCell(cellLive);
     const fleetBuilder = engFleets[0] || null;
-    const buildingHere = (cell.objects || []).find((o) => o && o.type === "building");
-    const outpostHere = (cell.objects || []).find((o) => o && o.type === "outpost");
+    const buildingHere = (cellLive.objects || []).find((o) => o && o.type === "building");
+    const outpostHere = (cellLive.objects || []).find((o) => o && o.type === "outpost");
     if (fleetBuilder) {
       const fleetLabel = fleetBuilder.name && String(fleetBuilder.name).trim() ? String(fleetBuilder.name).trim() : "Флот";
       const engineerQty = Number(fleetBuilder.composition?.engineer || 0);
@@ -3559,7 +4743,7 @@
       if (engFleets.length > 1) {
         engineerPickHtml = `
           <div class="muted" style="margin:10px 0 4px;font-size:90%;"><b>Инженерный флот</b> (на клетке несколько — выберите, с кого списывать инженера):</div>
-          <select id="sector-builder-fleet" style="width:100%;max-width:440px;padding:6px 8px;margin-bottom:4px;">
+          <select id="sector-builder-fleet" name="sector_builder_fleet" style="width:100%;max-width:440px;padding:6px 8px;margin-bottom:4px;">
             ${engFleets
               .map((fl) => {
                 const opt = fleetOptionLabel(fl);
@@ -3601,7 +4785,7 @@
           ${outpostCostHtml}
           <div class="muted" style="margin-top:8px;">Форпосты дают влияние, обзор, слоты модулей и базовую оборону.</div>
           <div class="section-title">Обычные постройки</div>
-          ${buildButtonsHtml()}
+          ${buildButtonsHtml({ sectorField: true })}
           <div class="muted" style="margin-top:8px;">Строит выбранный флот с инженерами; ресурсы списываются с домашней планеты.</div>
         `;
       }
@@ -3610,7 +4794,7 @@
         <div><b>${fleetLabel}</b> (${x}, ${y}, ${z})</div>
         ${engineerPickHtml}
         <div class="muted" style="margin-top:6px;">Инженеров в выбранном флоте: <b>${engineerQty}</b></div>
-        <div class="muted" style="margin-top:6px;">Ландшафт: ${formatTerrainRu(cell.terrain)}</div>
+        <div class="muted" style="margin-top:6px;">Содержит: ${formatCellContainsRu(cellLive.terrain, cellLive.glyph)}</div>
         ${buildHtml}
       `;
       restorePlanetModalDetailsState(preservedDetailsOpen);
@@ -3658,7 +4842,7 @@
           <span><b>${escHtml(lab)}</b> <span class="muted">(${escHtml(k)})</span></span>
           <span style="display:inline-flex;align-items:center;gap:6px;">
             <button type="button" class="fleet-create-qty-step" data-u="${k}" data-s="-1">−</button>
-            <input type="number" class="fleet-create-qty-input" data-u="${k}" min="0" max="99999" step="1" value="${q}" style="width:80px;padding:6px 8px;" />
+            <input type="number" class="fleet-create-qty-input" id="fleet-create-qty-${escAttr(k)}" name="fleet_create_qty_${k}" data-u="${k}" min="0" max="99999" step="1" value="${q}" style="width:80px;padding:6px 8px;" />
             <button type="button" class="fleet-create-qty-step" data-u="${k}" data-s="1">+</button>
           </span>
         </div>`;
@@ -3669,7 +4853,7 @@
       </div>
       <div class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center;">
         <label class="muted" style="flex:100%;margin:0;font-size:90%;"><b>Имя флота</b> (пусто — авто)</label>
-        <input type="text" class="fleet-create-name" maxlength="64" value="${escHtml(nmVal)}" style="flex:1;min-width:140px;padding:6px 8px;" placeholder="Alpha (Альфа)…" />
+        <input type="text" class="fleet-create-name" id="fleet-create-name" name="fleet_create_name" maxlength="64" value="${escHtml(nmVal)}" style="flex:1;min-width:140px;padding:6px 8px;" placeholder="Alpha (Альфа)…" />
       </div>
       ${rows}
       <div class="row" style="margin-top:14px;gap:8px;">
@@ -3716,10 +4900,10 @@
           if (n > 0) comp[k] = n;
         }
         if (Object.keys(comp).length < 1) {
-          setStatus("Добавьте хотя бы один корабль", "err");
+          showFleetActionMessage("Добавьте хотя бы один корабль", "err");
           return;
         }
-        setStatus("Создание флота…");
+        showFleetActionMessage("Создание флота…", "info");
         try {
           const r = await fetch("/api/fleets/create", {
             method: "POST",
@@ -3732,17 +4916,20 @@
           });
           const body = await r.json();
           if (!r.ok || !body.ok) {
-            setStatus(`Ошибка: ${body.error || "create_failed"}`, "err");
+            showFleetActionMessage(formatApiFailure(body), "err");
             return;
           }
           activeFleetId = body.fleet_id || activeFleetId;
-          setStatus(`Флот создан: ${body.name || ""} @ (${body.pos?.x},${body.pos?.y})`, "ok");
+          showFleetActionMessage(
+            `Флот создан: ${body.name || ""} @ (${body.pos?.x},${body.pos?.y})`,
+            "ok",
+          );
           closeFleetCreateModal();
           await refreshWindow();
           await loadWorldState();
           if (fleetSelectEl && activeFleetId) fleetSelectEl.value = activeFleetId;
         } catch (_e) {
-          setStatus("Ошибка: network_error", "err");
+          showFleetActionMessage("Нет связи с сервером. Проверьте сеть и попробуйте снова.", "err");
         }
       });
     }
@@ -3772,7 +4959,7 @@
   const saveFleetModalAll = async (fleetId, nameRaw, composition) => {
     const name = String(nameRaw ?? "").trim();
     if (!name) {
-      setStatus("Введите имя флота", "err");
+      showFleetActionMessage("Введите имя флота", "err");
       return;
     }
     const total = Object.values(composition || {}).reduce(
@@ -3780,10 +4967,10 @@
       0
     );
     if (total < 1) {
-      setStatus("В сумме должно быть хотя бы один корабль (или расформируйте флот).", "err");
+      showFleetActionMessage("В сумме должно быть хотя бы один корабль (или расформируйте флот).", "err");
       return;
     }
-    setStatus("Сохранение флота…");
+    showFleetActionMessage("Сохранение флота…", "info");
     try {
       const r = await fetch("/api/fleets/save", {
         method: "POST",
@@ -3792,29 +4979,29 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        setStatus(`Ошибка: ${body.error || "save_failed"}`, "err");
+        showFleetActionMessage(formatApiFailure(body), "err");
         return;
       }
       const net = body.cost_net;
       if (net && (net.metal || net.crystal || net.energy || net.fuel)) {
-        setStatus(
+        showFleetActionMessage(
           `Сохранено. Изменение склада (Δ металл/кристалл/энергия/топливо): ${-net.metal}/${-net.crystal}/${-net.energy}/${-net.fuel}`,
-          "ok"
+          "ok",
         );
       } else {
-        setStatus("Сохранено", "ok");
+        showFleetActionMessage("Сохранено", "ok");
       }
       closeFleetModal();
       await loadWorldState();
       await refreshWindow();
       if (fleetSelectEl && activeFleetId) fleetSelectEl.value = activeFleetId;
     } catch (_e) {
-      setStatus("Ошибка: network_error", "err");
+      showFleetActionMessage("Нет связи с сервером. Проверьте сеть и попробуйте снова.", "err");
     }
   };
 
   const disbandFleetApi = async (fleetId) => {
-    setStatus("Расформирование…");
+    showFleetActionMessage("Расформирование…", "info");
     try {
       const r = await fetch("/api/fleets/disband", {
         method: "POST",
@@ -3823,10 +5010,10 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        setStatus(`Ошибка: ${body.error || "disband_failed"}`, "err");
+        showFleetActionMessage(formatApiFailure(body), "err");
         return;
       }
-      setStatus("Флот расформирован, ресурсы частично возвращены на домашнюю планету.", "ok");
+      showFleetActionMessage("Флот расформирован, ресурсы частично возвращены на домашнюю планету.", "ok");
       closeFleetSubModal();
       closeFleetModal();
       await loadWorldState();
@@ -3835,12 +5022,12 @@
       await refreshWindow();
       if (fleetSelectEl && activeFleetId) fleetSelectEl.value = activeFleetId;
     } catch (_e) {
-      setStatus("Ошибка: network_error", "err");
+      showFleetActionMessage("Нет связи с сервером. Проверьте сеть и попробуйте снова.", "err");
     }
   };
 
   const mergeFleetsApi = async (targetFleetId, sourceFleetId) => {
-    setStatus("Слияние флотов…");
+    showFleetActionMessage("Слияние флотов…", "info");
     try {
       const r = await fetch("/api/fleets/merge", {
         method: "POST",
@@ -3849,22 +5036,22 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        setStatus(`Ошибка: ${body.error || "merge_failed"}`, "err");
+        showFleetActionMessage(formatApiFailure(body), "err");
         return;
       }
-      setStatus("Флоты объединены", "ok");
+      showFleetActionMessage("Флоты объединены", "ok");
       closeFleetSubModal();
       closeFleetModal();
       await loadWorldState();
       await refreshWindow();
       if (fleetSelectEl && activeFleetId) fleetSelectEl.value = activeFleetId;
     } catch (_e) {
-      setStatus("Ошибка: network_error", "err");
+      showFleetActionMessage("Нет связи с сервером. Проверьте сеть и попробуйте снова.", "err");
     }
   };
 
   const splitFleetApi = async (fleetId, take) => {
-    setStatus("Разделение флота…");
+    showFleetActionMessage("Разделение флота…", "info");
     try {
       const r = await fetch("/api/fleets/split", {
         method: "POST",
@@ -3873,10 +5060,10 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        setStatus(`Ошибка: ${body.error || "split_failed"}`, "err");
+        showFleetActionMessage(formatApiFailure(body), "err");
         return;
       }
-      setStatus(`Создан новый флот (${body.new_fleet_id || ""})`, "ok");
+      showFleetActionMessage(`Создан новый флот (${body.new_fleet_id || ""})`, "ok");
       if (body.new_fleet_id) activeFleetId = body.new_fleet_id;
       closeFleetSubModal();
       closeFleetModal();
@@ -3884,7 +5071,7 @@
       await refreshWindow();
       if (fleetSelectEl && activeFleetId) fleetSelectEl.value = activeFleetId;
     } catch (_e) {
-      setStatus("Ошибка: network_error", "err");
+      showFleetActionMessage("Нет связи с сервером. Проверьте сеть и попробуйте снова.", "err");
     }
   };
 
@@ -3932,7 +5119,7 @@
       const desc =
         u && typeof u.description === "string" && u.description.trim()
           ? escHtml(u.description.trim())
-          : "Корабль из баланса: стоимость набора и возврат при уменьшении совпадают с сервером при сохранении.";
+          : "Характеристики и цена набора задаются правилами мира; итоговый состав проверяется на сервере при сохранении.";
       const roleStr = escHtml(fleetUnitRolePurposeRu(k));
       return `
         <div class="fleet-ship-slot" data-unit-card="${escHtml(k)}">
@@ -3951,7 +5138,7 @@
             </details>
             <div class="fleet-ship-qty">
               <button type="button" class="fleet-qty-step" data-u="${escHtml(k)}" data-s="-1" ${dis}>−</button>
-              <input type="number" class="fleet-qty-input" data-u="${escHtml(k)}" min="0" max="99999" step="1" value="${q}" ${blocked ? "disabled" : ""}/>
+              <input type="number" class="fleet-qty-input" id="fleet-qty-${escAttr(String(f.id))}--${escAttr(String(k))}" name="fleet_qty_${k}" data-u="${escHtml(k)}" min="0" max="99999" step="1" value="${q}" ${blocked ? "disabled" : ""}/>
               <button type="button" class="fleet-qty-step" data-u="${escHtml(k)}" data-s="1" ${dis}>+</button>
             </div>
           </div>
@@ -3993,7 +5180,7 @@
         <div class="game-modal-col game-modal-col--actions">
           <div class="fleet-modal-name-block">
             <label class="muted" style="margin:0 0 4px;font-size:90%;display:block;"><b>Имя флота</b></label>
-            <input type="text" class="fleet-rename-input" maxlength="64" value="${escHtml(fn)}" ${blocked ? "disabled" : ""} />
+            <input type="text" class="fleet-rename-input" id="fleet-rename-${escAttr(String(f.id))}" name="fleet_rename" maxlength="64" value="${escHtml(fn)}" ${blocked ? "disabled" : ""} />
           </div>
           <div class="game-modal-actions-stack fleet-modal-primary-actions">
             <button type="button" class="fleet-modal-save btn-primary" ${dis}>Сохранить</button>
@@ -4024,11 +5211,11 @@
           const pen = Number(b.energy_penalty_on_unpaid_maintenance) || 0;
           const penTitle =
             pen > 0
-              ? `Если империи не хватает металла, кристалла, еды или воды на оплату: штраф ${pen} энергии с борта за сол.`
+              ? `Если на складе столицы не хватает металла, кристаллов, еды или воды на снабжение этого флота, с борта списывается штраф: ${pen} ⚡ за сол.`
               : "";
           upKeeEl.innerHTML = `
             <div class="fleet-upkeep-line">⚡ Борт: <b>−${escHtml(String(en))}</b> / сол</div>
-            <div class="fleet-upkeep-line" style="margin-top:8px;">Империя: ⛏ <b>${escHtml(String(esp.metal ?? 0))}</b> 💎 <b>${escHtml(String(esp.crystal ?? 0))}</b> 🍲 <b>${escHtml(String(esp.food ?? 0))}</b> 💧 <b>${escHtml(String(esp.water ?? 0))}</b> <span class="muted">/ сол</span></div>
+            <div class="fleet-upkeep-line" style="margin-top:8px;">Со склада столицы: ⛏ <b>${escHtml(String(esp.metal ?? 0))}</b> 💎 <b>${escHtml(String(esp.crystal ?? 0))}</b> 🍲 <b>${escHtml(String(esp.food ?? 0))}</b> 💧 <b>${escHtml(String(esp.water ?? 0))}</b> <span class="muted">/ сол</span></div>
             ${
               en > 0 && Number.isFinite(fe)
                 ? `<div class="fleet-upkeep-line" style="margin-top:8px;">Автономность: <b>~${escHtml(String(Math.floor(fe / en)))}</b> ${escHtml(solWord(Math.floor(fe / en)))} <span class="muted">(энергия на корпус)</span></div>`
@@ -4036,7 +5223,7 @@
             }
             ${
               pen > 0
-                ? `<div class="muted" style="margin-top:8px;font-size:80%;" title="${escHtml(penTitle)}">Штраф при неоплате с империи: ${escHtml(String(pen))} ⚡/сол</div>`
+                ? `<div class="muted" style="margin-top:8px;font-size:80%;" title="${escHtml(penTitle)}">Штраф при нехватке снабжения со столицы: ${escHtml(String(pen))} ⚡/сол</div>`
                 : ""
             }`;
         } catch (_e) {
@@ -4087,7 +5274,7 @@
           confirmLabel: "Слить",
           bodyHtml: `<p class="muted" style="margin-top:0;">Флот-источник будет удалён, все его корабли перейдут в <b>${escHtml(fn)}</b>.</p>
             <label class="muted" style="font-size:90%;display:block;margin-bottom:6px;">Флот-источник</label>
-            <select id="fleet-merge-sub-sel" style="width:100%;padding:6px 8px;">${mergeOpts}</select>`,
+            <select id="fleet-merge-sub-sel" name="fleet_merge_source" style="width:100%;padding:6px 8px;">${mergeOpts}</select>`,
           onConfirm: async () => {
             const sel = fleetSubBody && fleetSubBody.querySelector("#fleet-merge-sub-sel");
             const sid = sel ? String(sel.value || "").trim() : "";
@@ -4123,7 +5310,7 @@
             const lab = fleetUnitLabel(k);
             return `<div class="row fleet-split-row" style="justify-content:space-between;align-items:center;margin-bottom:8px;gap:10px;flex-wrap:wrap;">
               <span><b>${escHtml(lab)}</b> <span class="muted">(${escHtml(k)})</span></span>
-              <input type="number" class="fleet-split-qty" data-u="${escHtml(k)}" min="0" max="99999" value="0" style="width:80px;padding:6px 8px;" ${blocked ? "disabled" : ""}/>
+              <input type="number" class="fleet-split-qty" id="fleet-split-qty-${escAttr(String(f.id))}--${escAttr(String(k))}" name="fleet_split_qty_${k}" data-u="${escHtml(k)}" min="0" max="99999" value="0" style="width:80px;padding:6px 8px;" ${blocked ? "disabled" : ""}/>
             </div>`;
           })
           .join("");
@@ -4170,6 +5357,8 @@
       economyBlock.net_per_sol
         ? economyBlock.net_per_sol
         : null;
+    const drainNote =
+      " За сол расход по складу больше прироста. Подробности — в разделе «Империя».";
     for (const key of RESOURCE_TOPBAR_KEYS) {
       const chip = bar.querySelector(`.res-chip[data-res="${key}"]`);
       if (!chip) continue;
@@ -4181,8 +5370,54 @@
       chip.classList.toggle("res-chip--drain", drain);
       const mark = chip.querySelector(".res-drain-marker");
       if (mark) mark.toggleAttribute("hidden", !drain);
+      const base =
+        chip.getAttribute("data-res-title-base") ||
+        chip.getAttribute("title") ||
+        (key === "metal"
+          ? "Металл"
+          : key === "crystal"
+            ? "Кристаллы"
+            : key === "energy"
+              ? "Энергия"
+              : key === "fuel"
+                ? "Топливо"
+                : key === "food"
+                  ? "Еда"
+                  : key === "water"
+                    ? "Вода"
+                    : key);
+      const full = drain ? `${base}.${drainNote}` : base;
+      chip.title = full;
+      chip.setAttribute("aria-label", full);
     }
   };
+
+  function renderOnboardingGoals() {
+    if (!onboardingGoalsBodyEl) return;
+    const m = readOnboardingMilestones();
+    const goals = [
+      {
+        text: "Откройте «Империя» и посмотрите баланс ресурсов за сол (нетто и производство).",
+        done: Boolean(m.empireOpened),
+      },
+      {
+        text: "В «Исследованиях» запустите в очередь хотя бы одну технологию.",
+        done: Boolean(m.techQueued),
+      },
+      {
+        text: "На карте: исследуйте руины/аномалию или поставьте форпост вне дома.",
+        done: Boolean(m.exploreOrOutpost),
+      },
+    ];
+    const allDone = goals.every((g) => g.done);
+    if (onboardingGoalsSectionEl) onboardingGoalsSectionEl.classList.toggle("hidden", allDone);
+    onboardingGoalsBodyEl.innerHTML = goals
+      .map(
+        (g) =>
+          `<div class="onboarding-goal-line${g.done ? " done" : ""}"><span aria-hidden="true">${g.done ? "✔" : "○"}</span><span>${escHtml(g.text)}</span></div>`,
+      )
+      .join("");
+  }
 
   const loadWorldState = async () => {
     try {
@@ -4202,7 +5437,6 @@
           if (uiRevealFogAdmin) uiRevealFogAdmin.checked = false;
         }
       }
-      await fetchBalanceCached();
       if (tickEl) tickEl.textContent = String(body.current_sol ?? body.current_tick ?? 0);
       if (body.economy) {
         if (topMetalEl) topMetalEl.textContent = String(body.economy.metal ?? "—");
@@ -4214,25 +5448,51 @@
         if (topRpEl) {
           const rp = body.economy.research_points;
           const rpp = body.economy.research_points_per_sol;
+          const rw = body.research && typeof body.research === "object" ? body.research : {};
+          const inProg = Boolean(rw.in_progress);
+          const pctRaw = Number(rw.progress_percent);
+          const fmtRpTop = (v) => {
+            const n = Number(v);
+            if (!Number.isFinite(n)) return "—";
+            return String(Number(n.toFixed(2)));
+          };
           if (rp != null && Number.isFinite(Number(rp))) {
-            const main = Math.round(Number(rp) * 100) / 100;
+            const main = fmtRpTop(rp);
+            const pctOk = inProg && Number.isFinite(pctRaw);
+            const line = pctOk ? `${main} (${Math.round(pctRaw)}%)` : main;
+            topRpEl.textContent = line;
             const rppNum = Number(rpp);
-            const extra =
-              rpp != null && Number.isFinite(rppNum) && rppNum > 0
-                ? ` +${Math.round(rppNum * 1000) / 1000}/сол`
-                : "";
-            topRpEl.textContent = `${main}${extra}`;
-            topRpEl.title =
-              rpp != null && Number.isFinite(rppNum) && rppNum > 0
-                ? `Наука (RP): ${main}, прирост +${Math.round(rppNum * 10000) / 10000} за сол`
-                : "Наука (RP)";
+            const tipBits = [`RP: ${main}`];
+            if (pctOk)
+              tipBits.push(`текущее исследование: ~${Math.round(pctRaw)}% готово (доля этого теха, не «всех сразу»)`);
+            else if (inProg) tipBits.push("идёт исследование");
+            if (rpp != null && Number.isFinite(rppNum))
+              tipBits.push(`прирост +${Number(rppNum.toFixed(4))} за сол`);
+            const tip = tipBits.join(" · ");
+            if (topRpChipEl) {
+              topRpChipEl.title = tip;
+              topRpChipEl.setAttribute("aria-label", `Очки исследований. ${tip}. Справка в вики`);
+              topRpChipEl.classList.toggle("res-chip-rp-idle", !inProg);
+            }
           } else {
             topRpEl.textContent = "—";
-            topRpEl.title = "";
+            if (topRpChipEl) {
+              topRpChipEl.title = topRpChipEl.getAttribute("data-res-title-base") || "";
+              topRpChipEl.setAttribute(
+                "aria-label",
+                topRpChipEl.getAttribute("data-res-title-base") || "Очки исследований",
+              );
+              topRpChipEl.classList.add("res-chip-rp-idle");
+            }
           }
         }
       }
       if (body) syncTopbarResourceDrain(body.economy || null);
+      try {
+        await fetchBalanceCached();
+      } catch (_e) {
+        /* не блокируем сол, ресурсы и события из-за сети/JSON у /api/balance */
+      }
 
       const fleet = body.fleet;
       const fleets = Array.isArray(body.fleets) ? body.fleets : [];
@@ -4273,8 +5533,11 @@
 
       syncHudToActive(fleet || (owned.length ? owned[0] : null));
 
+      syncSystemToastsFromEvents(body.events || []);
       renderEvents(body.events);
+      renderOnboardingGoals();
       updateSelectedPanel();
+      syncMapLayerElBoxFromGrid();
       renderFlightOverlay();
       openOrRefreshCombatArrivalPrompt(body);
 
@@ -4378,19 +5641,32 @@
         water: "💧",
       };
       const resKeys = ["metal", "crystal", "energy", "fuel", "food", "water"];
+      const resWikiTitle = (k) => {
+        const m = {
+          metal: "Металл",
+          crystal: "Кристаллы",
+          energy: "Энергия",
+          fuel: "Топливо",
+          food: "Еда",
+          water: "Вода",
+        };
+        return m[k] || String(k || "");
+      };
+      const resWikiBtn = (k, innerHtml) =>
+        `<button type="button" class="econ-wiki-res" data-wiki-res="${escHtml(k)}" title="Справка: ${escHtml(resWikiTitle(k))}">${innerHtml}</button>`;
       const resGrid = (map, useSigned = false) => {
         const f = useSigned ? fmtSigned : fmt;
         return `<div class="econ-resource-grid">${resKeys
           .map((k) => {
             const ic = resIcons[k] || k;
-            return `<span>${ic} <b>${escHtml(f(map && map[k]))}</b></span>`;
+            return resWikiBtn(k, `${ic} <b>${escHtml(f(map && map[k]))}</b>`);
           })
           .join("")}</div>`;
       };
       const costRow = (label, map, keys) => {
         const parts = keys.map((k) => {
           const ic = resIcons[k] || k;
-          return `<span>${ic} <b>${escHtml(fmt(map && map[k]))}</b></span>`;
+          return resWikiBtn(k, `${ic} <b>${escHtml(fmt(map && map[k]))}</b>`);
         });
         return `<div class="econ-cost-row"><span class="econ-row-label">${escHtml(label)}</span>${parts.join("")}</div>`;
       };
@@ -4399,11 +5675,11 @@
         `<div class="econ-resource-grid" style="grid-template-columns:repeat(4,1fr)">${resKeys4
           .map((k) => {
             const ic = resIcons[k];
-            return `<span>${ic} <b>${escHtml(fmt(map && map[k]))}</b></span>`;
+            return resWikiBtn(k, `${ic} <b>${escHtml(fmt(map && map[k]))}</b>`);
           })
           .join("")}</div>`;
 
-      const showExtChk = `<label class="econ-toggle econ-toggle--inline"><input type="checkbox" id="econ-show-ext" ${showExt ? "checked" : ""} />
+      const showExtChk = `<label class="econ-toggle econ-toggle--inline"><input type="checkbox" id="econ-show-ext" name="econ_show_ext" ${showExt ? "checked" : ""} />
         <span>Внешние постройки в сводке</span></label>`;
 
       const ep = readEconPrefs();
@@ -4474,14 +5750,15 @@
           } else if (e && e.trend === "surplus") {
             txt = "растёт";
           }
-          return `<span>${ic} <b>${escHtml(txt)}</b></span>`;
+          return resWikiBtn(k, `${ic} <b>${escHtml(txt)}</b>`);
         })
         .join("");
 
       economyModalBody.innerHTML = `
         <div class="econ-modal">
           <div class="econ-lead econ-lead-tools">
-            <span class="econ-lead-main">Текущий сол: <b>${escHtml(String(body.current_sol ?? body.current_tick ?? 0))}</b> • Наука: <b>${escHtml(String(body.research_points ?? 0))}</b>
+            <span class="econ-lead-main">Текущий сол: <b>${escHtml(String(body.current_sol ?? body.current_tick ?? 0))}</b> • Наука:
+            <button type="button" class="econ-wiki-res econ-wiki-res--bare" data-wiki-res="rp" title="Справка: очки исследований (RP)"><b>${escHtml(String(body.research_points ?? 0))}</b></button>
             <span class="muted"> (+${escHtml(String(body.research_points_per_sol ?? 0))}/сол)</span></span>
             ${showExtChk}
           </div>
@@ -4514,7 +5791,7 @@
                   const ic = resIcons[k] || k;
                   const a = tEmp && tEmp[k] != null ? fmt(tEmp[k]) : "0";
                   const h = tHome && tHome[k] != null ? fmt(tHome[k]) : "0";
-                  return `<span>${ic} <b>${escHtml(a)}</b><span class="muted"> / ${escHtml(h)}</span></span>`;
+                  return resWikiBtn(k, `${ic} <b>${escHtml(a)}</b><span class="muted"> / ${escHtml(h)}</span>`);
                 })
                 .join("")}</div>
               <div class="section-title" style="margin-top:14px;">Горизонт</div>
@@ -4534,6 +5811,7 @@
                 <li><b>Слева</b> — прирост/спад складов империи за сол (домашняя планета отдельно).</li>
                 <li><b>Центр</b> — производство колоний, статьи расхода и запасы с горизонтом.</li>
                 <li><b>Справа</b> — статья с наибольшей суммарной нагрузкой по ресурсам.</li>
+                <li>Иконки ресурсов в этой модалке и в топбаре кликабельны — открывают вики с пояснением.</li>
               </ol>
             </div>
           </details>
@@ -4614,10 +5892,31 @@
   const openEconomyModal = async () => {
     if (!economyModalOverlay || !economyModalBody) return;
     economyModalOverlay.classList.remove("hidden");
+    mergeOnboardingMilestones({ empireOpened: true });
     await loadEconomyModalContent();
   };
   const closeEconomyModal = () => {
     if (economyModalOverlay) economyModalOverlay.classList.add("hidden");
+  };
+
+  const WIKI_ANCHOR_BY_RES_KEY = Object.freeze({
+    metal: "wiki-res-metal",
+    crystal: "wiki-res-crystal",
+    energy: "wiki-res-energy",
+    fuel: "wiki-res-fuel",
+    food: "wiki-res-food",
+    water: "wiki-res-water",
+    rp: "wiki-res-rp",
+  });
+
+  const openWikiForResourceKey = (key) => {
+    const k = String(key || "").trim().toLowerCase();
+    const anchor = WIKI_ANCHOR_BY_RES_KEY[k] || "wiki-eco-resources";
+    closeEconomyModal();
+    closeTechModal();
+    closePlanetModal();
+    closeFleetModal();
+    openEntryTutorial(anchor);
   };
 
   const TECH_RES_LABEL_RU = {
@@ -5227,12 +6526,11 @@
               body: JSON.stringify({ tech_id }),
             });
             const body = await r.json();
+            const techFb = techModalBody.querySelector("#tech-modal-feedback");
             if (!r.ok || !body.ok) {
-              let errRu = body.error || "start_failed";
-              if (body.error === "tech_queue_full")
-                errRu =
-                  "Уже есть исследование в работе — прогресс в панели задач исследований слева. Дождитесь завершения или откройте модалку позже.";
+              const errRu = formatApiFailure(body);
               setStatus(errRu, "err");
+              if (techFb) showActionFeedback(techFb, errRu, "err");
               await loadTechModalContent();
               return;
             }
@@ -5240,7 +6538,10 @@
             if (body.research_time_multiplier && body.research_time_multiplier < 0.999)
               extra.push(`ускорение ×${Number(body.research_time_multiplier).toFixed(2)}`);
             if (body.blueprint_cache_consumed) extra.push("потрачен кэш чертежей");
-            setStatus(`Запущено: «${tnm}»${extra.length ? ". " + extra.join(", ") : ""}`, "ok");
+            const okMsg = `Запущено: «${tnm}»${extra.length ? ". " + extra.join(", ") : ""}`;
+            setStatus(okMsg, "ok");
+            if (techFb) showActionFeedback(techFb, okMsg, "ok");
+            mergeOnboardingMilestones({ techQueued: true });
             await loadTechModalContent();
           });
         }
@@ -5317,7 +6618,7 @@
             <div class="section-title" style="margin-top:14px;">Модификаторы</div>
             <div id="tech-sidebar-effects" class="tech-sidebar-effects muted"></div>
             <div class="section-title" style="margin-top:14px;">Поиск</div>
-            <input type="search" id="tech-search" class="tech-search" placeholder="Имя технологии…" autocomplete="off" value="${escAttr(searchDraft)}" />
+            <input type="search" id="tech-search" name="tech_search" class="tech-search" placeholder="Имя технологии…" autocomplete="off" value="${escAttr(searchDraft)}" />
             <div class="section-title" style="margin-top:12px;">Фильтр</div>
             <div class="tech-tabs tech-tabs-vertical" role="tablist">
               <button type="button" class="tech-tab${activeTab === "available" ? " is-active" : ""}" data-tech-tab="available">Можно начать</button>
@@ -5327,6 +6628,7 @@
           </aside>
           <div class="game-modal-col tech-modal-main game-modal-col--state">
             <div id="tech-path-banner-slot" class="tech-path-banner-slot"></div>
+            <div id="tech-modal-feedback" class="hud-action-feedback hud-action-feedback--in-modal" aria-live="polite" role="status" hidden></div>
             <div id="tech-modal-list" class="tech-modal-list"></div>
           </div>
           <div class="game-modal-col tech-modal-preview game-modal-col--state">
@@ -5413,15 +6715,49 @@
   /** Встроенные SVG для графического режима; при `false` графический режим откатывается к тактическим глифам. */
   const MAP_GRAPHIC_SVG_AVAILABLE = true;
 
+  /** Растровые иконки карты 128×128 RGBA (`docs/art/map_128_white` → `static/img/map`); ключи совпадают с `MAP_GRAPHIC_SVG`. */
+  const MAP_GRAPHIC_RASTER = {
+    planet: "/static/img/map/planets/planet-rocky.png",
+    asteroids: "/static/img/map/terrain-asteroids.png",
+    nebula: "/static/img/map/terrain-nebula.png",
+    ruins: "/static/img/map/terrain-ruins.png",
+    ruinsSurveyed: "/static/img/map/terrain-ruins-surveyed.png",
+    anomaly: "/static/img/map/terrain-anomaly.png",
+    fogQ: "/static/img/map/terrain-fog-unknown.png",
+    fleetFighter: "/static/img/map/fleet-fighter.png",
+    fleetScout: "/static/img/map/fleet-scout.png",
+    outpost: "/static/img/map/object-outpost.png",
+    mine: "/static/img/map/building-mine.png",
+    reactor: "/static/img/map/building-reactor.png",
+    genericBuilding: "/static/img/map/building-generic.png",
+  };
+
+  /** Варианты спрайта планеты: выбор стабилен по координатам клетки (для «рандомайзера» без сервера). */
+  const MAP_GRAPHIC_PLANET_VARIANTS = [
+    "/static/img/map/planets/planet-rocky.png",
+    "/static/img/map/planets/planet-gas.png",
+    "/static/img/map/planets/planet-ice.png",
+    "/static/img/map/planets/planet-ocean.png",
+    "/static/img/map/planets/planet-desert.png",
+  ];
+
+  const pickPlanetGraphicRasterSrc = (cell) => {
+    const arr = MAP_GRAPHIC_PLANET_VARIANTS;
+    if (!arr.length) return MAP_GRAPHIC_RASTER.planet;
+    const xq = Number.isFinite(Number(cell && cell.x)) ? Number(cell.x) : 0;
+    const yq = Number.isFinite(Number(cell && cell.y)) ? Number(cell.y) : 0;
+    const zq = Number.isFinite(Number(cell && cell.z)) ? Number(cell.z) : 0;
+    const u =
+      (Math.imul(xq, 73856093) ^ Math.imul(yq, 19349663) ^ Math.imul(zq, 83492791)) >>> 0;
+    return arr[u % arr.length];
+  };
+
   const getMapRenderOpts = () => {
     const s = loadUiSettings();
     const mapShowCoords = s.mapShowCoords !== false;
     const graphic = s.mapMode === "graphic" && MAP_GRAPHIC_SVG_AVAILABLE;
     return { graphic, mapShowCoords };
   };
-
-  const mapGraphicWrap = (tone, svgInner) =>
-    `<span class="map-cell-icon-wrap map-cell-icon-tone-${tone}" aria-hidden="true">${svgInner}</span>`;
 
   const MAP_GRAPHIC_SVG = {
     planet:
@@ -5450,6 +6786,24 @@
       '<svg class="map-cell-icon" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path fill="none" stroke="currentColor" stroke-width="1.35" d="M12 4.5v3M12 16.5v3M4.5 12h3M16.5 12h3M6.8 6.8l2.1 2.1M15.1 15.1l2.1 2.1M17.2 6.8l-2.1 2.1M8.9 15.1l-2.1 2.1"/></svg>',
     genericBuilding:
       '<svg class="map-cell-icon" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" d="M12 5l6.5 6H17v8H7v-8H5.5L12 5z"/></svg>',
+  };
+
+  const mapGraphicFromKey = (tone, key, rasterSrcOverride, wrapExtraClass) => {
+    const extra =
+      wrapExtraClass && String(wrapExtraClass).trim().length > 0
+        ? ` ${String(wrapExtraClass).trim()}`
+        : "";
+    const wrapOpen = `<span class="map-cell-icon-wrap map-cell-icon-tone-${tone}${extra}" aria-hidden="true">`;
+    let src = MAP_GRAPHIC_RASTER[key];
+    if (rasterSrcOverride != null && String(rasterSrcOverride).length > 0) {
+      src = String(rasterSrcOverride);
+    }
+    if (src) {
+      const u = escAttr(src);
+      return `${wrapOpen}<img class="map-cell-icon map-cell-icon--raster" src="${u}" alt="" decoding="async" loading="lazy" /></span>`;
+    }
+    const svgInner = MAP_GRAPHIC_SVG[key];
+    return svgInner ? `${wrapOpen}${svgInner}</span>` : null;
   };
 
   const buildGraphicMapMarker = (ctx) => {
@@ -5484,35 +6838,57 @@
       )
         t = T_SELF;
       else if (isHomeCell) t = T_SELF;
-      return mapGraphicWrap(t, MAP_GRAPHIC_SVG.planet);
+      const planetHtml = mapGraphicFromKey(
+        t,
+        "planet",
+        pickPlanetGraphicRasterSrc(c),
+        "map-cell-icon-wrap--planet-scale",
+      );
+      if (hasAnyFleet && anyFleetObj && !isFromCell) {
+        const ft = isEnemyFleet ? T_ENEMY : T_SELF;
+        const isFighter = fleetMapGraphicIsCombatDominant(anyFleetObj.unit_type);
+        const flHtml = mapGraphicFromKey(ft, isFighter ? "fleetFighter" : "fleetScout");
+        return `<span class="map-graphic-stack map-graphic-stack--planet-fleet" aria-hidden="true">${planetHtml}${flHtml}</span>`;
+      }
+      return planetHtml;
     }
     if (hasAnyFleet && anyFleetObj && !isFromCell) {
       const ft = isEnemyFleet ? T_ENEMY : T_SELF;
-      const isFighter = anyFleetObj.unit_type === "fighter";
-      return mapGraphicWrap(ft, isFighter ? MAP_GRAPHIC_SVG.fleetFighter : MAP_GRAPHIC_SVG.fleetScout);
+      const isFighter = fleetMapGraphicIsCombatDominant(anyFleetObj.unit_type);
+      return mapGraphicFromKey(ft, isFighter ? "fleetFighter" : "fleetScout");
     }
     if (outpostObj) {
       const t = playerId && String(outpostObj.owner) === String(playerId) ? T_SELF : T_ENEMY;
-      return mapGraphicWrap(t, MAP_GRAPHIC_SVG.outpost);
+      return mapGraphicFromKey(t, "outpost");
     }
     if (buildingObj) {
       const t = playerId && String(buildingObj.owner) === String(playerId) ? T_SELF : T_ENEMY;
-      if (buildingObj.building_type === "mine") return mapGraphicWrap(t, MAP_GRAPHIC_SVG.mine);
-      if (buildingObj.building_type === "reactor") return mapGraphicWrap(t, MAP_GRAPHIC_SVG.reactor);
-      return mapGraphicWrap(t, MAP_GRAPHIC_SVG.genericBuilding);
+      const bCls = "map-cell-icon-wrap--field-building";
+      if (buildingObj.building_type === "mine") return mapGraphicFromKey(t, "mine", null, bCls);
+      if (buildingObj.building_type === "reactor") return mapGraphicFromKey(t, "reactor", null, bCls);
+      return mapGraphicFromKey(t, "genericBuilding", null, bCls);
     }
-    if (c.terrain === "planet") return mapGraphicWrap(T_NEUTRAL, MAP_GRAPHIC_SVG.planet);
-    if (c.terrain === "asteroids") return mapGraphicWrap(T_NEUTRAL, MAP_GRAPHIC_SVG.asteroids);
-    if (c.terrain === "nebula") return mapGraphicWrap(T_NEUTRAL, MAP_GRAPHIC_SVG.nebula);
-    if (c.terrain === "ruins" && rsRuins) return mapGraphicWrap(T_NEUTRAL, MAP_GRAPHIC_SVG.ruinsSurveyed);
-    if (c.terrain === "ruins") return mapGraphicWrap(T_NEUTRAL, MAP_GRAPHIC_SVG.ruins);
-    if (c.terrain === "anomaly") return mapGraphicWrap(T_NEUTRAL, MAP_GRAPHIC_SVG.anomaly);
-    if (c.terrain === "fog" && c.glyph === "?") return mapGraphicWrap(T_FOG, MAP_GRAPHIC_SVG.fogQ);
+    if (c.terrain === "planet")
+      return mapGraphicFromKey(
+        T_NEUTRAL,
+        "planet",
+        pickPlanetGraphicRasterSrc(c),
+        "map-cell-icon-wrap--planet-scale",
+      );
+    if (c.terrain === "asteroids") return mapGraphicFromKey(T_NEUTRAL, "asteroids");
+    if (c.terrain === "nebula") return mapGraphicFromKey(T_NEUTRAL, "nebula");
+    if (c.terrain === "ruins" && rsRuins) return mapGraphicFromKey(T_NEUTRAL, "ruinsSurveyed");
+    if (c.terrain === "ruins") return mapGraphicFromKey(T_NEUTRAL, "ruins");
+    if (c.terrain === "anomaly") return mapGraphicFromKey(T_NEUTRAL, "anomaly");
+    if (c.terrain === "fog" && c.glyph === "?") return mapGraphicFromKey(T_FOG, "fogQ");
     return null;
   };
 
-  /** Размеры клетки по осям: сетка size×size заполняет прямоугольник `.map-wrap` без прокрутки (ширина и высота независимо). */
-  const computeMapLayoutCellsPx = (size) => {
+  /** Размеры клетки по осям: сетка gridW×gridH заполняет прямоугольник `.map-wrap` без прокрутки (ширина и высота независимо). */
+  const computeMapLayoutCellsPx = (gridW, gridH) => {
+    const gw = Math.max(1, Number(gridW) || 1);
+    const gh = Math.max(1, Number(gridH) || 1);
+    const size = Math.max(gw, gh);
     const minC = 22;
     const maxC = 140;
     const baseCell =
@@ -5524,8 +6900,8 @@
     if (!w || !h || w < size * minC || h < size * minC) return { cw: fallbackSq, ch: fallbackSq };
     const slotW = Math.max(0, w - 6);
     const slotH = Math.max(0, h - 6);
-    const byW = Math.floor(slotW / size);
-    const byH = Math.floor(slotH / size);
+    const byW = Math.floor(slotW / gw);
+    const byH = Math.floor(slotH / gh);
     return {
       cw: Math.max(minC, Math.min(maxC, byW)),
       ch: Math.max(minC, Math.min(maxC, byH)),
@@ -5545,13 +6921,73 @@
   const renderMap = () => {
     if (!mapEl || !currentWindow || !currentWindow.cells) return;
     const mapOpts = getMapRenderOpts();
-    const size = currentWindow.radius * 2 + 1;
+    const span = mapWindowGridSpan(currentWindow);
+    const size = Math.max(span.w, span.h);
     mapEl.innerHTML = "";
-    mapEl.style.setProperty("--map-size", String(size));
+    mapEl.style.setProperty("--map-size", String(Math.max(span.w, 1)));
+    mapEl.classList.toggle("map-hex", currentWindow.topology === "hex");
     mapEl.classList.toggle("map-mode-graphic", mapOpts.graphic);
     mapEl.classList.toggle("map-mode-tactical", !mapOpts.graphic);
     mapEl.classList.toggle("map-hide-coords", !mapOpts.mapShowCoords);
-    const dims = computeMapLayoutCellsPx(size);
+    let dims = computeMapLayoutCellsPx(span.w, span.h);
+    let hexS = null;
+    /** Мин. экранный x = hexS·√3·(q + r/2) по окну — для padding рядов (pointy-top axial). */
+    let hexGlobalMinX = 0;
+    if (currentWindow.topology === "hex") {
+      const vY = MAP_HEX_VERTICAL_COMPRESS;
+      hexS = Math.min(dims.cw / SQRT3, dims.ch / (2 * vY));
+      hexS = Math.max(14, hexS);
+      dims = { cw: hexS * SQRT3, ch: 2 * hexS * vY };
+      const maxCellPx = 140;
+      const hexBBoxPx = (s) => {
+        const cw0 = s * SQRT3;
+        let gmin = Infinity;
+        for (const rw of currentWindow.cells) {
+          for (const c of rw.row || []) {
+            const u = c.x + c.y / 2;
+            if (u < gmin) gmin = u;
+          }
+        }
+        if (!Number.isFinite(gmin)) return { w: 0, h: 0 };
+        const base = s * SQRT3 * gmin;
+        let xmax = -Infinity;
+        for (const rw of currentWindow.cells) {
+          for (const c of rw.row || []) {
+            const right = s * SQRT3 * (c.x + c.y / 2) + cw0 - base;
+            if (right > xmax) xmax = right;
+          }
+        }
+        const nrows = currentWindow.cells.length;
+        const hPx = s * vY * (2 + 1.5 * Math.max(0, nrows - 1));
+        return { w: Math.max(0, xmax), h: hPx };
+      };
+      if (mapWrapEl) {
+        const pad = 10;
+        const sw = Math.max(0, mapWrapEl.clientWidth - pad);
+        const sh = Math.max(0, mapWrapEl.clientHeight - pad);
+        const bbox0 = hexBBoxPx(hexS);
+        if (bbox0.w > 0 && bbox0.h > 0 && sw > 0 && sh > 0) {
+          let scale = sw / bbox0.w;
+          if (bbox0.h * scale > sh) scale = sh / bbox0.h;
+          if (scale > 1.02) {
+            const maxS = Math.min(maxCellPx / SQRT3, maxCellPx / (2 * vY));
+            let s2 = hexS * scale;
+            s2 = Math.min(s2, maxS);
+            s2 = Math.max(14, s2);
+            hexS = s2;
+            dims = { cw: hexS * SQRT3, ch: 2 * hexS * vY };
+          }
+        }
+      }
+      hexGlobalMinX = Infinity;
+      for (const rw of currentWindow.cells) {
+        for (const c of rw.row || []) {
+          const xPx = hexS * SQRT3 * (c.x + c.y / 2);
+          if (xPx < hexGlobalMinX) hexGlobalMinX = xPx;
+        }
+      }
+      if (!Number.isFinite(hexGlobalMinX)) hexGlobalMinX = 0;
+    }
     mapEl.style.setProperty("--map-layout-cell-w", `${dims.cw}px`);
     mapEl.style.setProperty("--map-layout-cell-h", `${dims.ch}px`);
 
@@ -5559,9 +6995,29 @@
     if (unitPosEl) unitPosEl.textContent = `${scout.x}, ${scout.y}, ${scout.z}`;
     if (zEl) zEl.textContent = String(currentZ);
 
+    let hexRowIdx = 0;
     for (const row of currentWindow.cells) {
       const rowEl = document.createElement("div");
-      rowEl.className = "map-row";
+      const rowR = Number(row.y);
+      rowEl.className = currentWindow.topology === "hex" ? "map-row map-hex-row" : "map-row";
+      if (currentWindow.topology === "hex" && hexS != null) {
+        rowEl.style.display = "flex";
+        rowEl.style.flexDirection = "row";
+        rowEl.style.flexWrap = "nowrap";
+        rowEl.style.justifyContent = "flex-start";
+        rowEl.style.alignItems = "center";
+        let qMinRow = Infinity;
+        for (const c of row.row || []) {
+          if (c.x < qMinRow) qMinRow = c.x;
+        }
+        if (!Number.isFinite(qMinRow)) qMinRow = 0;
+        const padLeft = hexS * SQRT3 * (qMinRow + rowR / 2) - hexGlobalMinX;
+        rowEl.style.paddingLeft = `${Math.max(0, padLeft)}px`;
+        if (hexRowIdx > 0) {
+          rowEl.style.marginTop = `${-(dims.ch - 1.5 * hexS * MAP_HEX_VERTICAL_COMPRESS)}px`;
+        }
+        hexRowIdx += 1;
+      }
       for (const c of row.row) {
         const btn = document.createElement("button");
         btn.type = "button";
@@ -5599,6 +7055,7 @@
         if (zoneBuildSelf) btn.classList.add("zone-build-self");
         if (isVisible) {
           btn.classList.add("cell-visible");
+          if (!mapCellHasMeaningfulContent(c)) btn.classList.add("cell-empty-visible");
         } else {
           if (fogState === "memory") btn.classList.add("cell-memory");
           else if (fogState === "stale") btn.classList.add("cell-stale");
@@ -5686,7 +7143,8 @@
           ? `<span class="planet-icon ${isEnemyPlanet ? "enemy" : "ally"}" aria-label="Планета">🪐</span>`
           : null;
 
-        const fleetIcon = anyFleetObj && anyFleetObj.unit_type === "fighter" ? "🚀" : "🛰";
+        const fleetIcon =
+          anyFleetObj && fleetMapGraphicIsCombatDominant(anyFleetObj.unit_type) ? "🚀" : "🛰";
         const fleetMarker = hasAnyFleet && !isFromCell
           ? `<span class='unit-icon ${isEnemyFleet ? "enemy" : "ally"}' aria-label='Флот'>${fleetIcon}</span>`
           : null;
@@ -5700,8 +7158,17 @@
           ? `<span class="terrain-icon ${String(buildingObj.owner) === String(playerId) ? "building-ally" : "building-hostile"}" aria-label="Постройка">${buildingObj.building_type === "mine" ? "⛏" : (buildingObj.building_type === "reactor" ? "⚙" : "◇")}</span>`
           : null;
 
+        const tacticalStack = [];
+        if (terrainIcon && !planetMarker) tacticalStack.push(terrainIcon);
+        if (planetMarker) tacticalStack.push(planetMarker);
+        if (outpostMarker) tacticalStack.push(outpostMarker);
+        if (buildingMarker) tacticalStack.push(buildingMarker);
+        if (fleetMarker) tacticalStack.push(fleetMarker);
+        const tacticalMarkerInner = tacticalStack.length ? tacticalStack.join("") : null;
         const tacticalMarker =
-          planetMarker || fleetMarker || outpostMarker || buildingMarker || terrainIcon;
+          tacticalStack.length > 1
+            ? `<span class="map-marker-stack">${tacticalMarkerInner}</span>`
+            : tacticalMarkerInner;
         const graphicMarker = mapOpts.graphic
           ? buildGraphicMapMarker({
               c,
@@ -5729,18 +7196,19 @@
         const r = clampMapWindowRadius(
           currentWindow && Number.isInteger(currentWindow.radius) ? currentWindow.radius : MAP_WINDOW_RADIUS_MIN
         );
-        const x0 = winCenter.x - r;
-        const x1 = winCenter.x + r;
-        const y0 = winCenter.y - r;
-        const y1 = winCenter.y + r;
-        const isLeft = c.x === x0;
-        const isRight = c.x === x1;
-        const isTop = c.y === y0;
-        const isBottom = c.y === y1;
-        const isEdge = isLeft || isRight || isTop || isBottom;
+        const isHexWin = currentWindow.topology === "hex";
+        const isEdgeHex =
+          isHexWin && jsHexDistance(c.x, c.y, winCenter.x, winCenter.y) === r;
+        const isLeft = c.x === winCenter.x - r;
+        const isRight = c.x === winCenter.x + r;
+        const isTop = c.y === winCenter.y - r;
+        const isBottom = c.y === winCenter.y + r;
+        const isEdge = isHexWin ? isEdgeHex : isLeft || isRight || isTop || isBottom;
         let arrow = "";
         if (isEdge) {
-          if (isLeft && isTop) arrow = "↖";
+          if (isHexWin) {
+            arrow = hexPanArrow(c.x, c.y, winCenter.x, winCenter.y);
+          } else if (isLeft && isTop) arrow = "↖";
           else if (isRight && isTop) arrow = "↗";
           else if (isLeft && isBottom) arrow = "↙";
           else if (isRight && isBottom) arrow = "↘";
@@ -5752,6 +7220,20 @@
         const arrowHtml = arrow
           ? `<div class="pan-arrow ${arrow.length > 1 ? "corner" : ""}">${arrow}</div>`
           : "";
+
+        if (isHexWin && arrow && hexS != null) {
+          const dqx = c.x - winCenter.x;
+          const dqy = c.y - winCenter.y;
+          const sx = SQRT3 * (dqx + dqy / 2);
+          const sy = (3 / 2) * dqy;
+          const sl = Math.hypot(sx, sy) || 1;
+          const push = Math.min(Math.max(8, hexS * 0.52), dims.cw * 0.3);
+          btn.style.setProperty("--pan-tx", `${((sx / sl) * push).toFixed(1)}px`);
+          btn.style.setProperty("--pan-ty", `${((sy / sl) * push).toFixed(1)}px`);
+        } else {
+          btn.style.removeProperty("--pan-tx");
+          btn.style.removeProperty("--pan-ty");
+        }
 
         btn.innerHTML = `<div class="cell-inner">${arrowHtml}${markerHtml}${coordHtml}</div>`;
         let tip = `Сектор (${c.x}, ${c.y}, z=${c.z})`;
@@ -5844,10 +7326,14 @@
             } else {
               lastEdgePanCellKey = null;
             }
-            const step = r * 2; // двигаемся "окнами" без перекрытия
-            const dx = isLeft ? -step : isRight ? step : 0;
-            const dy = isTop ? -step : isBottom ? step : 0;
-            viewCenter = { x: winCenter.x + dx, y: winCenter.y + dy };
+            if (isHexWin) {
+              viewCenter = { x: c.x, y: c.y };
+            } else {
+              const step = r * 2; // двигаемся "окнами" без перекрытия
+              const dx = isLeft ? -step : isRight ? step : 0;
+              const dy = isTop ? -step : isBottom ? step : 0;
+              viewCenter = { x: winCenter.x + dx, y: winCenter.y + dy };
+            }
             void refreshWindow();
             return;
           }
@@ -5858,7 +7344,38 @@
       }
       mapEl.appendChild(rowEl);
     }
+    syncMapLayerElBoxFromGrid();
     renderFlightOverlay();
+  };
+
+  /**
+   * Пиксельный размер `.map-layer` для SVG: для гекса нельзя брать max(span)×клетка —
+   * ряды со сдвигом (paddingLeft) дают больший bbox, иначе слой сжимается, оверлеи «рвутся».
+   */
+  const mapLayerPixelRect = (span, cellWpx, cellHpx) => {
+    const size = Math.max(span.w, span.h);
+    let w = size * cellWpx;
+    let h = size * cellHpx;
+    if (currentWindow && currentWindow.topology === "hex" && mapEl) {
+      // При узком `.map-layer` блок может иметь offset* = ширине родителя; scroll* — полный bbox гекса.
+      const ow = Math.max(mapEl.offsetWidth, mapEl.scrollWidth);
+      const oh = Math.max(mapEl.offsetHeight, mapEl.scrollHeight);
+      if (ow > 0 && oh > 0) {
+        w = ow;
+        h = oh;
+      }
+    }
+    return { w, h };
+  };
+
+  /** Выставить `.map-layer` по фактическому bbox сетки (до SVG с `inset:0`, иначе оверлей сжимается). */
+  const syncMapLayerElBoxFromGrid = () => {
+    if (!mapLayerEl || !mapEl || !currentWindow || !currentWindow.cells) return;
+    const span = mapWindowGridSpan(currentWindow);
+    const { cw, ch } = readMapLayoutDimsFromCss();
+    const { w, h } = mapLayerPixelRect(span, cw, ch);
+    mapLayerEl.style.width = `${w}px`;
+    mapLayerEl.style.height = `${h}px`;
   };
 
   /** Центр клетки в системе координат SVG внутри `.map-layer` (как у zone-overlay). */
@@ -5866,16 +7383,13 @@
     if (!mapEl || !mapLayerEl) return null;
     const el = mapEl.querySelector(`button.cell[data-x='${x}'][data-y='${y}'][data-z='${z}']`);
     if (!el) return null;
-    let ox = 0;
-    let oy = 0;
-    let n = el;
-    while (n && n !== mapLayerEl) {
-      ox += n.offsetLeft;
-      oy += n.offsetTop;
-      n = n.offsetParent;
-    }
-    if (n !== mapLayerEl) return null;
-    return { cx: ox + el.offsetWidth / 2, cy: oy + el.offsetHeight / 2 };
+    const layerRect = mapLayerEl.getBoundingClientRect();
+    const cellRect = el.getBoundingClientRect();
+    if (!layerRect.width && !layerRect.height) return null;
+    return {
+      cx: cellRect.left - layerRect.left + cellRect.width / 2,
+      cy: cellRect.top - layerRect.top + cellRect.height / 2,
+    };
   };
 
   const renderFlightOverlay = () => {
@@ -5883,10 +7397,9 @@
     // clear
     flightOverlayEl.innerHTML = "";
 
-    const size = currentWindow.radius * 2 + 1;
+    const span = mapWindowGridSpan(currentWindow);
     const { cw: cellWPx, ch: cellHPx } = readMapLayoutDimsFromCss();
-    const W = size * cellWPx;
-    const H = size * cellHPx;
+    const { w: W, h: H } = mapLayerPixelRect(span, cellWPx, cellHPx);
     flightOverlayEl.setAttribute("viewBox", `0 0 ${W} ${H}`);
     flightOverlayEl.setAttribute("width", String(W));
     flightOverlayEl.setAttribute("height", String(H));
@@ -5908,7 +7421,7 @@
 
       const travelTicks = Number.isInteger(ao.travel_ticks)
         ? ao.travel_ticks
-        : Math.max(1, Math.abs(ao.target_x - ao.from_x) + Math.abs(ao.target_y - ao.from_y));
+        : Math.max(1, jsHexDistance(ao.target_x, ao.target_y, ao.from_x, ao.from_y));
       const remaining = Number.isInteger(ao.remaining_ticks) ? ao.remaining_ticks : 0;
       const done = Math.max(0, Math.min(travelTicks, travelTicks - remaining));
       const t = travelTicks === 0 ? 0 : done / travelTicks;
@@ -5937,14 +7450,13 @@
 
   const renderZoneOverlay = () => {
     if (!zoneOverlayEl || !mapEl || !mapLayerEl || !currentWindow || !currentWindow.cells) return;
-    const size = currentWindow.radius * 2 + 1;
+    const span = mapWindowGridSpan(currentWindow);
     const { cw: cellWpx, ch: cellHpx } = readMapLayoutDimsFromCss();
-    const mapWpx = size * cellWpx;
-    const mapHpx = size * cellHpx;
+    // Сначала размер слоя — иначе getBoundingClientRect и scroll* дают несогласованные цифры.
+    syncMapLayerElBoxFromGrid();
+    const { w: mapWpx, h: mapHpx } = mapLayerPixelRect(span, cellWpx, cellHpx);
 
     // overlay — в тех же px, что и сетка
-    mapLayerEl.style.width = `${mapWpx}px`;
-    mapLayerEl.style.height = `${mapHpx}px`;
     zoneOverlayEl.setAttribute("viewBox", `0 0 ${mapWpx} ${mapHpx}`);
     zoneOverlayEl.setAttribute("width", String(mapWpx));
     zoneOverlayEl.setAttribute("height", String(mapHpx));
@@ -5999,10 +7511,20 @@
       }
       const r = 3;
       for (const p of myPlanets) {
-        for (let dy = -r; dy <= r; dy++) {
-          for (let dx = -r; dx <= r; dx++) {
-            if (Math.abs(dx) + Math.abs(dy) > r) continue;
-            inBuild.add(cellIndexKey(p.x + dx, p.y + dy, p.z ?? 0));
+        if (currentWindow.topology === "hex") {
+          for (let dq = -r; dq <= r; dq++) {
+            for (let dr = -r; dr <= r; dr++) {
+              const x = p.x + dq;
+              const y = p.y + dr;
+              if (jsHexDistance(x, y, p.x, p.y) <= r) inBuild.add(cellIndexKey(x, y, p.z ?? 0));
+            }
+          }
+        } else {
+          for (let dy = -r; dy <= r; dy++) {
+            for (let dx = -r; dx <= r; dx++) {
+              if (Math.abs(dx) + Math.abs(dy) > r) continue;
+              inBuild.add(cellIndexKey(p.x + dx, p.y + dy, p.z ?? 0));
+            }
           }
         }
       }
@@ -6116,7 +7638,7 @@
     // Vision: без контура. Видимость и так читается по туману войны + подсветке видимых клеток.
     // Если захотим — можно вернуть мягкую заливку без “кубиков” отдельным path.
 
-    const smoothClosedPathD = (pts, r) => {
+    const smoothClosedPathD = (pts, r, edgeCapMul) => {
       if (!pts || pts.length < 4) return loopToPathD(pts);
       const radius = Math.max(0, Number(r) || 0);
       if (radius <= 0) return loopToPathD(pts);
@@ -6140,7 +7662,8 @@
         const d1 = dist(prev, cur);
         const d2 = dist(cur, next);
         if (d1 === 0 || d2 === 0) continue;
-        const rr = clamp(radius, 0, Math.min(d1, d2) * 0.45);
+        const capMul = typeof edgeCapMul === "number" && edgeCapMul > 0 ? edgeCapMul : 0.58;
+        const rr = clamp(radius, 0, Math.min(d1, d2) * capMul);
 
         const p1 = lerp(cur, prev, rr / d1);
         const p2 = lerp(cur, next, rr / d2);
@@ -6152,8 +7675,279 @@
       return d;
     };
 
+    const hexNeighborOffsetLayerPx = (dq, dr, cw, _ch) => {
+      const S = cw / SQRT3;
+      const x = S * SQRT3 * (dq + dr / 2);
+      const y = S * (3 / 2) * dr * MAP_HEX_VERTICAL_COMPRESS;
+      return { x, y };
+    };
+
+    const AXIAL_HEX_DIRS_OVERLAY = [
+      [1, 0],
+      [1, -1],
+      [0, -1],
+      [-1, 0],
+      [-1, 1],
+      [0, 1],
+    ];
+
+    /** 6 вершин clip-path гекса в px слоя `.map-layer` (как у кнопки `.cell`). */
+    const hexCellCornersInLayerSpace = (x, y, z) => {
+      if (!mapEl || !mapLayerEl) return null;
+      const el = mapEl.querySelector(`button.cell[data-x='${x}'][data-y='${y}'][data-z='${z}']`);
+      if (!el) return null;
+      const layerRect = mapLayerEl.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      const w = r.width;
+      const h = r.height;
+      if (!(w > 0 && h > 0)) return null;
+      const left = r.left - layerRect.left;
+      const top = r.top - layerRect.top;
+      const corners = [
+        { x: left + w * 0.5, y: top },
+        { x: left + w, y: top + h * 0.25 },
+        { x: left + w, y: top + h * 0.75 },
+        { x: left + w * 0.5, y: top + h },
+        { x: left, y: top + h * 0.75 },
+        { x: left, y: top + h * 0.25 },
+      ];
+      return { corners, cx: left + w / 2, cy: top + h / 2 };
+    };
+
+    /** Ребро шестиугольника, «смотрящее» на соседа (центр соседа — внутри или синтетический). */
+    const hexBoundaryEdgeForOutsideNeighbor = (corners, cx, cy, tgx, tgy) => {
+      if (!corners || corners.length < 3) return null;
+      const ux = tgx - cx;
+      const uy = tgy - cy;
+      const ulen = Math.hypot(ux, uy);
+      if (ulen < 1e-6) return null;
+      const uxn = ux / ulen;
+      const uyn = uy / ulen;
+      let bestDot = -Infinity;
+      let ax;
+      let ay;
+      let bx;
+      let by;
+      for (let i = 0; i < corners.length; i++) {
+        const p0 = corners[i];
+        const p1 = corners[(i + 1) % corners.length];
+        const mx = (p0.x + p1.x) / 2;
+        const my = (p0.y + p1.y) / 2;
+        const vx = mx - cx;
+        const vy = my - cy;
+        const vlen = Math.hypot(vx, vy) || 1;
+        const dot = (vx / vlen) * uxn + (vy / vlen) * uyn;
+        if (dot > bestDot) {
+          bestDot = dot;
+          ax = p0.x;
+          ay = p0.y;
+          bx = p1.x;
+          by = p1.y;
+        }
+      }
+      if (!(Number.isFinite(ax) && Number.isFinite(ay) && Number.isFinite(bx) && Number.isFinite(by))) return null;
+      return [ax, ay, bx, by];
+    };
+
+    const collectHexEdges = (zoneSet) => {
+      const posMap = new Map();
+      const geoCache = new Map();
+      for (let yi = 0; yi < rows.length; yi++) {
+        const row = rows[yi].row;
+        for (let xi = 0; xi < row.length; xi++) {
+          const c = row[xi];
+          const z0 = c.z ?? 0;
+          const pt = getCellCenterInLayerSpace(c.x, c.y, z0);
+          if (pt) posMap.set(cellIndexKey(c.x, c.y, z0), pt);
+        }
+      }
+      const cornersCached = (x, y, z) => {
+        const k0 = cellIndexKey(x, y, z);
+        if (geoCache.has(k0)) return geoCache.get(k0);
+        const g = hexCellCornersInLayerSpace(x, y, z);
+        geoCache.set(k0, g);
+        return g;
+      };
+      const segs = [];
+      for (let yi = 0; yi < rows.length; yi++) {
+        const row = rows[yi].row;
+        for (let xi = 0; xi < row.length; xi++) {
+          const c = row[xi];
+          const z0 = c.z ?? 0;
+          const k = cellIndexKey(c.x, c.y, z0);
+          if (!zoneSet.has(k)) continue;
+          const center = posMap.get(k);
+          if (!center) continue;
+          const geo = cornersCached(c.x, c.y, z0);
+          for (const [dq, dr] of AXIAL_HEX_DIRS_OVERLAY) {
+            const nk = cellIndexKey(c.x + dq, c.y + dr, z0);
+            if (zoneSet.has(nk)) continue;
+            const nb = posMap.get(nk);
+            let nbcx;
+            let nbcy;
+            if (nb) {
+              nbcx = nb.cx;
+              nbcy = nb.cy;
+            } else {
+              const off = hexNeighborOffsetLayerPx(dq, dr, cellWpx, cellHpx);
+              nbcx = center.cx + off.x;
+              nbcy = center.cy + off.y;
+            }
+            if (geo && Array.isArray(geo.corners)) {
+              const seg = hexBoundaryEdgeForOutsideNeighbor(geo.corners, geo.cx, geo.cy, nbcx, nbcy);
+              if (seg) {
+                segs.push(seg);
+                continue;
+              }
+            }
+            const mx = (center.cx + nbcx) / 2;
+            const my = (center.cy + nbcy) / 2;
+            const vx = nbcx - center.cx;
+            const vy = nbcy - center.cy;
+            const len = Math.hypot(vx, vy) || 1;
+            const px = -vy / len;
+            const py = vx / len;
+            const vY = MAP_HEX_VERTICAL_COMPRESS;
+            const hexSidePx = Math.min(cellWpx / SQRT3, cellHpx / (2 * vY));
+            const half = hexSidePx / 2;
+            segs.push([mx - px * half, my - py * half, mx + px * half, my + py * half]);
+          }
+        }
+      }
+      return segs;
+    };
+
+    const collectEdgesForTopology = (zoneSet) =>
+      currentWindow.topology === "hex" ? collectHexEdges(zoneSet) : collectEdges(zoneSet);
+
+    /** Сборка замкнутых контуров из отрезков гекс-границы (со снаппингом точек — иначе граф не замыкается из‑за float). */
+    const hexBoundarySegmentsToLoops = (rawSegs) => {
+      const SNAP = 3;
+      const snap = (v) => Math.round(Number(v) / SNAP) * SNAP;
+      const pk = (x, y) => `${snap(x)},${snap(y)}`;
+      const segs = [];
+      for (const [x1, y1, x2, y2] of rawSegs) {
+        const ax = snap(x1);
+        const ay = snap(y1);
+        const bx = snap(x2);
+        const by = snap(y2);
+        if (ax === bx && ay === by) continue;
+        segs.push({ ax, ay, bx, by });
+      }
+      const adj = new Map();
+      const addAdj = (x1, y1, x2, y2, i) => {
+        const k = pk(x1, y1);
+        if (!adj.has(k)) adj.set(k, []);
+        adj.get(k).push({ i, x: x2, y: y2 });
+      };
+      for (let i = 0; i < segs.length; i++) {
+        const s = segs[i];
+        addAdj(s.ax, s.ay, s.bx, s.by, i);
+        addAdj(s.bx, s.by, s.ax, s.ay, i);
+      }
+      const used = new Set();
+      const loops = [];
+      for (let i = 0; i < segs.length; i++) {
+        if (used.has(i)) continue;
+        const s0 = segs[i];
+        used.add(i);
+        const sx = s0.ax;
+        const sy = s0.ay;
+        let cx = s0.bx;
+        let cy = s0.by;
+        let px = sx;
+        let py = sy;
+        const pts = [{ x: sx, y: sy }, { x: cx, y: cy }];
+        for (let guard = 0; guard < 25000; guard++) {
+          const options = (adj.get(pk(cx, cy)) || []).filter((o) => !used.has(o.i));
+          if (!options.length) break;
+          const nxt = options.find((o) => !(o.x === px && o.y === py)) || options[0];
+          used.add(nxt.i);
+          pts.push({ x: nxt.x, y: nxt.y });
+          px = cx;
+          py = cy;
+          cx = nxt.x;
+          cy = nxt.y;
+          if (cx === sx && cy === sy) break;
+        }
+        if (pts.length >= 4 && cx === sx && cy === sy) loops.push(pts);
+      }
+      return loops;
+    };
+
+    const dedupeHexBorderSegments = (segs) => {
+      const q = (v) => Math.round(Number(v));
+      const edgeKey = (x1, y1, x2, y2) => {
+        const a = `${q(x1)},${q(y1)}`;
+        const b = `${q(x2)},${q(y2)}`;
+        return a < b ? `${a}|${b}` : `${b}|${a}`;
+      };
+      const seen = new Set();
+      const out = [];
+      for (const s of segs) {
+        const k = edgeKey(s[0], s[1], s[2], s[3]);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        out.push(s);
+      }
+      return out;
+    };
+
+    /** Chaikin по замкнутому контуру — срезает «пилу» из мелких гекс-рёбер до крупных плавных дуг. */
+    const chaikinClosedLoop = (pts, iterations) => {
+      let ring = pts.slice();
+      if (ring.length >= 2) {
+        const a = ring[0];
+        const b = ring[ring.length - 1];
+        if (Math.hypot(a.x - b.x, a.y - b.y) < 1e-3) ring = ring.slice(0, -1);
+      }
+      if (ring.length < 3) return pts;
+      const iters = Math.max(1, Math.min(4, iterations === undefined ? 2 : iterations));
+      for (let iter = 0; iter < iters; iter++) {
+        const next = [];
+        const n = ring.length;
+        for (let i = 0; i < n; i++) {
+          const p0 = ring[i];
+          const p1 = ring[(i + 1) % n];
+          next.push(
+            { x: 0.75 * p0.x + 0.25 * p1.x, y: 0.75 * p0.y + 0.25 * p1.y },
+            { x: 0.25 * p0.x + 0.75 * p1.x, y: 0.25 * p0.y + 0.75 * p1.y },
+          );
+        }
+        ring = next;
+      }
+      ring.push({ ...ring[0] });
+      return ring;
+    };
+
     const drawBorder = (zoneSet, klass) => {
-      const segs = collectEdges(zoneSet);
+      const segs = collectEdgesForTopology(zoneSet);
+      const isHex = currentWindow.topology === "hex";
+      if (isHex) {
+        const uniq = dedupeHexBorderSegments(segs);
+        const loops = hexBoundarySegmentsToLoops(uniq);
+        const joinR = Math.max(16, Math.min(cellWpx, cellHpx) * 0.48);
+        if (loops.length) {
+          for (const loop of loops) {
+            const path = document.createElementNS(ns, "path");
+            const softened = chaikinClosedLoop(loop, 3);
+            path.setAttribute("d", smoothClosedPathD(softened, joinR, 0.84));
+            path.setAttribute("class", `${klass} zone-line-hex-smooth`);
+            zoneOverlayEl.appendChild(path);
+          }
+        } else {
+          for (const [x1, y1, x2, y2] of uniq) {
+            const line = document.createElementNS(ns, "line");
+            line.setAttribute("x1", String(x1));
+            line.setAttribute("y1", String(y1));
+            line.setAttribute("x2", String(x2));
+            line.setAttribute("y2", String(y2));
+            line.setAttribute("class", `${klass} zone-line-hex-fallback`);
+            zoneOverlayEl.appendChild(line);
+          }
+        }
+        return;
+      }
       const loops = segmentsToLoops(segs);
       const radius = Math.max(6, Math.round(Math.min(cellWpx, cellHpx) * 0.22));
       if (loops.length) {
@@ -6183,8 +7977,16 @@
 
   const applyMapCellSizeFromContainer = () => {
     if (!mapEl || !currentWindow || !currentWindow.cells) return;
-    const size = currentWindow.radius * 2 + 1;
-    const d = computeMapLayoutCellsPx(size);
+    // Гекс: размеры и масштаб считаются только в `renderMap` (bbox, MAP_HEX_VERTICAL_COMPRESS).
+    // Иначе здесь подставляется «квадратная» сетка 13×13 → краткий кадр с полосой/искажением и мигание.
+    if (currentWindow.topology === "hex") {
+      renderMap();
+      renderZoneOverlay();
+      syncMmoSidePanelHeights();
+      return;
+    }
+    const span = mapWindowGridSpan(currentWindow);
+    const d = computeMapLayoutCellsPx(span.w, span.h);
     mapEl.style.setProperty("--map-layout-cell-w", `${d.cw}px`);
     mapEl.style.setProperty("--map-layout-cell-h", `${d.ch}px`);
     renderZoneOverlay();
@@ -6208,33 +8010,38 @@
 
   const refreshWindow = async () => {
     const run = async () => {
-      const fog =
-        playerIsGameAdmin && loadUiSettings().revealFogAdmin ? "&reveal_fog=1" : "";
-      let vx = Math.round(Number(viewCenter.x));
-      let vy = Math.round(Number(viewCenter.y));
-      if (!Number.isFinite(vx) || !Number.isFinite(vy)) {
-        vx = Math.round(Number(home.x)) || 0;
-        vy = Math.round(Number(home.y)) || 0;
-        viewCenter = { x: vx, y: vy };
-      } else {
-        viewCenter = { x: vx, y: vy };
-      }
-      const r = await fetch(
-        `/api/world/window?radius=${viewRadius}&z=${currentZ}&center_x=${viewCenter.x}&center_y=${viewCenter.y}${fog}`
-      );
-      if (!r.ok) {
+      try {
+        const fog =
+          playerIsGameAdmin && loadUiSettings().revealFogAdmin ? "&reveal_fog=1" : "";
+        let vx = Math.round(Number(viewCenter.x));
+        let vy = Math.round(Number(viewCenter.y));
+        if (!Number.isFinite(vx) || !Number.isFinite(vy)) {
+          vx = Math.round(Number(home.x)) || 0;
+          vy = Math.round(Number(home.y)) || 0;
+          viewCenter = { x: vx, y: vy };
+        } else {
+          viewCenter = { x: vx, y: vy };
+        }
+        const r = await fetch(
+          `/api/world/window?radius=${viewRadius}&z=${currentZ}&center_x=${viewCenter.x}&center_y=${viewCenter.y}${fog}`
+        );
+        if (!r.ok) {
+          setStatus("Ошибка загрузки карты", "err");
+          return;
+        }
+        currentWindow = await r.json();
+        if (currentWindow && currentWindow.center) {
+          const cx = Math.round(Number(currentWindow.center.x));
+          const cy = Math.round(Number(currentWindow.center.y));
+          if (Number.isFinite(cx) && Number.isFinite(cy)) viewCenter = { x: cx, y: cy };
+        }
+        renderMap();
+        renderZoneOverlay();
+      } catch (_e) {
         setStatus("Ошибка загрузки карты", "err");
-        return;
+      } finally {
+        await loadWorldState();
       }
-      currentWindow = await r.json();
-      if (currentWindow && currentWindow.center) {
-        const cx = Math.round(Number(currentWindow.center.x));
-        const cy = Math.round(Number(currentWindow.center.y));
-        if (Number.isFinite(cx) && Number.isFinite(cy)) viewCenter = { x: cx, y: cy };
-      }
-      renderMap();
-      renderZoneOverlay();
-      await loadWorldState();
     };
     mapWindowRefreshQueue = mapWindowRefreshQueue.then(run, () => {}).catch(() => {
       setStatus("Ошибка загрузки карты", "err");
@@ -6288,22 +8095,28 @@
       const body = await r.json();
 
       if (r.status === 400) {
-        const msg = body.error || body.message || "bad_request";
-        setStatus(`Ошибка: ${msg}`, "err");
+        const msg = formatApiFailure(body);
+        setStatus(msg, "err");
+        if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, msg, "err");
         return;
       }
 
       if (r.status === 200 && body.ok) {
         lastTarget = { x, y, z };
         await refreshWindow();
-        setStatus(`Успешно: (${x},${y},${z})`, "ok");
+        const okMsg = `Успешно: (${x},${y},${z})`;
+        setStatus(okMsg, "ok");
+        if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, okMsg, "ok");
         return;
       }
 
-      const msg = body.error || body.message || `http_${r.status}`;
-      setStatus(`Ошибка: ${msg}`, "err");
+      const msg = formatApiFailure(body);
+      setStatus(msg, "err");
+      if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, msg, "err");
     } catch (_e) {
-      setStatus("Ошибка: network_error", "err");
+      const msg = "Нет связи с сервером. Проверьте сеть и попробуйте снова.";
+      setStatus(msg, "err");
+      if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, msg, "err");
     }
   };
 
@@ -6324,14 +8137,6 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        if (body.error === "not_enough_fuel") {
-          setStatus(`Ошибка: not_enough_fuel (нужно ${body.need}, есть ${body.have})`, "err");
-          return;
-        }
-        if (body.error === "not_enough_fleet_energy") {
-          setStatus(`Ошибка: не хватает энергии флота (нужно ${body.need}, есть ${body.have})`, "err");
-          return;
-        }
         if (body.error === "cell_occupied_by_own_fleet") {
           const fleets = Array.isArray(worldState && worldState.fleets) ? worldState.fleets : [];
           const others = fleets.filter(
@@ -6351,26 +8156,30 @@
             });
             return;
           }
-          setStatus("В этой клетке уже ваш флот. Два флота не могут стоять в одной клетке.", "err");
-          return;
         }
+        let hint = "";
         if (body.error === "active_order_exists") {
-          const f = worldState && worldState.fleet && worldState.fleet.id === fleetId ? worldState.fleet : null;
+          const fleets = Array.isArray(worldState && worldState.fleets) ? worldState.fleets : [];
+          const f = fleets.find((fl) => fl && String(fl.id) === String(fleetId)) || worldState.fleet;
           const ao = f && f.active_order ? f.active_order : null;
-          const hint = ao
+          hint = ao
             ? `Уже летит в (${ao.target_x},${ao.target_y},${ao.target_z}), осталось ${ao.remaining_ticks} ${solWord(ao.remaining_ticks)}.`
             : "Флот уже в пути.";
-          setStatus(`Ошибка: active_order_exists. ${hint} Можно отменить приказ.`, "err");
-        } else {
-          setStatus(`Ошибка: ${body.error || "fleet_move_failed"}`, "err");
         }
+        const msg = formatApiFailure(body, { activeOrderHint: hint });
+        setStatus(msg, "err");
+        if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, msg, "err");
         return;
       }
       lastTarget = { x, y, z };
       await refreshWindow();
-      setStatus(`Флот в пути: осталось ${body.travel_ticks} ${solWord(body.travel_ticks)}`, "ok");
+      const okMsg = `Флот в пути: осталось ${body.travel_ticks} ${solWord(body.travel_ticks)}`;
+      setStatus(okMsg, "ok");
+      if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, okMsg, "ok");
     } catch (_e) {
-      setStatus("Ошибка: network_error", "err");
+      const msg = "Нет связи с сервером. Проверьте сеть и попробуйте снова.";
+      setStatus(msg, "err");
+      if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, msg, "err");
     }
   };
 
@@ -6384,13 +8193,19 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        setStatus(`Ошибка: ${body.error || "cancel_failed"}`, "err");
+        const msg = formatApiFailure(body);
+        setStatus(msg, "err");
+        if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, msg, "err");
         return;
       }
-      setStatus("Приказ отменён", "ok");
+      const okMsg = "Приказ отменён";
+      setStatus(okMsg, "ok");
+      if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, okMsg, "ok");
       await refreshWindow();
     } catch (_e) {
-      setStatus("Ошибка: network_error", "err");
+      const msg = "Нет связи с сервером. Проверьте сеть и попробуйте снова.";
+      setStatus(msg, "err");
+      if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, msg, "err");
     }
   };
 
@@ -6420,13 +8235,8 @@
     if (fac.attacker_supply_zone) t.push("атакующий в зоне снабжения (+5%)");
     if (fac.defender_home_zone) t.push("защитник у дома (+8%)");
     const terr = t.length ? t.join("; ") : "—";
-    const ar = Array.isArray(fac.attacker_research) ? fac.attacker_research : [];
-    const dr = Array.isArray(fac.defender_research) ? fac.defender_research : [];
-    const resA = ar.length ? ar.map((x) => `${x.name} (${x.summary})`).join("; ") : "—";
-    const resD = dr.length ? dr.map((x) => `${x.name} (${x.summary})`).join("; ") : "—";
-    const eb = `база очков: вы ${fac.attacker_base ?? "—"}, враг ${fac.defender_base ?? "—"}; после территории ≈ ${fac.attacker_effective_before_roll ?? fac.attacker_effective ?? "—"} vs ${fac.defender_effective_before_roll ?? fac.defender_effective ?? "—"}`;
     const disc = pr.disclaimer ? `\n${pr.disclaimer}` : "";
-    return `Пересчёт по текущей позиции:\n${eb}\nВаш состав: ${mine}\nВраг: ${theirs}\nТерритория: ${terr}\nВаши исследования (бой): ${resA}\nВраг: ${resD}\nПримерный шанс победы ≈ ${p}%${disc}`;
+    return `По текущим данным:\nВаш состав: ${mine}\nВраг: ${theirs}\nУсловия клетки: ${terr}\nОриентировочный шанс успеха атаки ≈ ${p}%${disc}`;
   };
 
   const tickCombatCountdown = () => {
@@ -6484,16 +8294,22 @@
       });
       const body = await r.json();
       if (!r.ok || !body.ok) {
-        setStatus(`Бой: ${body.error || "ошибка"}`, "err");
+        const msg = `Бой: ${formatApiFailure(body)}`;
+        setStatus(msg, "err");
+        if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, msg, "err");
         closeCombatPromptModal();
         await refreshWindow();
         return;
       }
-      setStatus(attack ? "Решение применено" : "Атака отменена, флот на позиции", "ok");
+      const okMsg = attack ? "Решение применено" : "Атака отменена, флот на позиции";
+      setStatus(okMsg, "ok");
+      if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, okMsg, "ok");
       closeCombatPromptModal();
       await refreshWindow();
     } catch (_e) {
-      setStatus("Сеть: combat_prompt_resolve", "err");
+      const msg = "Нет связи с сервером (решение боя). Проверьте сеть и попробуйте снова.";
+      setStatus(msg, "err");
+      if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, msg, "err");
     }
   };
 
@@ -6559,32 +8375,20 @@
 
   const resolveAdjacentFleetLanding = async (to, draggedFleetId) => {
     const tz = Number(to.z) || 0;
-    const cand = [
+    const axialHexDirs = [
       [1, 0],
-      [-1, 0],
-      [0, 1],
-      [0, -1],
-      [1, 1],
       [1, -1],
+      [0, -1],
+      [-1, 0],
       [-1, 1],
-      [-1, -1],
-      [2, 0],
-      [-2, 0],
-      [0, 2],
-      [0, -2],
-      [2, 1],
-      [2, -1],
-      [-2, 1],
-      [-2, -1],
-      [1, 2],
-      [1, -2],
-      [-1, 2],
-      [-1, -2],
-      [3, 0],
-      [-3, 0],
-      [0, 3],
-      [0, -3],
+      [0, 1],
     ];
+    const cand = axialHexDirs.map((d) => d.slice());
+    for (const a of axialHexDirs) {
+      for (const b of axialHexDirs) {
+        cand.push([a[0] + b[0], a[1] + b[1]]);
+      }
+    }
     const rows = (currentWindow && currentWindow.cells) || [];
     const cellFromWindow = (nx, ny) => {
       for (const row of rows) {
@@ -6661,7 +8465,7 @@
 
   const openFleetMoveConfirm = async ({ fleet_id, qty, from, to, destCell, deferOkMs }) => {
     if (!overlayEl) return;
-    const distance = Math.abs(to.x - from.x) + Math.abs(to.y - from.y);
+    const distance = jsHexDistance(to.x, to.y, from.x, from.y);
     const travelTicks = Math.max(1, distance);
     const currentTick = Number.isInteger(worldState.current_sol)
       ? worldState.current_sol
@@ -6798,7 +8602,9 @@
     flyBtn.addEventListener("click", async () => {
       if (!selectedCell) return;
       if (!activeFleetId) {
-        setStatus("Нет активного флота для движения", "err");
+        const msg = "Нет активного флота для движения — выберите флот в списке справа.";
+        setStatus(msg, "err");
+        if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, msg, "err");
         return;
       }
       await moveFleet(activeFleetId, selectedCell.x, selectedCell.y, selectedCell.z);
@@ -6808,10 +8614,10 @@
     buildBtn.addEventListener("click", async () => {
       if (!selectedCell) return;
       if (buildBtn.disabled) {
-        setStatus(
-          "Нужны инженеры: приведите в эту клетку флот с инженерами или откройте строительство с клетки своей планеты.",
-          "err",
-        );
+        const msg =
+          "Нужны инженеры: приведите в эту клетку флот с инженерами или откройте строительство с клетки своей планеты.";
+        setStatus(msg, "err");
+        if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, msg, "err");
         return;
       }
       await openPlanetModal(selectedCell);
@@ -6834,22 +8640,27 @@
         });
         const body = await r.json();
         if (!r.ok || !body.ok) {
-          if (body.error === "sector_not_visible") setStatus("Клетка не в зоне обзора флотов/колоний", "err");
-          else if (body.error === "nothing_to_discover") setStatus("Здесь нечего исследовать", "err");
-          else if (body.error === "fleet_required")
-            setStatus("Исследование руин и аномалий: приведите свой флот на эту клетку.", "err");
-          else setStatus(`Ошибка: ${body.error || "discovery_failed"}`, "err");
+          const msg = formatApiFailure(body);
+          setStatus(msg, "err");
+          if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, msg, "err");
           return;
         }
-        if (body.already_done) setStatus("Объект уже исследован", "ok");
-        else if (body.headline) setStatus(String(body.headline), "ok");
-        else setStatus("Исследование завершено — см. журнал событий", "ok");
+        const okMsg = body.already_done
+          ? "Объект уже исследован"
+          : body.headline
+            ? String(body.headline)
+            : "Исследование завершено — см. журнал событий";
+        setStatus(okMsg, "ok");
+        if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, okMsg, "ok");
+        if (!body.already_done) mergeOnboardingMilestones({ exploreOrOutpost: true });
         await refreshWindow();
         refreshSelectedCellFromWindow();
         updateSelectedPanel();
         void loadWorldState();
       } catch (_e) {
-        setStatus("Ошибка: network_error", "err");
+        const msg = "Нет связи с сервером. Проверьте сеть и попробуйте снова.";
+        setStatus(msg, "err");
+        if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, msg, "err");
       }
     });
   }
@@ -6864,7 +8675,9 @@
   if (fleetLocateBtn) {
     fleetLocateBtn.addEventListener("click", () => {
       if (!activeFleetId) {
-        setStatus("Сначала выберите флот в списке", "err");
+        const msg = "Сначала выберите флот в списке";
+        setStatus(msg, "err");
+        if (hudActionFeedbackEl) showActionFeedback(hudActionFeedbackEl, msg, "err");
         return;
       }
       void focusFleetOnMap(activeFleetId);
@@ -6979,7 +8792,26 @@
   if (economyModalCloseBtn) economyModalCloseBtn.addEventListener("click", closeEconomyModal);
   if (economyModalOverlay) {
     economyModalOverlay.addEventListener("click", (e) => {
+      const wbtn = e.target && e.target.closest && e.target.closest("[data-wiki-res]");
+      if (wbtn && economyModalOverlay.contains(wbtn)) {
+        e.preventDefault();
+        e.stopPropagation();
+        openWikiForResourceKey(wbtn.getAttribute("data-wiki-res"));
+        return;
+      }
       if (e.target === economyModalOverlay) closeEconomyModal();
+    });
+  }
+
+  const resourcesChipBar = document.getElementById("resources-chip");
+  if (resourcesChipBar) {
+    resourcesChipBar.addEventListener("click", (e) => {
+      const chip = e.target && e.target.closest && e.target.closest(".res-chip[data-res]");
+      if (!chip || !resourcesChipBar.contains(chip)) return;
+      const rk = chip.getAttribute("data-res");
+      if (!rk) return;
+      e.preventDefault();
+      openWikiForResourceKey(rk);
     });
   }
 

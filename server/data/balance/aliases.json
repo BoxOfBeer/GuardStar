@@ -12,7 +12,15 @@
 
     "supplier": "supplier_t1",
 
-    "freighter": "freighter_t1"
+    "freighter": "freighter_t1",
+
+    "colonizer": "colonizer_pod_t2",
+
+    "frigate": "frigate_t2",
+
+    "colony_support": "colony_support_t1",
+
+    "scout_medium": "scout_medium_t2"
 
   },
 
@@ -50,7 +58,13 @@
 
     "starter_water": "starter_water_t1",
 
-    "logistics_center": "logistics_center_t1"
+    "logistics_center": "logistics_center_t1",
+
+    "planetary_defense": "planetary_defense_dome_t2",
+
+    "orbital_strike": "orbital_strike_battery_t2",
+
+    "imperial_capital_seat": "imperial_capital_seat_t3"
 
   }
 

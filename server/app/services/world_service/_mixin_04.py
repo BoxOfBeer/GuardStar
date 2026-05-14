@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.hex_coords import hex_distance
 from app.services.world_service._deps import *  # noqa: F403
 from app.services.world_service.constants import (
     BANDIT_PLAYER_ID,
@@ -49,7 +50,7 @@ class WorldServiceMixin04:
         eng_fleet = self._owned_engineer_fleet_at(
             s, owner_id=owner_id, x=x, y=y, z=z, fleet_id=fleet_id
         )
-        in_self = any((abs(p.pos_x - x) + abs(p.pos_y - y)) <= 3 for p in my_planets)
+        in_self = any(hex_distance(int(p.pos_x), int(p.pos_y), int(x), int(y)) <= 3 for p in my_planets)
         if not in_self and not eng_fleet:
             return {"ok": False, "error": "engineer_required"}
 
@@ -133,7 +134,7 @@ class WorldServiceMixin04:
                     allowed_terrains = [t for t in allowed_terrains if t != "planet"]
                     if not allowed_terrains:
                         allowed_terrains = None
-                cell = self.get_cell_terrain(x=x, y=y, z=z)
+                cell = self.get_cell_terrain(x=x, y=y, z=z, s=s)
                 terrain = cell.get("terrain")
                 if (
                     isinstance(allowed_terrains, list)
@@ -148,7 +149,7 @@ class WorldServiceMixin04:
                     }
         else:
             if btype == "mine":
-                cell = self.get_cell_terrain(x=x, y=y, z=z)
+                cell = self.get_cell_terrain(x=x, y=y, z=z, s=s)
                 if cell.get("terrain") != "asteroids":
                     return {
                         "ok": False,
@@ -157,7 +158,7 @@ class WorldServiceMixin04:
                         "expected": ["asteroids"],
                     }
             if btype in ("habitat", "research_lab"):
-                cell = self.get_cell_terrain(x=x, y=y, z=z)
+                cell = self.get_cell_terrain(x=x, y=y, z=z, s=s)
                 if cell.get("terrain") == "empty":
                     return {
                         "ok": False,
@@ -174,11 +175,7 @@ class WorldServiceMixin04:
             s, owner_id=pid, x=x, y=y, z=z
         )
         if not planet:
-            planet = s.execute(
-                select(Planet)
-                .where(Planet.owner_player_id == pid)
-                .order_by(Planet.created_at.asc())
-            ).scalar_one_or_none()
+            planet = self._capital_planet_for_player(s, player_id=pid)
         if not planet:
             return {"ok": False, "error": "no_controlling_planet"}
 
@@ -213,9 +210,7 @@ class WorldServiceMixin04:
             if exists:
                 return {"ok": False, "error": "cell_already_built"}
 
-        home = s.execute(
-            select(Planet).where(Planet.owner_player_id == pid)
-        ).scalar_one_or_none()
+        home = self._capital_planet_for_player(s, player_id=pid)
         if not home:
             return {"ok": False, "error": "no_home_planet"}
         res = s.execute(
@@ -296,6 +291,23 @@ class WorldServiceMixin04:
                     um["engineer"] = max(0, int(um.get("engineer", 0)) - 1)
                     self._write_fleet_units(s, fleet, um)
 
+        ws_pl = self.get_or_create_world_state(s)
+        cur_t = int(ws_pl.current_tick)
+        dur_bt = 3
+        if self._balance:
+            try:
+                bobj_d = build_def or self._balance.get_building(btype)
+                bc_d = bobj_d.get("build") if isinstance(bobj_d, dict) else {}
+                dur_bt = max(1, int(bc_d.get("time_ticks", 3) or 3))
+            except Exception:
+                dur_bt = 3
+        bmul = float(
+            self._race_modifiers(s, player_id=pid).get("build_time_multiplier", 1.0)
+            or 1.0
+        )
+        dur_bt = max(1, int(round(dur_bt * bmul)))
+        ready_at = cur_t + dur_bt
+
         b = Building(
             owner_player_id=pid,
             planet_id=planet.id,
@@ -304,6 +316,7 @@ class WorldServiceMixin04:
             z=int(z),
             building_type=btype,
             level=1,
+            ready_at_tick=int(ready_at),
         )
         curpop = getattr(planet, "population", 800)
         mx = self._effective_max_population(s, planet)
@@ -315,14 +328,16 @@ class WorldServiceMixin04:
 
         self._emit_event(
             s,
-            tick=self.get_or_create_world_state(s).current_tick,
+            tick=int(ws_pl.current_tick),
             type="building_placed",
-            message=f"Постройка: {btype} в ({x},{y},{z})",
+            message=f"Постройка: {btype} в ({x},{y},{z}) (готово к тику {ready_at})",
             payload={
                 "building_id": str(b.id),
                 "building_type": btype,
                 "pos": {"x": x, "y": y, "z": z},
                 "cost": cost,
+                "ready_at_tick": int(ready_at),
+                "build_time_ticks": int(dur_bt),
             },
             player_id=pid,
         )
@@ -334,10 +349,94 @@ class WorldServiceMixin04:
                 "building_type": btype,
                 "level": int(b.level),
                 "pos": {"x": x, "y": y, "z": z},
+                "ready_at_tick": int(ready_at),
+                "finish_tick": int(ready_at),
+                "finish_sol": int(ready_at),
             },
             "cost": cost,
             "builder_fleet_id": gate.get("builder_fleet_id"),
+            "build_time_ticks": int(dur_bt),
         }
+
+    def _finalize_building_ready_effects(self, s: Session, *, building: Building) -> None:
+        """Эффекты постройки, которые раньше применялись сразу при place (оборона, столица)."""
+        pid = building.owner_player_id
+        btype = str(building.building_type or "").strip().lower()
+        if not self._balance:
+            return
+        try:
+            bd_placed = self._balance.get_building(btype)
+            eff_pl = (
+                bd_placed.get("effects") if isinstance(bd_placed, dict) else None
+            )
+        except Exception:
+            eff_pl = None
+        if not isinstance(eff_pl, dict):
+            return
+        pd0 = eff_pl.get("planetary_defense")
+        if isinstance(pd0, dict):
+            mxhp = int(pd0.get("max_hp", 5000) or 5000)
+            building.structure_hp = mxhp
+        if eff_pl.get("sets_imperial_capital"):
+            for ob in (
+                s.execute(
+                    select(Building).where(
+                        Building.owner_player_id == pid,
+                        Building.id != building.id,
+                    )
+                )
+                .scalars()
+                .all()
+            ):
+                try:
+                    obd = self._balance.get_building(ob.building_type)
+                    oe = obd.get("effects") if isinstance(obd, dict) else None
+                except Exception:
+                    oe = None
+                if isinstance(oe, dict) and oe.get("sets_imperial_capital"):
+                    s.delete(ob)
+            for op in (
+                s.execute(
+                    select(Planet).where(
+                        Planet.owner_player_id == pid,
+                        Planet.is_colonized == True,  # noqa: E712
+                    )
+                )
+                .scalars()
+                .all()
+            ):
+                plid = getattr(building, "planet_id", None)
+                op.is_capital = bool(plid) and op.id == plid
+            s.flush()
+
+    def _resolve_completed_buildings(self, s: Session, *, next_tick: int) -> None:
+        rows = (
+            s.execute(
+                select(Building).where(
+                    Building.ready_at_tick > 0,
+                    Building.ready_at_tick <= int(next_tick),
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for b in rows:
+            self._finalize_building_ready_effects(s, building=b)
+            b.ready_at_tick = 0
+            self._emit_event(
+                s,
+                tick=int(next_tick),
+                type="building_ready",
+                message=f"Постройка готова: {b.building_type} ({b.x},{b.y},{b.z})",
+                payload={
+                    "building_id": str(b.id),
+                    "building_type": str(b.building_type),
+                    "pos": {"x": b.x, "y": b.y, "z": b.z},
+                },
+                player_id=b.owner_player_id,
+            )
+        if rows:
+            s.flush()
 
     def _building_effects_summary_ru(self, build_def: dict | None) -> str:
         if not isinstance(build_def, dict):
@@ -478,7 +577,7 @@ class WorldServiceMixin04:
                     allowed_terrains = [t for t in allowed_terrains if t != "planet"]
                     if not allowed_terrains:
                         allowed_terrains = None
-                cell = self.get_cell_terrain(x=x, y=y, z=z)
+                cell = self.get_cell_terrain(x=x, y=y, z=z, s=s)
                 terrain = cell.get("terrain")
                 if (
                     isinstance(allowed_terrains, list)
@@ -495,7 +594,7 @@ class WorldServiceMixin04:
         else:
             # fallback (для режима без balance)
             if btype == "mine":
-                cell = self.get_cell_terrain(x=x, y=y, z=z)
+                cell = self.get_cell_terrain(x=x, y=y, z=z, s=s)
                 if cell.get("terrain") != "asteroids":
                     return {
                         "ok": False,
@@ -505,7 +604,7 @@ class WorldServiceMixin04:
                         "meta": meta,
                     }
             if btype in ("habitat", "research_lab"):
-                cell = self.get_cell_terrain(x=x, y=y, z=z)
+                cell = self.get_cell_terrain(x=x, y=y, z=z, s=s)
                 if btype == "habitat":
                     expected = ["ruins", "nebula"]
                     if cell.get("terrain") == "empty":
@@ -618,10 +717,31 @@ class WorldServiceMixin04:
                 "meta": meta,
             }
 
+        ws_chk = self.get_or_create_world_state(s)
+        cur_t = int(ws_chk.current_tick)
+        dur_preview = 3
+        if self._balance:
+            try:
+                bobj = build_def or self._balance.get_building(btype)
+                bc = bobj.get("build") if isinstance(bobj, dict) else {}
+                dur_preview = max(1, int(bc.get("time_ticks", 3) or 3))
+            except Exception:
+                dur_preview = 3
+        bmul = float(
+            self._race_modifiers(s, player_id=pid).get("build_time_multiplier", 1.0)
+            or 1.0
+        )
+        dur_preview = max(1, int(round(dur_preview * bmul)))
+
         return {
             "ok": True,
             "builder_fleet_id": gate.get("builder_fleet_id"),
             "meta": meta,
+            "build": {
+                "time_ticks": dur_preview,
+                "ready_at_tick_preview": cur_t + dur_preview,
+                "current_tick": cur_t,
+            },
         }
 
     def dismantle_building(
@@ -644,6 +764,9 @@ class WorldServiceMixin04:
         if not row:
             return {"ok": False, "error": "building_not_found"}
         ws = self.get_or_create_world_state(s)
+        cur_tw = int(ws.current_tick)
+        rat = int(getattr(row, "ready_at_tick", 0) or 0)
+        under = rat > cur_tw
 
         refund = {"metal": 0, "crystal": 0, "energy": 0, "fuel": 0}
         if self._balance:
@@ -651,9 +774,10 @@ class WorldServiceMixin04:
                 bd = self._balance.get_building(row.building_type)
                 bc = bd.get("build") if isinstance(bd, dict) else {}
                 cst = bc.get("cost") if isinstance(bc.get("cost"), dict) else {}
+                mult = 1.0 if under else 0.5
                 for k in ("metal", "crystal", "energy", "fuel"):
                     if isinstance(cst.get(k), (int, float)):
-                        refund[k] = int(int(cst[k]) * 0.5)
+                        refund[k] = int(int(cst[k]) * mult)
             except Exception:
                 pass
 
@@ -712,6 +836,9 @@ class WorldServiceMixin04:
         )
         if not row:
             return {"ok": False, "error": "building_not_found"}
+        ws_u = self.get_or_create_world_state(s)
+        if int(getattr(row, "ready_at_tick", 0) or 0) > int(ws_u.current_tick):
+            return {"ok": False, "error": "building_under_construction"}
         if not self._balance:
             return {"ok": False, "error": "balance_unavailable"}
 
@@ -855,7 +982,7 @@ class WorldServiceMixin04:
             return None
         remaining = max(0, int(ao.finish_tick - ws.current_tick))
         units_map = self._fleet_units_map(s, fleet)
-        d = abs(ao.target_x - ao.from_x) + abs(ao.target_y - ao.from_y)
+        d = hex_distance(int(ao.target_x), int(ao.target_y), int(ao.from_x), int(ao.from_y))
         travel_ticks = self._fleet_travel_ticks_for_distance(
             distance=d, units=units_map
         )
@@ -931,22 +1058,21 @@ class WorldServiceMixin04:
             if v == 0:
                 del newd[k]
 
-        done_tech = set(self._get_player_done_techs(s, player_id=pid))
-        for k, v in newd.items():
-            prev = int(cur.get(k, 0))
-            if int(v) <= prev:
-                continue
-            miss = [tid for tid in self._unit_required_techs(k) if tid not in done_tech]
-            if miss:
-                return {
-                    "ok": False,
-                    "error": "tech_required",
-                    "unit_type": k,
-                    "missing_techs": miss,
-                }
+        newd = self._strip_fleet_composition_disallowed_units(pid, newd)
+
+        tech_err = self._fleet_composition_tech_violation(
+            s, player_id=pid, cur=cur, newd=newd
+        )
+        if tech_err is not None:
+            return tech_err
 
         total_new = sum(newd.values())
         if total_new <= 0:
+            pay_empty = self._try_apply_home_resource_net_for_fleet_change(
+                s, pid=pid, cur=cur, newd={}
+            )
+            if not pay_empty.get("ok"):
+                return pay_empty
             s.delete(fleet)
             s.flush()
             ws = self.get_or_create_world_state(s)
@@ -1138,6 +1264,7 @@ class WorldServiceMixin04:
                     return {"ok": False, "error": "negative_qty"}
                 if q > 0:
                     newd[k] = int(q)
+            newd = self._strip_fleet_composition_disallowed_units(pid, newd)
             total_new = sum(newd.values())
             if total_new < 1:
                 return {"ok": False, "error": "fleet_empty_use_disband"}
@@ -1320,16 +1447,25 @@ class WorldServiceMixin04:
 
         cur_t = self._fleet_units_map(s, target)
         cur_s = self._fleet_units_map(s, source)
-        newd: dict[str, int] = {}
+        pre: dict[str, int] = {}
         for k in set(cur_t.keys()) | set(cur_s.keys()):
             n = int(cur_t.get(k, 0)) + int(cur_s.get(k, 0))
             if n > 0:
-                newd[k] = n
+                pre[k] = n
+        if sum(pre.values()) < 1:
+            return {"ok": False, "error": "fleet_empty"}
+        newd = self._strip_fleet_composition_disallowed_units(pid, pre)
         if sum(newd.values()) < 1:
             return {"ok": False, "error": "fleet_empty"}
         cap = self._world_max_fleet_units(s)
         if sum(newd.values()) > cap:
             return {"ok": False, "error": "fleet_too_large", "max_units": cap}
+
+        pay_res = self._try_apply_home_resource_net_for_fleet_change(
+            s, pid=pid, cur=pre, newd=newd
+        )
+        if not pay_res.get("ok"):
+            return pay_res
 
         s.delete(source)
         s.flush()
@@ -1408,8 +1544,27 @@ class WorldServiceMixin04:
         if sum(remainder.values()) < 1:
             return {"ok": False, "error": "cannot_split_entire_fleet"}
 
+        take2 = self._strip_fleet_composition_disallowed_units(pid, take_map)
+        rem2 = self._strip_fleet_composition_disallowed_units(pid, remainder)
+        combined: dict[str, int] = {}
+        for k in set(take2.keys()) | set(rem2.keys()):
+            n = int(take2.get(k, 0)) + int(rem2.get(k, 0))
+            if n > 0:
+                combined[k] = n
+
+        if sum(take2.values()) < 1:
+            return {"ok": False, "error": "take_empty"}
+        if sum(rem2.values()) < 1:
+            return {"ok": False, "error": "cannot_split_entire_fleet"}
+
+        pay_split = self._try_apply_home_resource_net_for_fleet_change(
+            s, pid=pid, cur=cur, newd=combined
+        )
+        if not pay_split.get("ok"):
+            return pay_split
+
         cap = self._world_max_fleet_units(s)
-        if sum(take_map.values()) > cap or sum(remainder.values()) > cap:
+        if sum(take2.values()) > cap or sum(rem2.values()) > cap:
             return {"ok": False, "error": "fleet_too_large", "max_units": cap}
 
         spawn = self._pick_fleet_spawn_xy(
@@ -1423,7 +1578,7 @@ class WorldServiceMixin04:
             return {"ok": False, "error": "no_free_spawn_cell"}
         tx, ty = spawn
         nm = self._next_fleet_default_name(s, owner_id=pid)
-        dominant = max(take_map.items(), key=lambda kv: (kv[1], kv[0]))[0]
+        dominant = max(take2.items(), key=lambda kv: (kv[1], kv[0]))[0]
         new_fleet = Fleet(
             owner_player_id=pid,
             unit_type=str(dominant),
@@ -1435,8 +1590,8 @@ class WorldServiceMixin04:
         )
         s.add(new_fleet)
         s.flush()
-        self._write_fleet_units(s, new_fleet, take_map)
-        self._write_fleet_units(s, fleet, remainder)
+        self._write_fleet_units(s, new_fleet, take2)
+        self._write_fleet_units(s, fleet, rem2)
         s.flush()
         ws = self.get_or_create_world_state(s)
         self._emit_event(
@@ -1447,8 +1602,8 @@ class WorldServiceMixin04:
             payload={
                 "original_fleet_id": str(fid),
                 "new_fleet_id": str(new_fleet.id),
-                "take": dict(take_map),
-                "remainder": dict(remainder),
+                "take": dict(take2),
+                "remainder": dict(rem2),
             },
             player_id=pid,
         )
@@ -1456,7 +1611,7 @@ class WorldServiceMixin04:
             "ok": True,
             "original_fleet_id": str(fid),
             "new_fleet_id": str(new_fleet.id),
-            "take": dict(take_map),
-            "remainder": dict(remainder),
+            "take": dict(take2),
+            "remainder": dict(rem2),
         }
 

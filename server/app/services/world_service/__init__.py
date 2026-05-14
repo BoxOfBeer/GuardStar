@@ -9,6 +9,8 @@ from app.services.world_service._mixin_04 import WorldServiceMixin04
 from app.services.world_service._mixin_05 import WorldServiceMixin05
 from app.services.world_service._mixin_06 import WorldServiceMixin06
 from app.services.world_service._mixin_07 import WorldServiceMixin07
+from app.services.world_service._mixin_08_planets_world import WorldServiceMixin08
+from app.services.world_service._mixin_09_intel import WorldServiceMixin09
 
 
 class WorldService(
@@ -19,6 +21,8 @@ class WorldService(
     WorldServiceMixin05,
     WorldServiceMixin06,
     WorldServiceMixin07,
+    WorldServiceMixin08,
+    WorldServiceMixin09,
 ):
     """Порядок миксинов задаёт MRO; публичный API не менялся."""
 

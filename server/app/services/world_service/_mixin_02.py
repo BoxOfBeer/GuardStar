@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import copy
+import math
 
 from app.services.world_economy_runtime import deep_merge_eco
 from app.services.world_service._deps import *  # noqa: F403
+from app.hex_coords import hex_axial_neighbors, hex_distance
 from app.services.world_service.constants import (
     BANDIT_PLAYER_ID,
     CIVILIAN_NPC_PLAYER_ID,
@@ -144,20 +146,28 @@ class WorldServiceMixin02:
         message: str,
         payload: dict | None = None,
         player_id: uuid.UUID | None = None,
+        ui_channel: str | None = None,
+        ui_dedupe_key: str | None = None,
     ) -> None:
-        # Нормализуем payload: добавляем source для UI/аудита (по умолчанию server_tick).
-        if payload is None:
-            payload = {}
-        if isinstance(payload, dict) and "source" not in payload:
-            payload["source"] = "server_tick"
+        # Защита от аномально длинных строк (индексы/логи); полный контекст — в payload_json.
+        _max_msg = 8192
+        msg = str(message or "")
+        if len(msg) > _max_msg:
+            msg = msg[: _max_msg - 1] + "…"
+        # Нормализуем payload: source для UI/аудита; ui_channel — «toast» vs полный лог.
+        pl: dict = dict(payload) if isinstance(payload, dict) else {}
+        if "source" not in pl:
+            pl["source"] = "server_tick"
+        if ui_channel:
+            pl["ui_channel"] = ui_channel
+        if ui_dedupe_key is not None:
+            pl["ui_dedupe_key"] = ui_dedupe_key
         s.add(
             Event(
                 tick=tick,
                 type=type,
-                message=message,
-                payload_json=json.dumps(payload, ensure_ascii=False)
-                if payload
-                else None,
+                message=msg,
+                payload_json=json.dumps(pl, ensure_ascii=False) if pl else None,
                 player_id=player_id,
             )
         )
@@ -219,13 +229,172 @@ class WorldServiceMixin02:
             f.energy = cur
         s.flush()
 
+    def _ru_fleet_maintenance_fail_message(
+        self,
+        *,
+        fleet_name: str,
+        need: dict[str, int],
+        have: dict[str, int],
+        penalty: int,
+    ) -> str:
+        """Короткий текст для игрока: дефицит снабжения со склада столицы; детали — в payload."""
+        parts: list[str] = []
+        for key, ru in (
+            ("metal", "металл"),
+            ("crystal", "кристаллы"),
+            ("food", "еда"),
+            ("water", "вода"),
+        ):
+            n = int(need.get(key, 0) or 0)
+            if n <= 0:
+                continue
+            h = int(have.get(key, 0) or 0)
+            parts.append(f"{ru}: есть {h}, нужно {n} за сол")
+        if parts:
+            detail = "; ".join(parts)
+        else:
+            detail = "на складе столицы не хватает ресурсов на снабжение за этот сол."
+        pen = (
+            f" Штраф на борт: −{int(penalty)} ⚡ за сол."
+            if int(penalty or 0) > 0
+            else ""
+        )
+        nm = (fleet_name or "").strip() or "флот"
+        return f"Флот «{nm}»: не оплачено снабжение со склада столицы ({detail}){pen}"
+
+    def _max_owner_planet_supply_radius(self, s: Session, *, owner_id: uuid.UUID) -> int:
+        mx = int(getattr(self._supply, "SUPPLY_BASE_RADIUS", 5) or 5)
+        for p in (
+            s.execute(select(Planet).where(Planet.owner_player_id == owner_id))
+            .scalars()
+            .all()
+        ):
+            r, _, _ = self._supply.planet_supply_radius(s, planet=p)
+            mx = max(mx, int(r))
+        return min(max(mx, 3), 80)
+
+    def _cell_blocked_for_emergency_staging(
+        self,
+        s: Session,
+        *,
+        owner_id: uuid.UUID,
+        q: int,
+        r: int,
+        z: int,
+        exclude_fleet_id: uuid.UUID | None,
+    ) -> bool:
+        """Нельзя ставить аварийный привал: планета, не снабжение, постройка, форпост, чужой/свой флот."""
+        if (
+            s.execute(
+                select(Planet.id).where(Planet.pos_x == int(q), Planet.pos_y == int(r))
+            ).first()
+            is not None
+        ):
+            return True
+        if not self._is_cell_supplied(
+            s, owner_id=owner_id, x=int(q), y=int(r), z=int(z)
+        ):
+            return True
+        if (
+            s.execute(
+                select(Building.id).where(
+                    Building.x == int(q), Building.y == int(r), Building.z == int(z)
+                )
+            ).first()
+            is not None
+        ):
+            return True
+        if (
+            s.execute(
+                select(Outpost.id).where(
+                    Outpost.x == int(q),
+                    Outpost.y == int(r),
+                    Outpost.z == int(z),
+                    Outpost.status == "active",
+                )
+            ).first()
+            is not None
+        ):
+            return True
+        fq = select(Fleet.id).where(
+            Fleet.pos_x == int(q),
+            Fleet.pos_y == int(r),
+            Fleet.pos_z == int(z),
+            Fleet.qty > 0,
+        )
+        if exclude_fleet_id is not None:
+            fq = fq.where(Fleet.id != exclude_fleet_id)
+        return s.execute(fq).first() is not None
+
+    def _nearest_supplied_emergency_staging_bfs(
+        self,
+        s: Session,
+        *,
+        owner_id: uuid.UUID,
+        from_x: int,
+        from_y: int,
+        exclude_fleet_id: uuid.UUID,
+        max_radius: int = 400,
+    ) -> tuple[int, int, int] | None:
+        """Ближайшая к флоту свободная клетка в снабжении: без планеты, флота, полевых построек, форпоста.
+
+        Расширяющийся по гекс-расстоянию обход от позиции флота (не только диск вокруг одного хаба).
+        """
+        sx, sy = int(from_x), int(from_y)
+        cap = max(16, min(int(max_radius), 600))
+        frontier: list[tuple[int, int]] = [(sx, sy)]
+        seen: set[tuple[int, int]] = {(sx, sy)}
+        for dist in range(0, cap + 1):
+            next_frontier: list[tuple[int, int]] = []
+            for x, y in frontier:
+                if not self._cell_blocked_for_emergency_staging(
+                    s,
+                    owner_id=owner_id,
+                    q=int(x),
+                    r=int(y),
+                    z=0,
+                    exclude_fleet_id=exclude_fleet_id,
+                ):
+                    return (int(x), int(y), 0)
+                if dist >= cap:
+                    continue
+                for nx, ny in hex_axial_neighbors(int(x), int(y)):
+                    t = (nx, ny)
+                    if t in seen:
+                        continue
+                    seen.add(t)
+                    next_frontier.append(t)
+            frontier = next_frontier
+            if not frontier:
+                break
+        return None
+
     def _capital_planet_for_player(
         self, s: Session, *, player_id: uuid.UUID
     ) -> Planet | None:
+        cap = (
+            s.execute(
+                select(Planet)
+                .where(
+                    Planet.owner_player_id == player_id,
+                    Planet.is_colonized == True,  # noqa: E712
+                    Planet.is_capital == True,  # noqa: E712
+                )
+                .order_by(Planet.created_at.asc())
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        if cap:
+            return cap
         return (
             s.execute(
                 select(Planet)
-                .where(Planet.owner_player_id == player_id)
+                .where(
+                    Planet.owner_player_id == player_id,
+                    Planet.is_colonized == True,  # noqa: E712
+                )
                 .order_by(Planet.created_at.asc())
                 .limit(1)
             )
@@ -371,7 +540,17 @@ class WorldServiceMixin02:
                     s,
                     tick=tick,
                     type="fleet_maintenance_failed",
-                    message=f"Империя не может оплатить содержание флота «{f.name or f.unit_type}»",
+                    message=self._ru_fleet_maintenance_fail_message(
+                        fleet_name=str(f.name or f.unit_type or "флот"),
+                        need=need,
+                        have={
+                            "metal": have_m,
+                            "crystal": have_c,
+                            "food": have_f,
+                            "water": have_w,
+                        },
+                        penalty=penalty,
+                    ),
                     payload={
                         "fleet_id": str(f.id),
                         "capital_planet_id": str(cap.id),
@@ -385,7 +564,60 @@ class WorldServiceMixin02:
                         "penalty_energy": penalty,
                     },
                     player_id=oid,
+                    ui_channel="toast",
+                    ui_dedupe_key=f"fleet_maintenance:{f.id}",
                 )
+        s.flush()
+
+    def _apply_bandit_fleet_empire_upkeep_tick(self, s: Session, *, tick: int) -> None:
+        """Имперское снабжение флотов корсаров: склад форпоста в зоне логистики, иначе штраф ⚡."""
+        if not self._balance:
+            return
+        penalty = self._fleet_empire_upkeep_unpaid_penalty_energy()
+        wc = self._warfare_economy(s)
+        sr = max(5, int(float(wc.get("bandit_supply_radius_hex", 25) or 25)))
+
+        for f in s.execute(select(Fleet)).scalars().all():
+            if f.owner_player_id != BANDIT_PLAYER_ID:
+                continue
+            if self._fleet_total_units(s, f) <= 0:
+                continue
+            op = self._bandit_fleet_home_outpost(s, f)
+            need = self._fleet_empire_supply_need_for_fleet(s, fleet=f)
+            if all(int(need.get(k, 0) or 0) <= 0 for k in need):
+                continue
+            if op is None:
+                if penalty > 0:
+                    cur = int(getattr(f, "energy", 0) or 0)
+                    f.energy = max(0, cur - penalty)
+                continue
+            ox, oy = int(op.x), int(op.y)
+            in_zone = hex_distance(int(f.pos_x), int(f.pos_y), ox, oy) <= sr
+            if not in_zone:
+                if penalty > 0:
+                    cur = int(getattr(f, "energy", 0) or 0)
+                    f.energy = max(0, cur - penalty)
+                continue
+            have_m = int(getattr(op, "bandit_store_metal", 0) or 0)
+            have_c = int(getattr(op, "bandit_store_crystal", 0) or 0)
+            have_f = int(getattr(op, "bandit_store_food", 0) or 0)
+            have_w = int(getattr(op, "bandit_store_water", 0) or 0)
+            nm, nc = int(need["metal"]), int(need["crystal"])
+            nf, nw = int(need["food"]), int(need["water"])
+            if (
+                have_m >= nm
+                and have_c >= nc
+                and have_f >= nf
+                and have_w >= nw
+            ):
+                op.bandit_store_metal = have_m - nm
+                op.bandit_store_crystal = have_c - nc
+                op.bandit_store_food = have_f - nf
+                op.bandit_store_water = have_w - nw
+                continue
+            if penalty > 0:
+                cur = int(getattr(f, "energy", 0) or 0)
+                f.energy = max(0, cur - penalty)
         s.flush()
 
     def _apply_fleet_energy_tick(self, s: Session, *, tick: int) -> None:
@@ -401,8 +633,36 @@ class WorldServiceMixin02:
                 continue
             self._sync_fleet_energy_scale(s, f)
             if f.owner_player_id in NPC_FLEET_PLAYER_IDS:
-                mx = int(getattr(f, "max_energy", FLEET_ENERGY_MAX_FLOOR) or FLEET_ENERGY_MAX_FLOOR)
-                f.energy = mx
+                if f.owner_player_id == BANDIT_PLAYER_ID and self._balance:
+                    wc = self._warfare_economy(s)
+                    if self._bandit_fleet_in_logistics_supply(s, f, wc):
+                        mx = int(
+                            getattr(f, "max_energy", FLEET_ENERGY_MAX_FLOOR)
+                            or FLEET_ENERGY_MAX_FLOOR
+                        )
+                        cur = int(getattr(f, "energy", 0) or 0)
+                        reg = max(2, int((mx + 24) // 25))
+                        f.energy = min(mx, cur + reg)
+                    else:
+                        mx = int(
+                            getattr(f, "max_energy", FLEET_ENERGY_MAX_FLOOR)
+                            or FLEET_ENERGY_MAX_FLOOR
+                        )
+                        cur = int(getattr(f, "energy", 0) or 0)
+                        mul = float(
+                            self._race_modifiers(s, player_id=f.owner_player_id).get(
+                                "fleet_unsupplied_energy_decay_multiplier", 1.0
+                            )
+                        )
+                        mul = 1.0 if mul <= 0 else mul
+                        decay = max(1, int(round(1 * mul)))
+                        f.energy = max(0, cur - decay)
+                else:
+                    mx = int(
+                        getattr(f, "max_energy", FLEET_ENERGY_MAX_FLOOR)
+                        or FLEET_ENERGY_MAX_FLOOR
+                    )
+                    f.energy = mx
                 continue
             mx = int(getattr(f, "max_energy", FLEET_ENERGY_MAX_FLOOR) or FLEET_ENERGY_MAX_FLOOR)
             cur = int(getattr(f, "energy", 0) or 0)
@@ -489,7 +749,7 @@ class WorldServiceMixin02:
             return None
         scored: list[tuple[int, tuple[int, int, int]]] = []
         for hx, hy, hz in hubs:
-            d = abs(int(hx) - int(x)) + abs(int(hy) - int(y))
+            d = hex_distance(int(hx), int(hy), int(x), int(y))
             scored.append((d, (int(hx), int(hy), int(hz))))
         scored.sort(key=lambda t: t[0])
         for _d, (hx, hy, hz) in scored:
@@ -552,12 +812,12 @@ class WorldServiceMixin02:
             )
             if not foe:
                 continue
-            if abs(fx - int(hx)) + abs(fy - int(hy)) == 1:
+            if hex_distance(fx, fy, int(hx), int(hy)) == 1:
                 return True
         return False
 
     def _apply_emergency_return_orders(self, s: Session, *, tick: int) -> None:
-        """Если флот без энергии и не в снабжении — ставим аварийный возврат к хабу.
+        """Если флот без энергии и не в снабжении — аварийный приказ к пустой клетке в зоне снабжения у хаба.
 
         Это "буксировка/аварийный режим": не требует топлива и энергии на постановку.
         """
@@ -588,10 +848,20 @@ class WorldServiceMixin02:
             )
             if not hub:
                 continue
-            tx, ty, tz = hub
+            hx, hy, hz = hub
+            staging = self._nearest_supplied_emergency_staging_bfs(
+                s,
+                owner_id=f.owner_player_id,
+                from_x=int(f.pos_x),
+                from_y=int(f.pos_y),
+                exclude_fleet_id=f.id,
+            )
+            if not staging:
+                continue
+            tx, ty, tz = int(staging[0]), int(staging[1]), int(staging[2])
             if int(tx) == int(f.pos_x) and int(ty) == int(f.pos_y) and int(tz) == 0:
                 continue
-            dist = abs(int(tx) - int(f.pos_x)) + abs(int(ty) - int(f.pos_y))
+            dist = hex_distance(int(tx), int(ty), int(f.pos_x), int(f.pos_y))
             travel_ticks = max(1, dist)  # аварийно медленно: 1 клетка/тик
             order = FleetOrder(
                 fleet_id=f.id,
@@ -612,11 +882,19 @@ class WorldServiceMixin02:
             )
             s.add(order)
             s.flush()
+            hub_note = (
+                f" (хаб {hx},{hy})"
+                if int(tx) != int(hx) or int(ty) != int(hy)
+                else ""
+            )
             self._emit_event(
                 s,
                 tick=int(ws.current_tick),
                 type="fleet_emergency_return",
-                message=f"Аварийный возврат: флот → ({tx},{ty},{tz}) (нет энергии/снабжения)",
+                message=(
+                    f"Аварийный возврат в снабжение: флот → ({tx},{ty}){hub_note} "
+                    f"(нет энергии вне сети; ближайшая свободная клетка снабжения)"
+                ),
                 payload={
                     "order_id": str(order.id),
                     "fleet_id": str(f.id),
@@ -630,7 +908,18 @@ class WorldServiceMixin02:
         d = hashlib.sha256(raw).digest()
         return int.from_bytes(d[:4], "big", signed=False)
 
-    def get_cell_terrain(self, *, x: int, y: int, z: int) -> dict:
+    def get_cell_terrain(
+        self, *, x: int, y: int, z: int, s: Session | None = None
+    ) -> dict:
+        if s is not None and int(z) == 0:
+            hit = s.execute(
+                select(Planet.id).where(
+                    Planet.pos_x == int(x),
+                    Planet.pos_y == int(y),
+                )
+            ).first()
+            if hit:
+                return {"terrain": "planet", "glyph": "P"}
         r = self._hash_u32(x, y, z) % 1000
 
         if r < 650:
@@ -641,7 +930,7 @@ class WorldServiceMixin02:
             glyph = "A"
         elif r < 910:
             terrain = "nebula"
-            glyph = "N"
+            glyph = "≋"
         elif r < 970:
             terrain = "ruins"
             glyph = "R"
@@ -661,10 +950,16 @@ class WorldServiceMixin02:
         pid = uuid.UUID(player_id)
 
         player = s.execute(select(Player).where(Player.id == pid)).scalar_one_or_none()
-        planet = s.execute(
-            select(Planet).where(Planet.owner_player_id == pid)
-        ).scalar_one_or_none()
-        if not planet:
+        planets = (
+            s.execute(
+                select(Planet)
+                .where(Planet.owner_player_id == pid)
+                .order_by(Planet.is_capital.desc(), Planet.created_at.asc())
+            )
+            .scalars()
+            .all()
+        )
+        if not planets:
             return {
                 "player_id": player_id,
                 "display_name": player.display_name if player else player_id,
@@ -675,24 +970,45 @@ class WorldServiceMixin02:
                 else False,
             }
 
-        res = s.execute(
-            select(Resource).where(Resource.planet_id == planet.id)
-        ).scalar_one_or_none()
-        units = (
-            s.execute(
-                select(Unit).where(Unit.planet_id == planet.id).order_by(Unit.unit_type)
+        out_planets: list[dict] = []
+        for planet in planets:
+            pcl = str(getattr(planet, "planet_class", "") or "earthlike")
+            is_cap = bool(getattr(planet, "is_capital", False))
+            is_col = bool(getattr(planet, "is_colonized", True))
+            if not is_col:
+                out_planets.append(
+                    {
+                        "id": str(planet.id),
+                        "name": planet.name,
+                        "planet_class": pcl,
+                        "is_capital": is_cap,
+                        "is_colonized": False,
+                        "pos": {"x": planet.pos_x, "y": planet.pos_y},
+                        "status_ru": "не колонизирована",
+                        "resources": None,
+                        "units": [],
+                    }
+                )
+                continue
+            res = s.execute(
+                select(Resource).where(Resource.planet_id == planet.id)
+            ).scalar_one_or_none()
+            units = (
+                s.execute(
+                    select(Unit)
+                    .where(Unit.planet_id == planet.id)
+                    .order_by(Unit.unit_type)
+                )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
-
-        return {
-            "player_id": player_id,
-            "display_name": player.display_name if player else player_id,
-            "planets": [
+            out_planets.append(
                 {
                     "id": str(planet.id),
                     "name": planet.name,
+                    "planet_class": pcl,
+                    "is_capital": is_cap,
+                    "is_colonized": True,
                     "pos": {"x": planet.pos_x, "y": planet.pos_y},
                     "resources": {
                         "metal": res.metal if res else 0,
@@ -704,7 +1020,12 @@ class WorldServiceMixin02:
                     },
                     "units": [{"unit_type": u.unit_type, "qty": u.qty} for u in units],
                 }
-            ],
+            )
+
+        return {
+            "player_id": player_id,
+            "display_name": player.display_name if player else player_id,
+            "planets": out_planets,
             "is_game_admin": bool(getattr(player, "is_game_admin", False)) if player else False,
             "is_game_moderator": bool(getattr(player, "is_game_moderator", False)) if player else False,
         }
@@ -712,6 +1033,12 @@ class WorldServiceMixin02:
     def _planet_production_deltas(
         self, s: Session, *, planet: Planet, influence_sources: list[dict] | None = None
     ) -> dict[str, int]:
+        from app.services.world_service.constants import WORLD_NEUTRAL_PLAYER_ID
+
+        if not bool(getattr(planet, "is_colonized", True)):
+            return {k: 0 for k in PLANET_STORE_KEYS}
+        if planet.owner_player_id == WORLD_NEUTRAL_PLAYER_ID:
+            return {k: 0 for k in PLANET_STORE_KEYS}
         if self._balance:
             eco_m = self._merged_pack_economy(s)
             bp = eco_m.get("base_planet_production")
@@ -731,7 +1058,14 @@ class WorldServiceMixin02:
                 "water": int(prod.water_per_tick),
             }
 
+        rm0 = self._race_modifiers(s, player_id=planet.owner_player_id)
+        if rm0.get("no_passive_planet_food_water"):
+            base["food"] = 0
+            base["water"] = 0
+
         bonus = {k: 0 for k in PLANET_STORE_KEYS}
+        ws = self.get_or_create_world_state(s)
+        tick = int(getattr(ws, "current_tick", 0) or 0)
         if self._balance:
             b_rows = (
                 s.execute(
@@ -743,6 +1077,8 @@ class WorldServiceMixin02:
                 .all()
             )
             for b in b_rows:
+                if int(getattr(b, "ready_at_tick", 0) or 0) > tick:
+                    continue
                 if not self._is_cell_supplied(
                     s,
                     owner_id=planet.owner_player_id,
@@ -791,8 +1127,25 @@ class WorldServiceMixin02:
             inf_scores, planet.owner_player_id
         )
 
+        ptype_mul: dict[str, float] = {k: 1.0 for k in PLANET_STORE_KEYS}
+        if self._balance:
+            ptd = self._balance.get_planet_type(str(getattr(planet, "planet_class", "") or "earthlike"))
+            pm = ptd.get("base_production_multiplier") if isinstance(ptd, dict) else None
+            if isinstance(pm, dict):
+                for k in PLANET_STORE_KEYS:
+                    if isinstance(pm.get(k), (int, float)):
+                        ptype_mul[k] = float(pm[k])
+
+        cap_pen = int(getattr(planet, "conquest_penalty_until_tick", 0) or 0)
+        pen_mult = 10.0 if cap_pen > tick else 1.0
+
         def _calc(k: str) -> int:
-            m = float(mul.get(k, 1.0)) * float(tech_mul.get(k, 1.0))
+            m = (
+                float(mul.get(k, 1.0))
+                * float(tech_mul.get(k, 1.0))
+                * float(ptype_mul.get(k, 1.0))
+                * float(pen_mult)
+            )
             return int(round((base[k] + bonus[k]) * m * inf_mul))
 
         return {k: _calc(k) for k in PLANET_STORE_KEYS}
@@ -833,6 +1186,8 @@ class WorldServiceMixin02:
         ).scalar_one_or_none()
         if not res:
             return {k: 0 for k in PLANET_STORE_KEYS}
+        if not bool(getattr(planet, "is_colonized", True)):
+            return {k: 0 for k in PLANET_STORE_KEYS}
 
         deltas = self._planet_production_deltas(
             s, planet=planet, influence_sources=influence_sources
@@ -846,6 +1201,8 @@ class WorldServiceMixin02:
         s.flush()
 
         if hasattr(planet, "population"):
+            rm = self._race_modifiers(s, player_id=planet.owner_player_id)
+            pop_floor = 0 if rm.get("no_passive_population_growth") else 80
             mx = self._effective_max_population(s, planet)
             pop = int(getattr(planet, "population", 0) or 0)
             pop = min(pop, mx)
@@ -862,15 +1219,14 @@ class WorldServiceMixin02:
                 w_need > 0 and take_w * 2 < w_need
             )
             # MVP: не даём планете "вымереть в ноль" от дефицита — оставляем минимальный порог населения.
-            POP_FLOOR = 80
-            if take_f == 0 and take_w == 0 and f_need + w_need > 0 and pop > POP_FLOOR:
-                planet.population = max(POP_FLOOR, pop - max(1, pop // 100))
-            elif severe_short and pop > max(POP_FLOOR, 150):
-                planet.population = max(POP_FLOOR, pop - max(1, pop // 250))
+            if take_f == 0 and take_w == 0 and f_need + w_need > 0 and pop > pop_floor:
+                planet.population = max(pop_floor, pop - max(1, pop // 100))
+            elif severe_short and pop > max(pop_floor, 150):
+                planet.population = max(pop_floor, pop - max(1, pop // 250))
             pop = int(getattr(planet, "population", 0) or 0)
             pop = min(pop, mx)
             gap = mx - pop
-            if fed_full and gap > 0:
+            if (not rm.get("no_passive_population_growth")) and fed_full and gap > 0:
                 step = max(1, gap // 200)
                 planet.population = min(mx, pop + step)
             elif pop > mx:
@@ -884,9 +1240,125 @@ class WorldServiceMixin02:
         for sx, sy, r in self._collect_visibility_sources_for_player(
             s, player_id=player_id, z=int(z)
         ):
-            if abs(int(x) - int(sx)) + abs(int(y) - int(sy)) <= int(r):
+            if hex_distance(int(x), int(y), int(sx), int(sy)) <= int(r):
                 return True
         return False
+
+    def recruit_planet_population(
+        self,
+        s: Session,
+        *,
+        player_id: str,
+        planet_id: str,
+        amount: int,
+    ) -> dict:
+        """Явный набор населения для рас с `no_passive_population_growth` (напр. silicon)."""
+        try:
+            pid = uuid.UUID(str(player_id).strip())
+            plid = uuid.UUID(str(planet_id).strip())
+        except Exception:
+            return {"ok": False, "error": "invalid_uuid"}
+        try:
+            raw_am = int(amount)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid_amount"}
+        if raw_am <= 0:
+            return {"ok": False, "error": "invalid_amount"}
+
+        rm = self._race_modifiers(s, player_id=pid)
+        if not rm.get("no_passive_population_growth"):
+            return {"ok": False, "error": "recruit_not_available_for_race"}
+
+        eco = self._merged_pack_economy(s)
+        rc = (
+            eco.get("citizen_recruit")
+            if isinstance(eco.get("citizen_recruit"), dict)
+            else {}
+        )
+
+        def _f(key: str, default: float) -> float:
+            v = rc.get(key)
+            if isinstance(v, (int, float)):
+                return float(v)
+            try:
+                return float(str(v).strip())
+            except Exception:
+                return default
+
+        max_req = max(1, int(_f("max_population_per_request", 500)))
+        metal_pp = max(0.0, _f("metal_per_pop", 2.0))
+        crystal_pp = max(0.0, _f("crystal_per_pop", 1.0))
+        food_pp = max(0.0, _f("food_per_pop", 4.0))
+        water_pp = max(0.0, _f("water_per_pop", 3.0))
+
+        am = min(raw_am, max_req)
+
+        planet = s.get(Planet, plid)
+        if (
+            not planet
+            or planet.owner_player_id != pid
+            or not bool(getattr(planet, "is_colonized", True))
+        ):
+            return {"ok": False, "error": "planet_not_owned"}
+
+        res = (
+            s.execute(select(Resource).where(Resource.planet_id == plid))
+            .scalar_one_or_none()
+        )
+        if not res:
+            return {"ok": False, "error": "no_resources"}
+
+        mx = self._effective_max_population(s, planet)
+        pop = int(getattr(planet, "population", 0) or 0)
+        gap = mx - pop
+        if gap <= 0:
+            return {"ok": False, "error": "population_cap"}
+
+        take = min(am, gap)
+
+        cost_m = int(math.ceil(metal_pp * take))
+        cost_c = int(math.ceil(crystal_pp * take))
+        cost_f = int(math.ceil(food_pp * take))
+        cost_w = int(math.ceil(water_pp * take))
+
+        cur_m, cur_c = int(res.metal), int(res.crystal)
+        cur_f = int(getattr(res, "food", 0) or 0)
+        cur_w = int(getattr(res, "water", 0) or 0)
+        if cur_m < cost_m or cur_c < cost_c or cur_f < cost_f or cur_w < cost_w:
+            return {
+                "ok": False,
+                "error": "not_enough_resources",
+                "need": {
+                    "metal": cost_m,
+                    "crystal": cost_c,
+                    "food": cost_f,
+                    "water": cost_w,
+                },
+                "have": {
+                    "metal": cur_m,
+                    "crystal": cur_c,
+                    "food": cur_f,
+                    "water": cur_w,
+                },
+            }
+
+        res.metal = cur_m - cost_m
+        res.crystal = cur_c - cost_c
+        res.food = cur_f - cost_f
+        res.water = cur_w - cost_w
+        planet.population = pop + take
+        s.flush()
+        return {
+            "ok": True,
+            "added": take,
+            "population": int(planet.population),
+            "cost": {
+                "metal": cost_m,
+                "crystal": cost_c,
+                "food": cost_f,
+                "water": cost_w,
+            },
+        }
 
     def resolve_discovery_at_cell(
         self, s: Session, *, player_id: str, x: int, y: int, z: int
@@ -895,7 +1367,7 @@ class WorldServiceMixin02:
         z = max(-10, min(int(z), 10))
         if not self._cell_visible_to_player(s, player_id=pid, x=int(x), y=int(y), z=z):
             return {"ok": False, "error": "sector_not_visible"}
-        cell_info = self.get_cell_terrain(x=int(x), y=int(y), z=z)
+        cell_info = self.get_cell_terrain(x=int(x), y=int(y), z=z, s=s)
         tk = str(
             cell_info.get("terrain", "")
             if isinstance(cell_info, dict)

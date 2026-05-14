@@ -91,6 +91,76 @@ def api_buildings_place():
         return jsonify(result)
 
 
+@api_bp.post("/buildings/place_batch")
+def api_buildings_place_batch():
+    """Несколько одинаковых построек подряд (одна клетка, один тип). Максимум 100 за запрос."""
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    x = payload.get("x")
+    y = payload.get("y")
+    z = payload.get("z", 0)
+    building_type = payload.get("building_type")
+    fleet_id = payload.get("fleet_id")
+    count_raw = payload.get("count", 1)
+    try:
+        count = int(count_raw)
+    except (TypeError, ValueError):
+        count = 1
+    count = max(1, min(100, count))
+
+    if (
+        not isinstance(x, int)
+        or not isinstance(y, int)
+        or not isinstance(z, int)
+        or not isinstance(building_type, str)
+        or (fleet_id is not None and not isinstance(fleet_id, str))
+    ):
+        return jsonify({"error": "invalid_payload"}), 400
+
+    z = max(-10, min(z, 10))
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        placed = 0
+        last_result: dict | None = None
+        last_ok_building = None
+        for _ in range(count):
+            result = world.place_building(
+                s,
+                player_id=player_id,
+                x=x,
+                y=y,
+                z=z,
+                building_type=building_type,
+                fleet_id=fleet_id,
+            )
+            last_result = result
+            if not result.get("ok"):
+                break
+            placed += 1
+            if result.get("building"):
+                last_ok_building = result.get("building")
+        if placed == 0:
+            s.rollback()
+            return jsonify(last_result or {"ok": False, "error": "build_failed"}), 400
+        s.commit()
+        return jsonify(
+            {
+                "ok": True,
+                "placed": placed,
+                "requested": count,
+                "stopped_early": placed < count,
+                "last_error": last_result if placed < count else None,
+                "building": last_ok_building,
+            }
+        )
+
+
 @api_bp.post("/buildings/placement_checks")
 def api_buildings_placement_checks():
     player_id = _current_player_id()
@@ -626,6 +696,35 @@ def api_fleets_combat_prompt_resolve():
         )
         result = world.resolve_fleet_combat_prompt(
             s, player_id=player_id, order_id=order_id, attack=attack
+        )
+        if not result.get("ok"):
+            return jsonify(result), 400
+        s.commit()
+        return jsonify(result)
+
+
+@api_bp.post("/intel/scan_fleet")
+def api_intel_scan_fleet():
+    player_id = _current_player_id()
+    if not player_id:
+        return jsonify({"error": "not_authenticated"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    scanner_fleet_id = payload.get("scanner_fleet_id")
+    target_fleet_id = payload.get("target_fleet_id")
+    if not isinstance(scanner_fleet_id, str) or not isinstance(target_fleet_id, str):
+        return jsonify({"ok": False, "error": "invalid_payload"}), 400
+
+    with db_session() as s:
+        balance = current_app.extensions.get("balance_service")
+        world = WorldService(
+            world_seed=current_app.config["SERVER_SALT"], balance=balance
+        )
+        result = world.intel_scan_fleet(
+            s,
+            player_id=player_id,
+            scanner_fleet_id=scanner_fleet_id,
+            target_fleet_id=target_fleet_id,
         )
         if not result.get("ok"):
             return jsonify(result), 400

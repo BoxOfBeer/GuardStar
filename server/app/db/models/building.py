@@ -42,6 +42,9 @@ class Building(Base):
 
     building_type: Mapped[str] = mapped_column(String(32), nullable=False)
     level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    structure_hp: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Тик, с которого постройка считается готовой (эффекты/оборона). 0 = готова сразу (legacy).
+    ready_at_tick: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow
     )

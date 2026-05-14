@@ -86,6 +86,36 @@
           "water": 1.0
         }
       }
+    },
+    {
+      "id": "silicon",
+      "name": "Silicon Mandate",
+      "enabled": true,
+      "glyph": "⬛",
+      "description": "Нет «бесплатной» еды и воды с планеты; население не растёт само — только набор за ресурсы.",
+      "perks": [
+        "Еда/вода только со зданий и склада",
+        "Рост населения — кнопка «Набор» (ресурсы)",
+        "Старт с нулевым населением"
+      ],
+      "lore": "Мандат Кремния — не биология, а протокол: каждая единица населения — это выделенный узел, который нужно явно активировать и снабжать. Планета не кормит колонию «сама собой»: циклы воды и углеводов строятся как инженерия. Соседи ошибочно принимают их за холодных — на деле это дисциплина цепочки снабжения.",
+      "modifiers": {
+        "build_time_multiplier": 1.0,
+        "upkeep_energy_multiplier": 1.0,
+        "travel_fuel_multiplier": 1.0,
+        "combat_damage_multiplier": 1.0,
+        "combat_hp_multiplier": 1.0,
+        "no_passive_planet_food_water": true,
+        "no_passive_population_growth": true,
+        "production_multiplier": {
+          "metal": 1.0,
+          "crystal": 1.0,
+          "energy": 1.0,
+          "fuel": 1.0,
+          "food": 1.0,
+          "water": 1.0
+        }
+      }
     }
   ]
 }

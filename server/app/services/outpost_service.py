@@ -17,6 +17,7 @@ from app.db.models.outpost import Outpost
 from app.db.models.planet import Planet
 from app.db.models.player import Player
 from app.db.models.resource import Resource
+from app.hex_coords import hex_distance
 from app.services.supply_service import SupplyService
 
 
@@ -56,11 +57,11 @@ class OutpostService:
                 v2 = sr.get("water_per_sol_per_outpost")
                 if isinstance(v2, (int, float)):
                     water = int(v2)
-                d = abs(int(hub.pos_x) - int(ox)) + abs(int(hub.pos_y) - int(oy))
-                cf = sr.get("food_per_manhattan_from_hub")
+                d = hex_distance(int(hub.pos_x), int(hub.pos_y), int(ox), int(oy))
+                cf = sr.get("food_per_hex_from_hub", sr.get("food_per_manhattan_from_hub"))
                 if isinstance(cf, (int, float)):
                     extra_f = int(cf) * max(0, d)
-                cw = sr.get("water_per_manhattan_from_hub")
+                cw = sr.get("water_per_hex_from_hub", sr.get("water_per_manhattan_from_hub"))
                 if isinstance(cw, (int, float)):
                     extra_w = int(cw) * max(0, d)
         base_f = max(0, food + extra_f)

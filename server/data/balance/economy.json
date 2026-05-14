@@ -7,8 +7,8 @@
   "supply_route_upkeep": {
     "food_per_sol_per_outpost": 2,
     "water_per_sol_per_outpost": 2,
-    "food_per_manhattan_from_hub": 0,
-    "water_per_manhattan_from_hub": 0
+    "food_per_hex_from_hub": 0,
+    "water_per_hex_from_hub": 0
   },
   "fleet_empire_upkeep": {
     "metal_per_sol_per_fleet": 0,
@@ -30,12 +30,28 @@
     "strain_event_chance_per_lab_per_sol": 0.022,
     "strain_event_crystal_cost": 5
   },
+  "intel_scan": {
+    "rp_cost": 3.0,
+    "max_range_hex": 1,
+    "defender_blocking_tech": "tech_fleet_doctrine_1"
+  },
+  "alliance": {
+    "max_members": 24,
+    "influence_cell_cap": 5.0
+  },
+  "citizen_recruit": {
+    "max_population_per_request": 500,
+    "metal_per_pop": 2,
+    "crystal_per_pop": 1,
+    "food_per_pop": 4,
+    "water_per_pop": 3
+  },
   "npc_transit": {
     "enabled": true,
     "spawn_every_n_ticks": 5,
     "max_active_convoys": 5,
-    "min_route_manhattan": 10,
-    "max_route_manhattan": 36,
+    "min_route_hex": 10,
+    "max_route_hex": 36,
     "spawn_attempts": 48,
     "spawn_attempts_floor": 12,
     "grid_x_min": -120,
@@ -49,7 +65,7 @@
     "event_every_n_ticks": 5
   },
   "outpost_bombard": {
-    "fleet_range_manhattan": 3
+    "fleet_range_hex": 4
   },
   "bandit_wilderness": {
     "chunk_side": 10,
@@ -59,36 +75,82 @@
     "every_n_ticks": 15,
     "ai_every_n_ticks": 1,
     "spawn_loop_attempts": 10,
-    "spawn_window_manhattan_half": 40,
+    "spawn_window_hex_half": 42,
     "mine_spawn_chance": 0.5,
     "outpost_spawn_chance": 0.28,
-    "min_separation_from_bandit_outpost_manhattan": 6,
+    "min_separation_from_bandit_outpost_hex": 7,
+    "early_phase_sol_max": 320,
+    "early_max_bandit_outposts_world": 3,
+    "early_outpost_spawn_chance_mult": 0.22,
+    "early_strike_cooldown_mult": 1.55,
     "outpost_candidate_offsets": [[2, 0], [-2, 0], [0, 2], [0, -2]]
   },
+  "bandit_outpost_logistics": {
+    "supply_radius_hex": 25,
+    "store_metal_per_sol": 2,
+    "store_crystal_per_sol": 1,
+    "store_food_per_sol": 4,
+    "store_water_per_sol": 4,
+    "store_energy_per_sol": 2,
+    "store_fuel_per_sol": 1,
+    "store_cap_metal": 6000,
+    "store_cap_crystal": 4000,
+    "store_cap_food": 8000,
+    "store_cap_water": 8000,
+    "store_cap_energy": 4000,
+    "store_cap_fuel": 2000,
+    "initial_metal": 200,
+    "initial_crystal": 120,
+    "initial_food": 300,
+    "initial_water": 300,
+    "initial_energy": 80,
+    "initial_fuel": 40
+  },
   "bandit_patrol_wing": {
-    "orbit_radius_manhattan_min": 4,
-    "orbit_radius_manhattan_max": 5,
-    "fighter_min": 4,
+    "orbit_radius_hex_min": 4,
+    "orbit_radius_hex_max": 5,
+    "fighter_min": 3,
     "fighter_max": 5,
-    "aggro_radius_manhattan": 5,
+    "aggro_radius_hex": 6,
     "respawn_sol_min": 15,
     "respawn_sol_max": 25,
-    "announce_warn_extra_manhattan": 6,
+    "announce_warn_extra_hex": 6,
     "spawn_energy": 200,
-    "spawn_max_energy": 240
+    "spawn_max_energy": 240,
+    "patrol_target_overmatch": 1.42,
+    "patrol_min_fighter_after_clamp": 2,
+    "patrol_ref_jitter_min": 0.78,
+    "patrol_ref_jitter_max": 1.14
   },
   "bandit_strike_wing": {
     "cooldown_sol_min": 150,
     "cooldown_sol_max": 200,
     "max_spawn_per_tick_global": 1,
-    "strike_fighter_min": 3,
+    "strike_fighter_min": 2,
     "strike_fighter_max": 5,
-    "strike_corvette_min": 3,
-    "strike_corvette_max": 5,
+    "strike_corvette_min": 2,
+    "strike_corvette_max": 4,
     "spawn_retry_sol_min": 8,
     "spawn_retry_sol_max": 20,
     "spawn_energy": 220,
     "spawn_max_energy": 260,
-    "strike_scout_count": 1
+    "strike_scout_count": 1,
+    "strike_target_overmatch": 1.28,
+    "strike_corvette_cap_if_target_has_none": 1,
+    "strike_min_fighter_after_clamp": 1,
+    "strike_threat_jitter_min": 0.66,
+    "strike_threat_jitter_max": 1.08
+  },
+  "planet_siege": {
+    "population_surrender_fraction": 0.1,
+    "conquest_penalty_sols": 100,
+    "conquest_production_multiplier": 10.0
+  },
+  "neutral_planets": {
+    "target_count": 18,
+    "spawn_per_tick_max": 4,
+    "spawn_min_hex_to_nearest": 20,
+    "spawn_max_hex_to_nearest": 40,
+    "bounds_half": 220
   }
 }

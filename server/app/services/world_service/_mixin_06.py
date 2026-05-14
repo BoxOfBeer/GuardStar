@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.hex_coords import hex_distance
 from app.services.world_service._deps import *  # noqa: F403
 from app.services.world_service.constants import (
     BANDIT_PLAYER_ID,
@@ -75,12 +76,58 @@ def _slim_event_payload_for_world_state_poll(
         "building_type",
         "lost_to",
         "winner",
+        "ui_channel",
+        "ui_dedupe_key",
     }
     slim = {k: payload[k] for k in allow if k in payload}
     return slim or None
 
 
 class WorldServiceMixin06:
+    def _absorb_fleet_into_arrival(
+        self,
+        s: Session,
+        *,
+        arrival: Fleet,
+        occupant: Fleet,
+        tick: int,
+    ) -> dict:
+        """Слить occupant в arrival и удалить occupant (без проверки active_order — только при завершении приказа)."""
+        if arrival.id == occupant.id:
+            return {"ok": False, "error": "same_fleet"}
+        cur_a = dict(self._fleet_units_map(s, arrival))
+        cur_o = dict(self._fleet_units_map(s, occupant))
+        newd: dict[str, int] = {}
+        for k in set(cur_a.keys()) | set(cur_o.keys()):
+            n = int(cur_a.get(k, 0)) + int(cur_o.get(k, 0))
+            if n > 0:
+                newd[k] = n
+        if sum(newd.values()) < 1:
+            return {"ok": False, "error": "fleet_empty"}
+        cap = self._world_max_fleet_units(s)
+        if sum(newd.values()) > cap:
+            return {"ok": False, "error": "fleet_too_large", "max_units": cap}
+        pid = arrival.owner_player_id
+        src_id = str(occupant.id)
+        s.delete(occupant)
+        s.flush()
+        self._write_fleet_units(s, arrival, newd)
+        s.flush()
+        self._emit_event(
+            s,
+            tick=tick,
+            type="fleet_merged",
+            message="Флот прибыл: объединение с вашим флотом в цели.",
+            payload={
+                "target_fleet_id": str(arrival.id),
+                "source_fleet_id": src_id,
+                "composition": dict(newd),
+                "reason": "same_cell_arrival",
+            },
+            player_id=pid,
+        )
+        return {"ok": True, "composition": dict(newd)}
+
     def process_next_tick(self, s: Session) -> dict:
         ws = self.get_or_create_world_state(s)
         next_tick = ws.current_tick + 1
@@ -129,6 +176,7 @@ class WorldServiceMixin06:
             )
 
         self._resolve_completed_outpost_modules(s, next_tick=next_tick)
+        self._resolve_completed_buildings(s, next_tick=next_tick)
 
         # 1) Fleet orders
         self._resolve_expired_fleet_combat_prompts(s, tick=next_tick, events=events)
@@ -250,26 +298,65 @@ class WorldServiceMixin06:
             )
             if occupant:
                 if occupant.owner_player_id == fleet.owner_player_id:
-                    if (
-                        str(getattr(order, "order_type", "") or "")
-                        == "emergency_return"
-                    ):
+                    merged = self._absorb_fleet_into_arrival(
+                        s,
+                        arrival=fleet,
+                        occupant=occupant,
+                        tick=next_tick,
+                    )
+                    if merged.get("ok"):
+                        fleet.pos_x = int(order.target_x)
+                        fleet.pos_y = int(order.target_y)
+                        fleet.pos_z = int(order.target_z)
+                        order.status = "done"
+                        events.append(
+                            {
+                                "type": "fleet_order_done",
+                                "order_id": str(order.id),
+                                "fleet_id": str(fleet.id),
+                            }
+                        )
+                        self._emit_event(
+                            s,
+                            tick=next_tick,
+                            type="fleet_arrived",
+                            message=(
+                                f"Флот прибыл и объединён с флотом в цели: "
+                                f"{fleet.unit_type}×{fleet.qty} в ({fleet.pos_x},{fleet.pos_y},{fleet.pos_z})"
+                            ),
+                            payload={
+                                "fleet_id": str(fleet.id),
+                                "qty": fleet.qty,
+                                "pos": {
+                                    "x": fleet.pos_x,
+                                    "y": fleet.pos_y,
+                                    "z": fleet.pos_z,
+                                },
+                                "merged": True,
+                            },
+                            player_id=order.owner_player_id,
+                        )
+                        continue
+                    if str(getattr(order, "order_type", "") or "") == "emergency_return":
                         order.status = "failed"
                         events.append(
                             {
                                 "type": "fleet_order_failed",
                                 "order_id": str(order.id),
-                                "reason": "cell_occupied_by_own_fleet",
+                                "reason": merged.get("error") or "merge_failed",
                             }
                         )
                         self._emit_event(
                             s,
                             tick=next_tick,
                             type="fleet_order_failed",
-                            message="Аварийный возврат отменён: в клетке хаба уже стоит ваш другой флот.",
+                            message=(
+                                "Аварийный возврат: в цели ваш флот, но объединение невозможно "
+                                f"({merged.get('error', 'merge_failed')})."
+                            ),
                             payload={
                                 "order_id": str(order.id),
-                                "reason": "cell_occupied_by_own_fleet",
+                                "reason": merged.get("error") or "merge_failed",
                             },
                             player_id=order.owner_player_id,
                         )
@@ -289,8 +376,11 @@ class WorldServiceMixin06:
                         else None
                     )
                     if res_rf and hasattr(res_rf, "fuel"):
-                        d_rf = abs(int(order.target_x) - int(order.from_x)) + abs(
-                            int(order.target_y) - int(order.from_y)
+                        d_rf = hex_distance(
+                            int(order.from_x),
+                            int(order.from_y),
+                            int(order.target_x),
+                            int(order.target_y),
                         )
                         um_rf = self._fleet_units_map(s, fleet)
                         fc_rf = int(
@@ -304,7 +394,10 @@ class WorldServiceMixin06:
                         )
                         if fc_rf > 0:
                             res_rf.fuel = int(getattr(res_rf, "fuel", 0)) + fc_rf
-                    fail_msg = "Перелёт отменён: в цели уже стоит ваш другой флот (в одной клетке — только один флот)."
+                    fail_msg = (
+                        "Перелёт отменён: в цели ваш другой флот, объединение невозможно "
+                        f"({merged.get('error', 'merge_failed')})."
+                    )
                     if fc_rf > 0:
                         fail_msg = (
                             f"{fail_msg} Топливо за перелёт возвращено: +{fc_rf}."
@@ -313,7 +406,7 @@ class WorldServiceMixin06:
                         {
                             "type": "fleet_order_failed",
                             "order_id": str(order.id),
-                            "reason": "cell_occupied_by_own_fleet",
+                            "reason": merged.get("error") or "merge_failed",
                         }
                     )
                     self._emit_event(
@@ -323,7 +416,7 @@ class WorldServiceMixin06:
                         message=fail_msg,
                         payload={
                             "order_id": str(order.id),
-                            "reason": "cell_occupied_by_own_fleet",
+                            "reason": merged.get("error") or "merge_failed",
                             "fuel_refunded": fc_rf,
                         },
                         player_id=order.owner_player_id,
@@ -475,6 +568,71 @@ class WorldServiceMixin06:
                 )
                 continue
 
+            if self._cell_has_planet_at(s, x=int(order.target_x), y=int(order.target_y)):
+                pair = self._nearest_cell_without_other_fleet(
+                    s,
+                    center_x=int(order.target_x),
+                    center_y=int(order.target_y),
+                    center_z=int(order.target_z),
+                    exclude_fleet_id=fleet.id,
+                )
+                if not pair:
+                    order.status = "failed"
+                    events.append(
+                        {
+                            "type": "fleet_order_failed",
+                            "order_id": str(order.id),
+                            "reason": "no_adjacent_cell_off_planet",
+                        }
+                    )
+                    self._emit_event(
+                        s,
+                        tick=next_tick,
+                        type="fleet_order_failed",
+                        message=(
+                            f"Приказ невыполним: ({order.target_x},{order.target_y}) — клетка планеты, "
+                            "нет подходящей соседней клетки для флота."
+                        ),
+                        payload={
+                            "order_id": str(order.id),
+                            "reason": "no_adjacent_cell_off_planet",
+                        },
+                        player_id=order.owner_player_id,
+                    )
+                    continue
+                fleet.pos_x, fleet.pos_y = int(pair[0]), int(pair[1])
+                fleet.pos_z = int(order.target_z)
+                order.status = "done"
+                events.append(
+                    {
+                        "type": "fleet_order_done",
+                        "order_id": str(order.id),
+                        "fleet_id": str(fleet.id),
+                    }
+                )
+                self._emit_event(
+                    s,
+                    tick=next_tick,
+                    type="fleet_arrived",
+                    message=(
+                        f"Флот прибыл рядом с планетой: {fleet.unit_type}×{fleet.qty} "
+                        f"в ({fleet.pos_x},{fleet.pos_y},{fleet.pos_z}) (цель была клетка планеты)"
+                    ),
+                    payload={
+                        "fleet_id": str(fleet.id),
+                        "qty": fleet.qty,
+                        "pos": {"x": fleet.pos_x, "y": fleet.pos_y, "z": fleet.pos_z},
+                        "diverted_from_planet_cell": True,
+                        "original_target": {
+                            "x": order.target_x,
+                            "y": order.target_y,
+                            "z": order.target_z,
+                        },
+                    },
+                    player_id=order.owner_player_id,
+                )
+                continue
+
             fleet.pos_x = order.target_x
             fleet.pos_y = order.target_y
             fleet.pos_z = order.target_z
@@ -605,8 +763,12 @@ class WorldServiceMixin06:
         ws.current_tick = next_tick
         ws.updated_at = datetime.now(timezone.utc)
 
+        self._ensure_world_neutral_player(s)
+        self._try_spawn_neutral_planets(s, tick=next_tick)
+
         # 2) Форпосты: содержание (может выключить форпост)
         self._apply_outpost_upkeep_tick(s, tick=next_tick)
+        self._apply_bandit_outpost_store_tick(s, tick=next_tick)
         # 3) Энергия флотов: пополнение/реген только при снабжении/хабе
         self._apply_fleet_energy_tick(s, tick=next_tick)
         # 4) Автопилот: аварийный возврат к хабу если нет энергии/снабжения
@@ -629,6 +791,8 @@ class WorldServiceMixin06:
 
         inf_src = self._collect_influence_sources(s)
         self._apply_influence_control_tick(s, tick=next_tick, sources=inf_src)
+
+        self._apply_planet_siege_tick(s, tick=next_tick)
 
         # Экономический блок тика (вынесено в сервис).
         from app.services.economy_service import EconomyService
@@ -654,9 +818,7 @@ class WorldServiceMixin06:
 
     def get_units_status(self, s: Session, *, player_id: str) -> dict:
         pid = uuid.UUID(player_id)
-        home = s.execute(
-            select(Planet).where(Planet.owner_player_id == pid)
-        ).scalar_one_or_none()
+        home = self._capital_planet_for_player(s, player_id=pid)
         if not home:
             return {"units": []}
 
@@ -734,10 +896,29 @@ class WorldServiceMixin06:
         ).scalar_one_or_none()
         if not home:
             pl0 = s.get(Player, pid)
+            rm0 = (
+                self._race_modifiers(s, player_id=pid)
+                if pl0
+                else {
+                    "no_passive_planet_food_water": False,
+                    "no_passive_population_growth": False,
+                }
+            )
             return {
                 "current_tick": ws.current_tick,
                 "current_sol": int(ws.current_tick),
                 "player_id": str(pid),
+                "player_race_id": str(getattr(pl0, "race_id", None) or "human")
+                if pl0
+                else "human",
+                "race_growth": {
+                    "no_passive_planet_food_water": bool(
+                        rm0.get("no_passive_planet_food_water")
+                    ),
+                    "no_passive_population_growth": bool(
+                        rm0.get("no_passive_population_growth")
+                    ),
+                },
                 "auto_tick_enabled": auto_tick_enabled,
                 "auto_tick_interval_seconds": auto_tick_interval_seconds,
                 "unit": None,
@@ -922,6 +1103,37 @@ class WorldServiceMixin06:
         rp_inf = EconomyService(world=self)._player_rp_info(s, player_id=pid)
         rp_per_sol = float(rp_inf.per_sol)
 
+        research_hud: dict = {
+            "in_progress": False,
+            "tech_id": None,
+            "progress_percent": None,
+        }
+        active_pt = (
+            s.execute(
+                select(PlayerTech)
+                .where(
+                    PlayerTech.player_id == pid,
+                    PlayerTech.status == "in_progress",
+                )
+                .order_by(PlayerTech.created_at.asc())
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        if active_pt is not None:
+            cur_s = int(ws.current_tick)
+            start = int(getattr(active_pt, "started_tick", 0) or 0)
+            fin = int(getattr(active_pt, "finish_tick", 0) or 0)
+            total = max(1, fin - start)
+            elapsed = min(total, max(0, cur_s - start))
+            pct_i = int(min(100, max(0, round(100 * elapsed / total))))
+            research_hud = {
+                "in_progress": True,
+                "tech_id": str(active_pt.tech_id),
+                "progress_percent": pct_i,
+            }
+
         econ_for_net = EconomyService(world=self).get_economy_summary(
             s,
             player_id=str(pid),
@@ -934,10 +1146,22 @@ class WorldServiceMixin06:
             for k in PLANET_STORE_KEYS
         }
 
+        rm_play = self._race_modifiers(s, player_id=pid)
+
         payload_state = {
             "current_tick": ws.current_tick,
             "current_sol": int(ws.current_tick),
             "player_id": str(pid),
+            "player_race_id": str(getattr(pl_row, "race_id", None) or "human"),
+            "race_growth": {
+                "no_passive_planet_food_water": bool(
+                    rm_play.get("no_passive_planet_food_water")
+                ),
+                "no_passive_population_growth": bool(
+                    rm_play.get("no_passive_population_growth")
+                ),
+            },
+            "research": research_hud,
             "is_game_admin": bool(getattr(pl_row, "is_game_admin", False)) if pl_row else False,
             "is_game_moderator": bool(getattr(pl_row, "is_game_moderator", False)) if pl_row else False,
             "auto_tick_enabled": auto_tick_enabled,
@@ -946,6 +1170,7 @@ class WorldServiceMixin06:
             "fleets": fleets_payload,
             "events": events_payload,
             "home_planet": {
+                "id": str(home.id),
                 "population": home_pop,
                 "max_population": home_mx,
                 "pos": {"x": home.pos_x, "y": home.pos_y},

@@ -4,7 +4,7 @@
     <h2>Вход по коду</h2>
     <form method="post">
       <label>Код доступа (32 символа):</label>
-      <input name="access_code" placeholder="вставь код сюда" />
+      <input id="access_code" name="access_code" placeholder="вставь код сюда" autocomplete="one-time-code" />
       <button type="submit">Войти</button>
     </form>
     {% if error %}<div class="error">{{ error }}</div>{% endif %}

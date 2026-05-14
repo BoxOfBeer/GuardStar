@@ -26,19 +26,36 @@ def test_balance_pack_loads_from_repo_default_path():
     eco = svc.pack.economy
     assert isinstance(eco.get("population_maintenance"), dict)
     assert isinstance(eco.get("supply_route_upkeep"), dict)
-    assert isinstance(eco.get("fleet_empire_upkeep"), dict)
+    assert isinstance(eco.get("bandit_outpost_logistics"), dict)
     assert isinstance(eco.get("research_points"), dict)
     assert isinstance(eco.get("npc_transit"), dict)
     assert svc.pack.tech_by_id.get("tech_supply_networks_1") is not None
     assert svc.pack.tech_by_id.get("tech_deep_scan_1") is not None
+    assert svc.pack.tech_by_id.get("tech_hull_medium") is not None
+    assert svc.pack.tech_by_id.get("tech_radar_fine_tuning_1") is not None
+    assert (svc.pack.tech_by_id.get("tech_hull_medium") or {}).get("effects") == {}
     assert svc.pack.buildings_by_id.get("logistics_center_t1") is not None
     assert svc.pack.outposts_by_id.get("outpost_t1") is not None
+    assert isinstance(svc.pack.planet_types_by_id, dict)
+    assert svc.pack.planet_types_by_id.get("earthlike") is not None
+    intel = eco.get("intel_scan")
+    assert isinstance(intel, dict)
+    assert float(intel.get("rp_cost", 0) or 0) > 0
+    assert str(intel.get("defender_blocking_tech") or "").strip()
+
+    al = eco.get("alliance")
+    assert isinstance(al, dict)
+    assert int(al.get("max_members", 0) or 0) >= 2
+
+    cr = eco.get("citizen_recruit")
+    assert isinstance(cr, dict)
+    assert int(cr.get("max_population_per_request", 0) or 0) >= 1
 
     ws = WorldService(balance=svc)
     assert ws._fleet_empire_upkeep_unpaid_penalty_energy() >= 0
 
 
-def test_supply_route_logistics_costs_use_manhattan_extras():
+def test_supply_route_logistics_costs_use_hex_distance_extras():
     base = Path(__file__).resolve().parents[1] / "data" / "balance"
     svc = BalanceService.load_from_path(base)
     ws = WorldService(balance=svc)
@@ -46,8 +63,8 @@ def test_supply_route_logistics_costs_use_manhattan_extras():
     # Подменим экстра-стоимость, чтобы тест был стабильным.
     svc.pack.economy["supply_route_upkeep"]["food_per_sol_per_outpost"] = 2
     svc.pack.economy["supply_route_upkeep"]["water_per_sol_per_outpost"] = 2
-    svc.pack.economy["supply_route_upkeep"]["food_per_manhattan_from_hub"] = 1
-    svc.pack.economy["supply_route_upkeep"]["water_per_manhattan_from_hub"] = 2
+    svc.pack.economy["supply_route_upkeep"]["food_per_hex_from_hub"] = 1
+    svc.pack.economy["supply_route_upkeep"]["water_per_hex_from_hub"] = 2
 
     hub = Planet(
         pos_x=10,
@@ -89,6 +106,17 @@ def test_supplier_unit_definition_exists():
     svc = BalanceService.load_from_path(base)
     u = svc.get_unit("supplier_t1")
     assert u.get("id") == "supplier_t1"
+    assert u.get("fleet_composition_allowed") is False
+
+
+def test_unit_aliases_frigate_and_colony_support():
+    base = Path(__file__).resolve().parents[1] / "data" / "balance"
+    svc = BalanceService.load_from_path(base)
+    ua = svc.pack.aliases.get("unit_aliases") or {}
+    assert ua.get("frigate") == "frigate_t2"
+    assert ua.get("colony_support") == "colony_support_t1"
+    assert svc.get_unit("frigate")["id"] == "frigate_t2"
+    assert svc.get_unit("colony_support")["id"] == "colony_support_t1"
 
 
 def test_unknown_unit_building_errors_are_readable():
@@ -138,6 +166,16 @@ def test_expansionist_race_in_balance_pack():
     assert float(mods.get("influence_multiplier", 0)) > 1.0
     assert float(mods.get("supply_route_upkeep_multiplier", 0)) > 1.0
     assert float(mods.get("fleet_unsupplied_energy_decay_multiplier", 0)) > 1.0
+
+
+def test_silicon_race_nonhuman_economy_flags():
+    base = Path(__file__).resolve().parents[1] / "data" / "balance"
+    svc = BalanceService.load_from_path(base)
+    si = svc.pack.races_by_id.get("silicon")
+    assert isinstance(si, dict)
+    mods = si.get("modifiers") or {}
+    assert mods.get("no_passive_planet_food_water") is True
+    assert mods.get("no_passive_population_growth") is True
 
 
 def test_race_modifiers_affect_costs_and_production():
@@ -275,3 +313,40 @@ def test_world_research_runtime_tier_mults():
     assert apply_tier_to_residual_ticks(residual=10, tier_time_mult=2.0) == 20
     assert serialize_research_overrides_from_maps({1: 1.0, 2: 2.0}, {1: 1.0}) is not None
     assert serialize_research_overrides_from_maps({1: 1.0}, {1: 1.0}) is None
+
+
+def test_scout_medium_unit_and_prereqs():
+    base = Path(__file__).resolve().parents[1] / "data" / "balance"
+    svc = BalanceService.load_from_path(base)
+    sm = svc.get_unit("scout_medium")
+    assert sm.get("id") == "scout_medium_t2"
+    assert int(sm.get("map_vision_radius_cells", 0)) == 3
+    req = [str(x) for x in (sm.get("prereq_tech") or []) if isinstance(x, str)]
+    assert "tech_hull_medium" in req
+    assert "tech_radar_fine_tuning_1" in req
+
+
+def test_fleet_map_vision_radius_cells_from_balance():
+    base = Path(__file__).resolve().parents[1] / "data" / "balance"
+    svc = BalanceService.load_from_path(base)
+    ws = WorldService(balance=svc)
+    assert ws._fleet_map_vision_radius_cells({"scout": 1}) == 2
+    assert ws._fleet_map_vision_radius_cells({"scout_medium": 1}) == 3
+    assert ws._fleet_map_vision_radius_cells({"fighter": 1}) == 1
+    assert ws._fleet_map_vision_radius_cells({"fighter": 3, "scout_medium": 1}) == 3
+    assert ws._fleet_map_vision_radius_cells({}) == 0
+
+
+def test_map_vision_radius_cells_out_of_range_raises(tmp_path):
+    base = Path(__file__).resolve().parents[1] / "data" / "balance"
+    import shutil
+
+    dst = tmp_path / "balance"
+    shutil.copytree(base, dst)
+    p = dst / "units.json"
+    txt = p.read_text(encoding="utf-8")
+    txt = txt.replace('"map_vision_radius_cells": 2', '"map_vision_radius_cells": 9', 1)
+    p.write_text(txt, encoding="utf-8")
+    with pytest.raises(BalanceError) as e:
+        BalanceService.load_from_path(dst)
+    assert "map_vision_radius_cells" in str(e.value)

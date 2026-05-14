@@ -80,10 +80,28 @@ class BalanceService:
         return mod
 
     def get_race(self, race_id: str) -> dict:
-        r = self.pack.races_by_id.get(race_id)
+        rid = str(race_id or "").strip()
+        r = self.pack.races_by_id.get(rid) if rid else None
         if not r:
             raise BalanceError(f"unknown_race: race_id={race_id}")
         return r
+
+    def get_planet_type(self, planet_class: str) -> dict:
+        pid = str(planet_class or "").strip() or "earthlike"
+        pt = self.pack.planet_types_by_id.get(pid)
+        if not pt:
+            return {
+                "id": pid,
+                "display_name": pid,
+                "base_production_multiplier": {},
+                "max_population_multiplier": 1.0,
+                "build_slots_multiplier": 1.0,
+                "starter_population": 600,
+                "colonize_min_tech_tier": 1,
+                "colonize_required_tech_ids": [],
+                "capture_required_tech_ids": [],
+            }
+        return pt
 
     def get_base_production(self) -> dict:
         base = (
@@ -224,6 +242,7 @@ class BalancePack:
     outpost_modules_by_id: dict[str, dict]
     races_by_id: dict[str, dict]
     tech_by_id: dict[str, dict]
+    planet_types_by_id: dict[str, dict]
 
 
 def _read_json(path: Path) -> dict:
@@ -339,6 +358,30 @@ def load_balance_pack(*, base_dir: Path) -> BalancePack:
     if not isinstance(units, list):
         raise BalanceError("units.json: ожидаю units: []")
     units_by_id = _require_id_map(units, kind="units")
+    for uid, u in units_by_id.items():
+        if "map_vision_radius_cells" in u:
+            mv = u.get("map_vision_radius_cells")
+            if not isinstance(mv, int) or int(mv) < 0 or int(mv) > 6:
+                raise BalanceError(
+                    f"units[{uid}].map_vision_radius_cells: ожидаю целое 0..6, получено {mv!r}"
+                )
+        for opt_key in (
+            "fleet_energy_pool_bonus_per_ship",
+            "fleet_travel_fuel_flat_discount_per_ship",
+        ):
+            if opt_key not in u:
+                continue
+            ov = u.get(opt_key)
+            if not isinstance(ov, int) or int(ov) < 0 or int(ov) > 500:
+                raise BalanceError(
+                    f"units[{uid}].{opt_key}: ожидаю целое 0..500, получено {ov!r}"
+                )
+        if "fleet_composition_allowed" in u:
+            fca = u.get("fleet_composition_allowed")
+            if not isinstance(fca, bool):
+                raise BalanceError(
+                    f"units[{uid}].fleet_composition_allowed: ожидаю bool, получено {fca!r}"
+                )
 
     buildings_doc = _read_json(base_dir / "buildings.json")
     buildings = buildings_doc.get("buildings", [])
@@ -395,6 +438,16 @@ def load_balance_pack(*, base_dir: Path) -> BalancePack:
     tech_by_id = _require_id_map(tech, kind="tech")
     _validate_tech_dag(tech_by_id)
 
+    planet_types_doc = (
+        _read_json(base_dir / "planet_types.json")
+        if (base_dir / "planet_types.json").exists()
+        else {"planet_types": []}
+    )
+    planet_types = planet_types_doc.get("planet_types", [])
+    if not isinstance(planet_types, list):
+        raise BalanceError("planet_types.json: ожидаю planet_types: []")
+    planet_types_by_id = _require_id_map(planet_types, kind="planet_types")
+
     return BalancePack(
         meta=meta,
         resources=resources,
@@ -406,6 +459,7 @@ def load_balance_pack(*, base_dir: Path) -> BalancePack:
         outpost_modules_by_id=outpost_modules_by_id,
         races_by_id=races_by_id,
         tech_by_id=tech_by_id,
+        planet_types_by_id=planet_types_by_id,
     )
 
 

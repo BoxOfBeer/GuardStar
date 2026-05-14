@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from flask import session
 
-# Радиус окна карты в клетках от центра; сторона квадрата = 2 * radius + 1 → 13…25 при 6…12.
+# Радиус окна карты в шагах гекса от центра; на клиенте — «диск» (число клеток растёт нелинейно).
 MAP_WINDOW_RADIUS_MIN = 6
 MAP_WINDOW_RADIUS_MAX = 12
 

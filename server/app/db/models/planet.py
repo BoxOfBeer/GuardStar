@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -32,6 +32,15 @@ class Planet(Base):
     )
     build_slots_total: Mapped[int] = mapped_column(Integer, nullable=False, default=55)
     supplier_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_capital: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
+    )
+    is_colonized: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, index=True
+    )
+    conquest_penalty_until_tick: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow, nullable=False
     )

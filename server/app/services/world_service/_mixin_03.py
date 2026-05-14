@@ -24,6 +24,10 @@ from app.services.world_service.constants import (
     PLANET_STORE_KEYS,
 )
 
+from app.hex_coords import hex_disk, hex_disk_axial_bbox, hex_distance, hex_window_rows_sorted
+
+from app.services import alliance_service as _alliance_service
+
 
 class WorldServiceMixin03:
     def get_sector_stub(
@@ -42,7 +46,7 @@ class WorldServiceMixin03:
         if x is None or y is None:
             return sector
 
-        sector["cell"] = self.get_cell_terrain(x=x, y=y, z=z)
+        sector["cell"] = self.get_cell_terrain(x=x, y=y, z=z, s=s)
         if (
             z == 0
             and s.execute(
@@ -52,6 +56,8 @@ class WorldServiceMixin03:
             sector["cell"] = {"terrain": "planet", "glyph": "P"}
 
         pid = uuid.UUID(player_id)
+        ws_s = self.get_or_create_world_state(s)
+        tick_s = int(ws_s.current_tick)
         q = select(Planet).where(Planet.owner_player_id == pid)
         if z == 0:
             q = q.where(Planet.pos_x == x).where(Planet.pos_y == y)
@@ -108,6 +114,8 @@ class WorldServiceMixin03:
                 .scalars()
                 .all()
             }
+        amap = _alliance_service.alliance_ids_for_players(s, set(owner_ids) | {pid})
+        aid_self = amap.get(str(pid))
         for p in planets:
             obj = {
                 "type": "planet",
@@ -161,7 +169,34 @@ class WorldServiceMixin03:
                 )
                 field_buildings = max(0, built_total - built_surface)
                 slots_total = int(getattr(p, "build_slots_total", 55) or 55)
-                build = {"active": None, "queue": []}
+                bq_rows = (
+                    s.execute(
+                        select(Building)
+                        .where(
+                            Building.planet_id == p.id,
+                            Building.ready_at_tick > tick_s,
+                        )
+                        .order_by(Building.ready_at_tick.asc())
+                    )
+                    .scalars()
+                    .all()
+                )
+                build_queue = [
+                    {
+                        "building_id": str(bb.id),
+                        "building_type": str(bb.building_type),
+                        "ready_at_tick": int(bb.ready_at_tick),
+                        "remaining_ticks": max(0, int(bb.ready_at_tick) - tick_s),
+                    }
+                    for bb in bq_rows
+                ]
+                build = {
+                    "active": (
+                        str(bq_rows[0].building_type) if bq_rows else None
+                    ),
+                    "queue": build_queue,
+                    "current_tick": tick_s,
+                }
                 mxpop = self._effective_max_population(s, p)
                 sr = self._planet_supply_radius(s, planet=p)
                 ppop = int(getattr(p, "population", 0) or 0)
@@ -215,6 +250,11 @@ class WorldServiceMixin03:
                     "max_energy": int(getattr(f, "max_energy", 100) or 100),
                     "owner": str(f.owner_player_id),
                     "owner_name": owners.get(str(f.owner_player_id)),
+                    "ally": bool(
+                        aid_self
+                        and amap.get(str(f.owner_player_id))
+                        and aid_self == amap.get(str(f.owner_player_id))
+                    ),
                 }
             )
         for op in outposts_in_cell:
@@ -239,6 +279,7 @@ class WorldServiceMixin03:
                 }
             )
         for b in buildings_in_cell:
+            rat = int(getattr(b, "ready_at_tick", 0) or 0)
             sector["objects"].append(
                 {
                     "type": "building",
@@ -247,6 +288,9 @@ class WorldServiceMixin03:
                     "owner_name": owners.get(str(b.owner_player_id)),
                     "building_type": str(getattr(b, "building_type", "") or ""),
                     "level": int(getattr(b, "level", 1) or 1),
+                    "ready_at_tick": rat,
+                    "under_construction": bool(rat > tick_s),
+                    "remaining_ticks": max(0, rat - tick_s) if rat > tick_s else 0,
                 }
             )
 
@@ -308,8 +352,10 @@ class WorldServiceMixin03:
             (center_x if center_x is not None else planet.pos_x),
             (center_y if center_y is not None else planet.pos_y),
         )
-        x0, x1 = cx - radius, cx + radius
-        y0, y1 = cy - radius, cy + radius
+        x0, x1, y0, y1 = hex_disk_axial_bbox(int(cx), int(cy), int(radius))
+
+        ws_m = self.get_or_create_world_state(s)
+        tick_m = int(ws_m.current_tick)
 
         planets = []
         if z == 0:
@@ -428,6 +474,16 @@ class WorldServiceMixin03:
                     "level": int(b.level),
                     "owner": str(b.owner_player_id),
                     "owner_name": owners.get(str(b.owner_player_id)),
+                    "ready_at_tick": int(getattr(b, "ready_at_tick", 0) or 0),
+                    "under_construction": bool(
+                        int(getattr(b, "ready_at_tick", 0) or 0) > tick_m
+                    ),
+                    "remaining_ticks": max(
+                        0,
+                        int(getattr(b, "ready_at_tick", 0) or 0) - tick_m,
+                    )
+                    if int(getattr(b, "ready_at_tick", 0) or 0) > tick_m
+                    else 0,
                 }
             )
 
@@ -486,6 +542,18 @@ class WorldServiceMixin03:
                     if o.get("type") == "planet":
                         o["owner_name"] = owners.get(o.get("owner"))
 
+        alliance_by_player = _alliance_service.alliance_ids_for_players(
+            s, set(owner_ids) | {pid}
+        )
+        aid_self = alliance_by_player.get(str(pid))
+        for _pos, objs in by_pos.items():
+            for o in objs:
+                if o.get("type") != "fleet":
+                    continue
+                own = o.get("owner")
+                ao = alliance_by_player.get(str(own)) if own else None
+                o["ally"] = bool(aid_self and ao and aid_self == ao)
+
         control_rows = (
             s.execute(
                 select(InfluenceCell).where(
@@ -513,7 +581,7 @@ class WorldServiceMixin03:
 
         def _is_visible(x: int, y: int) -> bool:
             for sx, sy, r in vis_sources:
-                if abs(x - sx) + abs(y - sy) <= r:
+                if hex_distance(int(x), int(y), int(sx), int(sy)) <= int(r):
                     return True
             return False
 
@@ -572,21 +640,17 @@ class WorldServiceMixin03:
         build_self: set[tuple[int, int]] = set()
         build_enemy: set[tuple[int, int]] = set()
         for p in planets:
-            r = 3
-            for dy in range(-r, r + 1):
-                for dx in range(-r, r + 1):
-                    if abs(dx) + abs(dy) > r:
-                        continue
-                    tx, ty = p.pos_x + dx, p.pos_y + dy
-                    if p.owner_player_id == pid:
-                        build_self.add((tx, ty))
-                    else:
-                        build_enemy.add((tx, ty))
+            br = 3
+            for tx, ty in hex_disk(int(p.pos_x), int(p.pos_y), br):
+                if p.owner_player_id == pid:
+                    build_self.add((tx, ty))
+                else:
+                    build_enemy.add((tx, ty))
 
         cells: list[dict] = []
-        for y in range(y0, y1 + 1):
+        for row_r, coord_pairs in hex_window_rows_sorted(int(cx), int(cy), int(radius)):
             row: list[dict] = []
-            for x in range(x0, x1 + 1):
+            for x, y in coord_pairs:
                 visible = True if reveal_fog else _is_visible(x, y)
                 if visible:
                     _touch_explored(x, y)
@@ -602,7 +666,7 @@ class WorldServiceMixin03:
 
                 if visible:
                     objects = by_pos.get((x, y), [])
-                    terrain = self.get_cell_terrain(x=x, y=y, z=z)
+                    terrain = self.get_cell_terrain(x=x, y=y, z=z, s=s)
                     if any((o and o.get("type") == "planet") for o in objects):
                         terrain = {"terrain": "planet", "glyph": "P"}
                     tk_neb = str(
@@ -755,10 +819,16 @@ class WorldServiceMixin03:
                         },
                     }
                 )
-            cells.append({"y": y, "row": row})
+            cells.append({"y": row_r, "row": row})
 
         s.flush()
-        return {"center": {"x": cx, "y": cy}, "radius": radius, "z": z, "cells": cells}
+        return {
+            "center": {"x": cx, "y": cy},
+            "radius": radius,
+            "z": z,
+            "topology": "hex",
+            "cells": cells,
+        }
 
     def check_outpost_placement(
         self,
@@ -1093,8 +1163,9 @@ class WorldServiceMixin03:
         outpost.hp_current = int(cmb.get("hp", 0) or 0) or None
         if str(pid) == str(BANDIT_PLAYER_ID):
             wc = self._warfare_economy(s)
-            outpost.strike_next_tick = int(start_tick) + random.randint(
-                int(wc["strike_min"]), int(wc["strike_max"])
+            self._bandit_seed_outpost_initial_store(s, outpost, wc)
+            outpost.strike_next_tick = self._bandit_scheduled_tick_after(
+                wc, int(start_tick), "strike_min", "strike_max"
             )
             outpost.patrol_respawn_at_tick = 0
             s.flush()

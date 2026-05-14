@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
+from app.hex_coords import hex_distance
 from app.db.models.fleet import Fleet
 from app.db.models.fleet_ship import FleetShip
 
@@ -74,17 +75,21 @@ def test_login_with_valid_code_works(client, _test_engine):
         assert me_after.status_code == 200
 
 
-def test_world_window_returns_13x13(client, _test_engine):
+def test_world_window_returns_hex_disk(client, _test_engine):
     with ih.registered_player(client, _test_engine, "map"):
         r = client.get("/api/world/window?radius=6")
         assert r.status_code == 200
         body = r.get_json()
         assert body["radius"] == 6
         assert body["z"] == 0
+        assert body.get("topology") == "hex"
         assert body["center"]["x"] is not None
         assert body["center"]["y"] is not None
         assert len(body["cells"]) == 13
-        assert all(len(row["row"]) == 13 for row in body["cells"])
+        row_lens = [len(row["row"]) for row in body["cells"]]
+        assert min(row_lens) >= 7
+        assert max(row_lens) <= 13
+        assert sum(row_lens) == 127
 
 
 def test_world_window_visible_cells_include_influence(client, _test_engine):
@@ -248,6 +253,9 @@ def test_world_state_endpoint_shows_tick_and_unit(client, _test_engine):
         assert state0.status_code == 200
         body0 = state0.get_json()
         assert "current_tick" in body0
+        assert "research" in body0
+        assert body0["research"].get("in_progress") is False
+        assert body0["research"].get("progress_percent") is None
         assert "auto_tick_enabled" in body0
         assert "auto_tick_interval_seconds" in body0
         assert body0["unit"]["type"] == "scout"
@@ -292,6 +300,45 @@ def test_fleet_save_deducts_metal_when_adding_ships(client, _test_engine):
         assert cr.status_code == 200, cr.get_json()
         m1 = client.get("/api/world/state").get_json()["economy"]["metal"]
         assert m1 < m0
+
+
+def test_fleet_create_supplier_only_rejected(client, _test_engine):
+    with ih.registered_player(client, _test_engine, "fsupp"):
+        me = client.get("/api/me").get_json()
+        planet_id = me["planets"][0]["id"]
+        cr = client.post(
+            "/api/fleets/create",
+            json={"planet_id": planet_id, "name": "S", "composition": {"supplier": 2}},
+        )
+        assert cr.status_code == 400
+        assert cr.get_json().get("error") == "fleet_empty"
+
+
+def test_fleet_create_strips_supplier_from_composition(client, _test_engine):
+    with ih.registered_player(client, _test_engine, "fsupp2"):
+        me = client.get("/api/me").get_json()
+        planet_id = me["planets"][0]["id"]
+        m0 = client.get("/api/world/state").get_json()["economy"]["metal"]
+        cr = client.post(
+            "/api/fleets/create",
+            json={
+                "planet_id": planet_id,
+                "name": "Mix",
+                "composition": {"supplier": 5, "scout": 1},
+            },
+        )
+        assert cr.status_code == 200, cr.get_json()
+        body = cr.get_json()
+        assert int(body.get("composition", {}).get("supplier", 0)) == 0
+        assert int(body.get("composition", {}).get("scout", 0)) == 1
+        m1 = client.get("/api/world/state").get_json()["economy"]["metal"]
+        cr2 = client.post(
+            "/api/fleets/create",
+            json={"planet_id": planet_id, "name": "Ref", "composition": {"scout": 1}},
+        )
+        assert cr2.status_code == 200, cr2.get_json()
+        m2 = client.get("/api/world/state").get_json()["economy"]["metal"]
+        assert (m0 - m1) == (m1 - m2)
 
 
 def test_fleet_upkeep_preview_ok(client, _test_engine):
@@ -499,3 +546,186 @@ def test_fleet_move_prunes_empty_shell_at_target_cell(client, _test_engine):
                 moved = True
                 break
         assert moved, f"move did not succeed (last_error={last_err!r})"
+
+
+def test_fleet_move_rejects_planet_cell(client, _test_engine):
+    """Флот не может получить приказ на клетку, где стоит планета (любая)."""
+    with ih.registered_player(client, _test_engine, "noplanmv"):
+        me = client.get("/api/me").get_json()
+        st = client.get("/api/world/state").get_json()
+        fl = st.get("fleets") or []
+        if not fl:
+            pytest.skip("no fleet in world state")
+        fid = fl[0]["id"]
+        fx, fy = int(fl[0]["x"]), int(fl[0]["y"])
+        p = me["planets"][0]["pos"]
+        px, py = int(p["x"]), int(p["y"])
+        if hex_distance(fx, fy, px, py) == 0:
+            pytest.skip("fleet on planet cell (legacy state)")
+        mv = client.post(
+            "/api/fleets/move",
+            json={"fleet_id": fid, "x": px, "y": py, "z": 0, "force_attack": False},
+        )
+        body = mv.get_json() if mv.is_json else {}
+        assert body.get("error") == "target_cell_has_planet"
+
+
+def test_intel_scan_fleet_requires_auth(client):
+    r = client.post(
+        "/api/intel/scan_fleet",
+        json={"scanner_fleet_id": str(uuid.uuid4()), "target_fleet_id": str(uuid.uuid4())},
+    )
+    assert r.status_code == 401
+
+
+def test_intel_scan_fleet_not_found(client, _test_engine):
+    with ih.registered_player(client, _test_engine, "intelnf"):
+        bogus = str(uuid.uuid4())
+        r = client.post(
+            "/api/intel/scan_fleet",
+            json={"scanner_fleet_id": bogus, "target_fleet_id": bogus},
+        )
+        assert r.status_code == 400
+        body = r.get_json()
+        assert body.get("ok") is False
+        assert body.get("error") == "fleet_not_found"
+        assert body.get("which") == "scanner"
+
+
+def test_alliance_me_requires_auth(client):
+    r = client.get("/api/alliance/me")
+    assert r.status_code == 401
+
+
+def test_alliance_me_null_when_solo(client, _test_engine):
+    with ih.registered_player(client, _test_engine, "alme"):
+        r = client.get("/api/alliance/me")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body.get("ok") is True
+        assert body.get("alliance") is None
+
+
+def test_recruit_population_requires_silicon_race(client, _test_engine):
+    with ih.registered_player(client, _test_engine, "rcph"):
+        st = client.get("/api/world/state")
+        assert st.status_code == 200
+        plid = (st.get_json() or {}).get("home_planet", {}).get("id")
+        assert plid
+        r = client.post(
+            "/api/world/recruit_population",
+            json={"planet_id": plid, "amount": 10},
+        )
+        assert r.status_code == 400
+        assert r.get_json().get("error") == "recruit_not_available_for_race"
+
+
+def test_recruit_population_silicon_adds_pop(client, _test_engine):
+    with ih.registered_player(client, _test_engine, "rcsi", race_id="silicon"):
+        st = client.get("/api/world/state")
+        body0 = st.get_json()
+        assert body0.get("race_growth", {}).get("no_passive_population_growth") is True
+        assert int(body0.get("home_planet", {}).get("population", -1)) == 0
+        plid = body0.get("home_planet", {}).get("id")
+        assert plid
+        r = client.post(
+            "/api/world/recruit_population",
+            json={"planet_id": plid, "amount": 20},
+        )
+        assert r.status_code == 200
+        out = r.get_json()
+        assert out.get("ok") is True
+        assert int(out.get("added", 0)) == 20
+        assert int(out.get("population", 0)) == 20
+        st2 = client.get("/api/world/state")
+        assert int(st2.get_json().get("home_planet", {}).get("population", 0)) == 20
+
+
+def test_building_construction_queue_and_ticks(client, _test_engine):
+    """Постройка с ready_at_tick: превью в placement_checks, очередь в секторе, завершение по солам мира."""
+    with ih.registered_player(client, _test_engine, "bldtick"):
+        me = client.get("/api/me").get_json()
+        pos = me["planets"][0]["pos"]
+        px, py = int(pos["x"]), int(pos["y"])
+        st0 = client.get("/api/world/state").get_json()
+        cur0 = int(st0.get("current_tick", 0))
+
+        chk = client.post(
+            "/api/buildings/placement_checks",
+            json={
+                "x": px,
+                "y": py,
+                "z": 0,
+                "fleet_id": None,
+                "building_types": ["basic_farm"],
+            },
+        ).get_json()
+        assert chk.get("ok") is True
+        bf = chk.get("results", {}).get("basic_farm") or {}
+        assert bf.get("ok") is True
+        bprev = bf.get("build") or {}
+        assert int(bprev.get("time_ticks", 0)) >= 1
+        assert int(bprev.get("ready_at_tick_preview", -1)) == cur0 + int(bprev.get("time_ticks", 0))
+
+        pl = client.post(
+            "/api/buildings/place",
+            json={
+                "x": px,
+                "y": py,
+                "z": 0,
+                "building_type": "basic_farm",
+                "fleet_id": None,
+            },
+        ).get_json()
+        assert pl.get("ok") is True
+        dur = int(pl.get("build_time_ticks") or bprev.get("time_ticks") or 2)
+        assert int((pl.get("building") or {}).get("ready_at_tick", -1)) == cur0 + dur
+
+        sec1 = client.get(f"/api/world/sector?x={px}&y={py}&z=0").get_json()
+        det = next(
+            (o.get("details") for o in (sec1.get("objects") or []) if o.get("type") == "planet" and o.get("details")),
+            None,
+        )
+        assert det is not None
+        bq = (det.get("build") or {}).get("queue") or []
+        assert len(bq) == 1
+        assert int(bq[0].get("remaining_ticks", -1)) == dur
+
+        assert client.post("/api/world/tick", json={}).status_code == 200
+        sec2 = client.get(f"/api/world/sector?x={px}&y={py}&z=0").get_json()
+        det2 = next(
+            (o.get("details") for o in (sec2.get("objects") or []) if o.get("type") == "planet" and o.get("details")),
+            None,
+        )
+        bq2 = (det2.get("build") or {}).get("queue") or []
+        assert len(bq2) == 1
+        assert int(bq2[0].get("remaining_ticks", -1)) == dur - 1
+
+        for _ in range(max(0, dur - 1)):
+            assert client.post("/api/world/tick", json={}).status_code == 200
+
+        sec_done = client.get(f"/api/world/sector?x={px}&y={py}&z=0").get_json()
+        det_done = next(
+            (
+                o.get("details")
+                for o in (sec_done.get("objects") or [])
+                if o.get("type") == "planet" and o.get("details")
+            ),
+            None,
+        )
+        assert ((det_done.get("build") or {}).get("queue") or []) == []
+
+        win = client.get(f"/api/world/window?radius=6&z=0&center_x={px}&center_y={py}").get_json()
+        found = False
+        for row in win.get("cells") or []:
+            for c in row.get("row") or []:
+                if int(c.get("x", -1)) != px or int(c.get("y", -1)) != py:
+                    continue
+                for o in c.get("objects") or []:
+                    if o.get("type") != "building":
+                        continue
+                    if str(o.get("building_type", "")).lower().startswith("basic_farm"):
+                        assert o.get("under_construction") in (False, None)
+                        assert int(o.get("ready_at_tick", -1)) == 0
+                        found = True
+        assert found

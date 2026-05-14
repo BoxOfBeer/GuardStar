@@ -536,6 +536,84 @@
       "build_on_terrain": [
         "planet"
       ]
+    },
+    {
+      "id": "planetary_defense_dome_t2",
+      "name": "Планетарный бункер ПКО",
+      "tier": 2,
+      "build_zone_radius_required": 3,
+      "max_per_planet": 1,
+      "prereq_tech": [
+        "tech_citadel_skeleton_2"
+      ],
+      "build": {
+        "time_ticks": 8,
+        "cost": {
+          "metal": 420,
+          "crystal": 380,
+          "energy": 40
+        }
+      },
+      "effects": {
+        "planetary_defense": {
+          "max_hp": 5000,
+          "intercept_pop_damage_fraction": 0.9
+        }
+      },
+      "build_on_terrain": [
+        "planet"
+      ]
+    },
+    {
+      "id": "orbital_strike_battery_t2",
+      "name": "Орбитальная батарея",
+      "tier": 2,
+      "build_zone_radius_required": 3,
+      "max_per_planet": 1,
+      "prereq_tech": [
+        "tech_battle_integrated_lab_3"
+      ],
+      "build": {
+        "time_ticks": 7,
+        "cost": {
+          "metal": 380,
+          "crystal": 340,
+          "energy": 50
+        }
+      },
+      "effects": {
+        "orbital_strike": {
+          "range_hex": 1,
+          "fleet_damage_fraction_per_sol": 0.06
+        }
+      },
+      "build_on_terrain": [
+        "planet"
+      ]
+    },
+    {
+      "id": "imperial_capital_seat_t3",
+      "name": "Имперский резиденционный узел",
+      "tier": 3,
+      "build_zone_radius_required": 3,
+      "max_per_planet": 1,
+      "prereq_tech": [
+        "tech_secondary_hub_charter_1"
+      ],
+      "build": {
+        "time_ticks": 10,
+        "cost": {
+          "metal": 520,
+          "crystal": 480,
+          "energy": 60
+        }
+      },
+      "effects": {
+        "sets_imperial_capital": true
+      },
+      "build_on_terrain": [
+        "planet"
+      ]
     }
   ]
 }

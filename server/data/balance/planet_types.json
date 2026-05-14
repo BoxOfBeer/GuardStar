@@ -1,0 +1,80 @@
+{
+  "planet_types": [
+    {
+      "id": "earthlike",
+      "display_name": "Землеподобная",
+      "description": "Сбалансированные условия.",
+      "base_production_multiplier": {
+        "metal": 1.0,
+        "crystal": 1.0,
+        "energy": 1.0,
+        "fuel": 1.0,
+        "food": 1.0,
+        "water": 1.0
+      },
+      "max_population_multiplier": 1.0,
+      "build_slots_multiplier": 1.0,
+      "starter_population": 600,
+      "colonize_min_tech_tier": 2,
+      "colonize_required_tech_ids": ["tech_hydroponics_1", "tech_atmospheric_water_1"],
+      "capture_required_tech_ids": ["tech_hydroponics_1", "tech_atmospheric_water_1"]
+    },
+    {
+      "id": "desert",
+      "display_name": "Пустынная",
+      "description": "Больше руд и площадей, мало воды и еды.",
+      "base_production_multiplier": {
+        "metal": 1.25,
+        "crystal": 1.15,
+        "energy": 1.05,
+        "fuel": 1.1,
+        "food": 0.55,
+        "water": 0.45
+      },
+      "max_population_multiplier": 1.12,
+      "build_slots_multiplier": 1.08,
+      "starter_population": 500,
+      "colonize_min_tech_tier": 3,
+      "colonize_required_tech_ids": ["tech_hydroponics_1"],
+      "capture_required_tech_ids": ["tech_hydroponics_1"]
+    },
+    {
+      "id": "oceanic",
+      "display_name": "Океаническая",
+      "description": "Много воды, мало сырья и слотов под застройку.",
+      "base_production_multiplier": {
+        "metal": 0.75,
+        "crystal": 0.85,
+        "energy": 0.9,
+        "fuel": 0.7,
+        "food": 0.85,
+        "water": 1.65
+      },
+      "max_population_multiplier": 0.92,
+      "build_slots_multiplier": 0.88,
+      "starter_population": 550,
+      "colonize_min_tech_tier": 3,
+      "colonize_required_tech_ids": ["tech_atmospheric_water_1"],
+      "capture_required_tech_ids": ["tech_atmospheric_water_1"]
+    },
+    {
+      "id": "volcanic",
+      "display_name": "Вулканическая",
+      "description": "Экстремальные условия, нужен высокий уровень технологий.",
+      "base_production_multiplier": {
+        "metal": 1.35,
+        "crystal": 1.1,
+        "energy": 1.25,
+        "fuel": 1.2,
+        "food": 0.4,
+        "water": 0.35
+      },
+      "max_population_multiplier": 0.85,
+      "build_slots_multiplier": 0.95,
+      "starter_population": 400,
+      "colonize_min_tech_tier": 8,
+      "colonize_required_tech_ids": ["tech_circulation_masterplan_2"],
+      "capture_required_tech_ids": ["tech_circulation_masterplan_2"]
+    }
+  ]
+}

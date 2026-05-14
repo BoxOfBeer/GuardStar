@@ -8,7 +8,12 @@ import uuid
 BANDIT_PLAYER_ID = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 # Нейтральные транзитные конвои (не логинятся).
 CIVILIAN_NPC_PLAYER_ID = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+# Владелец неколонизированных миров (планеты без экономики как у игрока).
+WORLD_NEUTRAL_PLAYER_ID = uuid.UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 NPC_FLEET_PLAYER_IDS = frozenset({BANDIT_PLAYER_ID, CIVILIAN_NPC_PLAYER_ID})
+NPC_NON_ECONOMY_PLAYER_IDS = frozenset(
+    {BANDIT_PLAYER_ID, CIVILIAN_NPC_PLAYER_ID, WORLD_NEUTRAL_PLAYER_ID}
+)
 
 # Территориальное влияние:
 # - в гарант-радиусе сила источника постоянная;

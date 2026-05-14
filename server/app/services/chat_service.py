@@ -597,6 +597,108 @@ def remove_block(s: Session, *, blocker_id: str, blocked_id: str) -> dict[str, A
     return {"ok": True}
 
 
+def post_alliance_message(
+    s: Session, *, sender_id: str, alliance_id: str, body: str
+) -> dict[str, Any]:
+    from app.services import alliance_service as als
+
+    sid = _parse_uuid(sender_id)
+    aid = _parse_uuid(alliance_id)
+    if not sid or not aid:
+        return {"ok": False, "error": "invalid_payload"}
+    sp = _player_row(s, player_id=sid)
+    if sp and bool(getattr(sp, "account_disabled", False)):
+        return {"ok": False, "error": "account_disabled"}
+    if _sender_chat_banned(s, sender_id=sid):
+        return {"ok": False, "error": "chat_banned"}
+    if not als.assert_alliance_member(s, player_id=sid, alliance_id=aid):
+        return {"ok": False, "error": "forbidden"}
+    text_body, err = _validate_chat_body(body)
+    if err:
+        return {
+            "ok": False,
+            "error": err,
+            **({"max": MAX_CHAT_BODY_LEN} if err == "message_too_long" else {}),
+        }
+    if _rate_limited(s, sender_id=sid):
+        return {"ok": False, "error": "rate_limited"}
+    row = ChatMessage(
+        channel_kind="alliance",
+        alliance_id=aid,
+        sender_id=sid,
+        recipient_id=None,
+        body=text_body,
+        moderation_hidden=False,
+    )
+    s.add(row)
+    s.flush()
+    return {"ok": True, "id": int(row.id)}
+
+
+def list_alliance_messages(
+    s: Session, *, viewer_id: str, alliance_id: str, since_id: int | None = None
+) -> dict[str, Any]:
+    from app.services import alliance_service as als
+
+    vid = _parse_uuid(viewer_id)
+    aid = _parse_uuid(alliance_id)
+    if not vid or not aid:
+        return {"ok": False, "error": "invalid_payload", "messages": []}
+    if not als.assert_alliance_member(s, player_id=vid, alliance_id=aid):
+        return {"ok": False, "error": "forbidden", "messages": []}
+    blocked = _blocked_ids_for_viewer(s, viewer_id=vid)
+    since = int(since_id or 0)
+    base = and_(
+        ChatMessage.channel_kind == "alliance",
+        ChatMessage.alliance_id == aid,
+    )
+    if since > 0:
+        q = (
+            select(ChatMessage)
+            .where(base, ChatMessage.id > since)
+            .order_by(ChatMessage.id.asc())
+            .limit(MAX_MESSAGES_PER_POLL)
+        )
+        rows = list(s.execute(q).scalars().all())
+    else:
+        q = (
+            select(ChatMessage)
+            .where(base)
+            .order_by(ChatMessage.id.desc())
+            .limit(MAX_MESSAGES_PER_POLL)
+        )
+        rows = list(s.execute(q).scalars().all())
+        rows.reverse()
+    senders = list({m.sender_id for m in rows})
+    staff = _staff_exempt_map(s, player_ids=senders)
+    names = dict(
+        s.execute(select(Player.id, Player.display_name).where(Player.id.in_(senders))).all()
+    )
+    can_mod = viewer_can_moderate_global(s, viewer_id=viewer_id)
+    out: list[dict[str, Any]] = []
+    for m in rows:
+        if _should_hide_sender(
+            sender_id=m.sender_id, viewer_id=vid, blocked=blocked, staff=staff
+        ):
+            continue
+        hidden = bool(getattr(m, "moderation_hidden", False))
+        body_out = m.body
+        if hidden and not can_mod:
+            body_out = CHAT_HIDDEN_PLACEHOLDER
+        out.append(
+            {
+                "id": int(m.id),
+                "sender_id": str(m.sender_id),
+                "display_name": str(names.get(m.sender_id, "—")),
+                "body": body_out,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+                "hidden": hidden,
+                "can_mod": can_mod,
+            }
+        )
+    return {"ok": True, "messages": out}
+
+
 def hide_global_message(s: Session, *, actor_id: str, message_id: int) -> dict[str, Any]:
     if not viewer_can_moderate_global(s, viewer_id=actor_id):
         return {"ok": False, "error": "forbidden"}

@@ -68,3 +68,11 @@ class Outpost(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow
     )
+
+    # Склад корсарского форпоста (логистика без снабженцев игрока).
+    bandit_store_metal: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    bandit_store_crystal: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    bandit_store_food: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    bandit_store_water: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    bandit_store_energy: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    bandit_store_fuel: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

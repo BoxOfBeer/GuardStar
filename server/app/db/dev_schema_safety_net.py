@@ -44,6 +44,24 @@ def apply_dev_schema_safety_net() -> None:
                             "ALTER TABLE planets ADD COLUMN IF NOT EXISTS build_slots_total INTEGER NOT NULL DEFAULT 55"
                         )
                     )
+                if "is_capital" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE planets ADD COLUMN IF NOT EXISTS is_capital BOOLEAN NOT NULL DEFAULT false"
+                        )
+                    )
+                if "is_colonized" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE planets ADD COLUMN IF NOT EXISTS is_colonized BOOLEAN NOT NULL DEFAULT true"
+                        )
+                    )
+                if "conquest_penalty_until_tick" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE planets ADD COLUMN IF NOT EXISTS conquest_penalty_until_tick INTEGER NOT NULL DEFAULT 0"
+                        )
+                    )
                 if "supplier_count" not in cols:
                     conn.execute(
                         text(
@@ -127,7 +145,7 @@ def apply_dev_schema_safety_net() -> None:
                           id SERIAL PRIMARY KEY,
                           tick INTEGER NOT NULL,
                           type VARCHAR(64) NOT NULL,
-                          message VARCHAR(255) NOT NULL,
+                          message TEXT NOT NULL,
                           payload_json TEXT NULL,
                           player_id UUID NULL,
                           created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -150,6 +168,22 @@ def apply_dev_schema_safety_net() -> None:
                         "CREATE INDEX IF NOT EXISTS ix_events_player_id ON events (player_id)"
                     )
                 )
+
+        if "events" in insp.get_table_names() and engine.dialect.name == "postgresql":
+            from sqlalchemy import String
+
+            msg_col = next(
+                (c for c in insp.get_columns("events") if c.get("name") == "message"),
+                None,
+            )
+            t = msg_col.get("type") if msg_col else None
+            if isinstance(t, String) and t.length is not None and int(t.length) <= 255:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE events ALTER COLUMN message TYPE TEXT USING message::text"
+                        )
+                    )
 
         if "fleet_orders" not in insp.get_table_names():
             with engine.begin() as conn:
@@ -334,6 +368,20 @@ def apply_dev_schema_safety_net() -> None:
                             "ALTER TABLE outposts ADD COLUMN IF NOT EXISTS patrol_respawn_at_tick INTEGER NOT NULL DEFAULT 0"
                         )
                     )
+                for _bn, _sql in (
+                    ("bandit_store_metal", "INTEGER NOT NULL DEFAULT 0"),
+                    ("bandit_store_crystal", "INTEGER NOT NULL DEFAULT 0"),
+                    ("bandit_store_food", "INTEGER NOT NULL DEFAULT 0"),
+                    ("bandit_store_water", "INTEGER NOT NULL DEFAULT 0"),
+                    ("bandit_store_energy", "INTEGER NOT NULL DEFAULT 0"),
+                    ("bandit_store_fuel", "INTEGER NOT NULL DEFAULT 0"),
+                ):
+                    if _bn not in cols:
+                        conn.execute(
+                            text(
+                                f"ALTER TABLE outposts ADD COLUMN IF NOT EXISTS {_bn} {_sql}"
+                            )
+                        )
                 conn.execute(
                     text(
                         "CREATE INDEX IF NOT EXISTS ix_outposts_finish_tick ON outposts (finish_tick)"
@@ -620,6 +668,24 @@ def apply_dev_schema_safety_net() -> None:
                             "ALTER TABLE planets ADD COLUMN IF NOT EXISTS max_population INTEGER NOT NULL DEFAULT 5000"
                         )
                     )
+                if "is_capital" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE planets ADD COLUMN IF NOT EXISTS is_capital BOOLEAN NOT NULL DEFAULT false"
+                        )
+                    )
+                if "is_colonized" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE planets ADD COLUMN IF NOT EXISTS is_colonized BOOLEAN NOT NULL DEFAULT true"
+                        )
+                    )
+                if "conquest_penalty_until_tick" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE planets ADD COLUMN IF NOT EXISTS conquest_penalty_until_tick INTEGER NOT NULL DEFAULT 0"
+                        )
+                    )
 
         if "buildings" in insp.get_table_names():
             cols = {c["name"] for c in insp.get_columns("buildings")}
@@ -650,6 +716,18 @@ def apply_dev_schema_safety_net() -> None:
                     conn.execute(
                         text(
                             "CREATE INDEX IF NOT EXISTS ix_buildings_capture_attacker_id ON buildings (capture_attacker_id)"
+                        )
+                    )
+                if "structure_hp" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE buildings ADD COLUMN IF NOT EXISTS structure_hp INTEGER NULL"
+                        )
+                    )
+                if "ready_at_tick" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE buildings ADD COLUMN IF NOT EXISTS ready_at_tick INTEGER NOT NULL DEFAULT 0"
                         )
                     )
 
