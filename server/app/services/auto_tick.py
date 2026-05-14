@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
 import threading
+from datetime import datetime, timezone
 
 from flask import Flask
+
+log = logging.getLogger(__name__)
 
 
 def start_auto_tick(app: Flask) -> None:
@@ -18,10 +22,11 @@ def start_auto_tick(app: Flask) -> None:
 
     def _do_tick():
         if not tick_lock.acquire(blocking=False):
+            log.debug("auto_tick: пропуск — предыдущий прогон ещё выполняется")
             return
         try:
-            try:
-                with app.app_context():
+            with app.app_context():
+                try:
                     with db_session() as s:
                         balance = app.extensions.get("balance_service")
                         world = WorldService(
@@ -29,16 +34,20 @@ def start_auto_tick(app: Flask) -> None:
                         )
                         result = world.process_next_tick(s)
                         s.commit()
-                app.extensions["auto_tick_last_tick"] = int(
-                    result.get("current_tick", 0)
-                )
-                app.extensions["auto_tick_last_run_at"] = (
-                    __import__("datetime").datetime.utcnow().isoformat() + "Z"
-                )
-                app.extensions.pop("auto_tick_error", None)
-            except Exception as e:
-                # Не даём job «молча умереть» — сохраняем ошибку в state.
-                app.extensions["auto_tick_error"] = repr(e)
+                    app.extensions["auto_tick_last_tick"] = int(
+                        result.get("current_tick", 0)
+                    )
+                    app.extensions["auto_tick_last_run_at"] = datetime.now(
+                        timezone.utc
+                    ).isoformat()
+                    app.extensions.pop("auto_tick_error", None)
+                    log.info(
+                        "auto_tick: сол %s",
+                        app.extensions.get("auto_tick_last_tick"),
+                    )
+                except Exception as e:
+                    log.exception("auto_tick: ошибка")
+                    app.extensions["auto_tick_error"] = repr(e)
         finally:
             tick_lock.release()
 
@@ -56,6 +65,11 @@ def start_auto_tick(app: Flask) -> None:
     app.extensions["auto_tick_scheduler"] = scheduler
     app.extensions["auto_tick_last_run_at"] = None
     app.extensions["auto_tick_last_tick"] = None
+
+    # IntervalTrigger в APScheduler 3.x ставит первый запуск через полный интервал после
+    # старта планировщика — без немедленного тика админка долго показывает «—», кажется что
+    # автосол «не включился».
+    _do_tick()
 
 
 def stop_auto_tick(app: Flask) -> None:

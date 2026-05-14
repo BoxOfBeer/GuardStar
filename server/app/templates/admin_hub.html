@@ -127,6 +127,7 @@
           <p>Статус воркера: <code>{{ 'работает' if data.runtime.auto_tick_running else 'остановлен' }}</code></p>
           <p>Последний запуск: <code>{{ data.runtime.auto_tick_last_run_at or '—' }}</code> · последний сол: <code>{{ data.runtime.auto_tick_last_tick or '—' }}</code></p>
           <p>Ошибка планировщика: <code>{{ data.runtime.auto_tick_error or '—' }}</code></p>
+          <p class="admin-muted" style="margin-top:8px;font-size:0.9em;">После включения первый сол срабатывает сразу; далее — каждые N секунд (раньше APScheduler ждал целый интервал до первого тика).</p>
 
           <form method="post" action="{{ url_for('web.admin_world_autotick', token=token) }}">
             <input type="hidden" name="token" value="{{ token }}" />
