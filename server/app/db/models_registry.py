@@ -5,6 +5,7 @@ from __future__ import annotations
 
 def import_all_models() -> None:
     from app.db.models.admin_config import AdminConfig  # noqa: F401
+    from app.db.models.alliance import Alliance, AllianceMember  # noqa: F401
     from app.db.models.building import Building  # noqa: F401
     from app.db.models.chat_message import ChatMessage  # noqa: F401
     from app.db.models.event import Event  # noqa: F401

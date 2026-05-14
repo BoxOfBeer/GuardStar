@@ -32,11 +32,25 @@
 | `feedback_playtest_api_logs` | Логи плейтест API | **`028` parity** |
 | `chat_messages.read_receipt_at` | Прочтение ЛС | `20260510_000021` + **`028` parity** |
 | `private_chat_peer_prefs` | Настройки пары в ЛС | `20260510_000021` + **`028` parity** |
+| `outposts.bandit_store_*` | Склад корсарского форпоста | **`20260528_000036`** (до этого только **`dev_schema_safety_net`**) |
 
 ## Операции
 
-- **Прод / dev без safety-net:** `alembic upgrade head` (включая `028`).
+- **Прод / dev без safety-net:** `alembic upgrade head` (включая `028` и последующие ревизии до **`20260528_000036`**).
 - **Временная догонка на старой БД:** включить `GUARDSTAR_DB_SAFETY_NET=true` на один старт приложения (осторожно: обёрнуто в `try/except` и может скрыть ошибки) — предпочтительнее довести миграции.
+
+## Линейные ревизии после `028` (кратко)
+
+| Ревизия | Суть |
+|---------|------|
+| `20260518_000029` | `world_state`: базовая еда/вода за сол (`economy_base_*`) |
+| `20260519_000030` | `players.last_game_activity_at`, `world_state.admin_presence_window_minutes` |
+| `20260513_000031` | Планета: `is_capital`, `is_colonized`, `conquest_penalty_until_tick`; здание: `structure_hp` |
+| `20260520_000032` | Альянсы: `alliances`, `alliance_members` |
+| `20260520_000033` | `reserved_display_names.id`: BigInteger → Integer |
+| `20260521_000034` | `buildings.ready_at_tick` |
+| `20260527_000035` | `events.message`: VARCHAR(255) → TEXT |
+| `20260528_000036` | `outposts.bandit_store_*` (склад корсара; раньше только в **`dev_schema_safety_net`**, без миграции — 500 на `/me`) |
 
 ## Downgrade `028`
 

@@ -1,6 +1,6 @@
 """MVP: догонка схемы БД без Alembic (только при GUARDSTAR_DB_SAFETY_NET).
 
-Соответствие миграциям на проде: ``docs/safety-net-parity.md`` (миграция ``20260517_000028``).
+Соответствие миграциям на проде: ``docs/safety-net-parity.md`` (миграция ``20260517_000028`` и цепочка до ``20260528_000036``).
 """
 
 from __future__ import annotations

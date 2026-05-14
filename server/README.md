@@ -50,6 +50,12 @@ cp .env.example .env
 python -m alembic upgrade head
 ```
 
+Проверка целостности цепочки ревизий (одна голова, все `down_revision` существуют):
+
+```bash
+python scripts/check_alembic_revisions.py
+```
+
 ### 5) Запустить сервер
 
 ```bash
